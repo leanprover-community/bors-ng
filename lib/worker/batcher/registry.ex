@@ -184,7 +184,7 @@ defmodule BorsNG.Worker.Batcher.Registry do
 
     header = """
     Project: `#{project.name}`
-    Batcher Process ID: `#{pid}`
+    Batcher Process ID: `#{inspect(pid)}`
     Reason:
     ```
     #{inspect(reason, pretty: true, width: 60)}
