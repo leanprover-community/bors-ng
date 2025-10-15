@@ -15,6 +15,7 @@ defmodule BorsNG.Worker.Batcher.Registry do
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.Zulip
   alias BorsNG.Database.Batch
+  alias BorsNG.Database.Patch
   alias BorsNG.Database.Crash
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
@@ -139,9 +140,23 @@ defmodule BorsNG.Worker.Batcher.Registry do
       build_messages(project_id, pid, reason)
     rescue
       e ->
-        e_message = "Failed to build crash message:\n#{inspect(e, pretty: true, width: 60)}"
+        e_message = """
+        Failed to build crash message:
+        ```elixir
+        #{inspect(e, pretty: true, width: 60)}
+        ```
+        """
         Logger.error(e_message)
-        ["#{e_message}\n\nCrash reason:\n#{inspect(reason, pretty: true, width: 60)}"]
+        [
+          """
+          #{e_message}
+
+          Crash reason:
+          ```elixir
+          #{inspect(reason, pretty: true, width: 60)}
+          ```
+          """
+        ]
     end
 
     case crash_messages do
@@ -185,8 +200,8 @@ defmodule BorsNG.Worker.Batcher.Registry do
     header = """
     Project: `#{project.name}`
     Batcher Process ID: `#{inspect(pid)}`
-    Reason:
-    ```
+    Crash reason:
+    ```elixir
     #{inspect(reason, pretty: true, width: 60)}
     ```
     """
@@ -194,14 +209,12 @@ defmodule BorsNG.Worker.Batcher.Registry do
     waiting = project_id
     |> Batch.all_for_project(:waiting)
     |> Repo.all()
-    |> Repo.preload([:patches])
 
     waiting_messages = pr_messages(waiting, "Waiting", "deleted", project.name, project_pr_url)
 
     running = project_id
     |> Batch.all_for_project(:running)
     |> Repo.all()
-    |> Repo.preload([:patches])
 
     running_messages = pr_messages(running, "Running", "canceled", project.name, project_pr_url)
 
@@ -215,10 +228,10 @@ defmodule BorsNG.Worker.Batcher.Registry do
         "The following #{num_batches} batch(es) were \"#{prev_state}\" and will now be #{action}:",
 
         batches
-        |> batch_prs
+        |> batch_prs()
         |> Enum.with_index(1)
-        |> Enum.map(fn {{batch_id, prs}, batch_index} ->
-          num_prs = length(prs)
+        |> Enum.map(fn {{batch_id, pr_xrefs}, batch_index} ->
+          num_prs = length(pr_xrefs)
 
           [
             """
@@ -227,7 +240,7 @@ defmodule BorsNG.Worker.Batcher.Registry do
             The batch contained the following #{num_prs} PR(s):
             """,
 
-            prs
+            pr_xrefs
             |> Enum.with_index(1)
             |> Enum.map(fn {pr_xref, pr_index} ->
               "(#{pr_index}/#{num_prs}) of Batch #{batch_id}: [#{project_name}##{pr_xref}](#{project_pr_url}#{pr_xref})"
@@ -239,11 +252,13 @@ defmodule BorsNG.Worker.Batcher.Registry do
       []
     end
   end
-  # Given a list of batches (with preload [:patches]),
-  # return a list of {batch.id, [list of patches in the batch]}
+  # Given a list of batches, return a list of tuples:
+  # {batch.id, [list of PR numbers (pr_xref) of all patches in the batch]}
   defp batch_prs(batches) do
     Enum.map(batches, fn batch ->
-      pr_xrefs = batch.patches
+      pr_xrefs = batch.id
+      |> Patch.all_for_batch()
+      |> Repo.all()
       |> Enum.map(& &1.pr_xref)
 
       {batch.id, pr_xrefs}
