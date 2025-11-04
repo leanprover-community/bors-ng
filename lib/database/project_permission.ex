@@ -13,7 +13,13 @@ defmodule BorsNG.Database.ProjectPermission do
   @string_list ["pull", "triage", "push", "maintain", "admin", "nil"]
   @string_list_no_nil ["pull", "triage", "push", "maintain", "admin"]
   @type trepo_perm :: :admin | :maintain | :push | :triage | :pull
-  @type tuser_repo_perms :: %{admin: boolean, maintain: boolean, push: boolean, triage: boolean, pull: boolean}
+  @type tuser_repo_perms :: %{
+          admin: boolean,
+          maintain: boolean,
+          push: boolean,
+          triage: boolean,
+          pull: boolean
+        }
 
   def type, do: :string
 

@@ -23,7 +23,8 @@ defmodule BorsNG.Worker.Zulip do
         topic = Confex.fetch_env!(:bors, :zulip_topic)
 
         # Skip if any required config is empty
-        if empty_string?(zulip_api_url) or empty_string?(bot_email) or empty_string?(bot_api_key) or empty_string?(channel_name) or empty_string?(topic) do
+        if empty_string?(zulip_api_url) or empty_string?(bot_email) or empty_string?(bot_api_key) or
+             empty_string?(channel_name) or empty_string?(topic) do
           Logger.info("Missing Zulip config. Zulip notification was not sent.")
           :ok
         else
@@ -34,10 +35,14 @@ defmodule BorsNG.Worker.Zulip do
             "content" => message
           }
 
-          client = Tesla.client([
-            {Tesla.Middleware.BasicAuth, username: bot_email, password: bot_api_key},
-            Tesla.Middleware.FormUrlencoded
-          ], Tesla.Adapter.Hackney)
+          client =
+            Tesla.client(
+              [
+                {Tesla.Middleware.BasicAuth, username: bot_email, password: bot_api_key},
+                Tesla.Middleware.FormUrlencoded
+              ],
+              Tesla.Adapter.Hackney
+            )
 
           Tesla.post(client, zulip_api_url <> "messages", body)
         end

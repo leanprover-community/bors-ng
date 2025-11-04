@@ -136,28 +136,31 @@ defmodule BorsNG.Worker.Batcher.Registry do
         names
       end
 
-    crash_messages = try do
-      build_messages(project_id, pid, reason)
-    rescue
-      e ->
-        e_message = """
-        Failed to build crash message:
-        ```elixir
-        #{inspect(e, pretty: true, width: 60)}
-        ```
-        """
-        Logger.error(e_message)
-        [
-          """
-          #{e_message}
-
-          Crash reason:
+    crash_messages =
+      try do
+        build_messages(project_id, pid, reason)
+      rescue
+        e ->
+          e_message = """
+          Failed to build crash message:
           ```elixir
-          #{inspect(reason, pretty: true, width: 60)}
+          #{inspect(e, pretty: true, width: 60)}
           ```
           """
-        ]
-    end
+
+          Logger.error(e_message)
+
+          [
+            """
+            #{e_message}
+
+            Crash reason:
+            ```elixir
+            #{inspect(reason, pretty: true, width: 60)}
+            ```
+            """
+          ]
+      end
 
     case crash_messages do
       [first | rest] ->
@@ -166,7 +169,9 @@ defmodule BorsNG.Worker.Batcher.Registry do
         rest
         |> Enum.each(&Zulip.send_message/1)
 
-      _ -> :ok # impossible
+      # impossible
+      _ ->
+        :ok
     end
 
     project_id
@@ -195,7 +200,9 @@ defmodule BorsNG.Worker.Batcher.Registry do
 
   defp build_messages(project_id, pid, reason) do
     project = Repo.get(Project, project_id)
-    project_pr_url = Confex.fetch_env!(:bors, :html_github_root) <> "/" <> project.name <> "/pull/"
+
+    project_pr_url =
+      Confex.fetch_env!(:bors, :html_github_root) <> "/" <> project.name <> "/pull/"
 
     header = """
     Project: `#{project.name}`
@@ -206,27 +213,29 @@ defmodule BorsNG.Worker.Batcher.Registry do
     ```
     """
 
-    waiting = project_id
-    |> Batch.all_for_project(:waiting)
-    |> Repo.all()
+    waiting =
+      project_id
+      |> Batch.all_for_project(:waiting)
+      |> Repo.all()
 
     waiting_messages = pr_messages(waiting, "Waiting", "deleted", project.name, project_pr_url)
 
-    running = project_id
-    |> Batch.all_for_project(:running)
-    |> Repo.all()
+    running =
+      project_id
+      |> Batch.all_for_project(:running)
+      |> Repo.all()
 
     running_messages = pr_messages(running, "Running", "canceled", project.name, project_pr_url)
 
     List.flatten([header, waiting_messages, running_messages])
   end
+
   defp pr_messages(batches, prev_state, action, project_name, project_pr_url) do
     num_batches = length(batches)
 
     if num_batches > 0 do
       [
         "The following #{num_batches} batch(es) were \"#{prev_state}\" and will now be #{action}:",
-
         batches
         |> batch_prs()
         |> Enum.with_index(1)
@@ -239,7 +248,6 @@ defmodule BorsNG.Worker.Batcher.Registry do
 
             The batch contained the following #{num_prs} PR(s):
             """,
-
             pr_xrefs
             |> Enum.with_index(1)
             |> Enum.map(fn {pr_xref, pr_index} ->
@@ -252,14 +260,16 @@ defmodule BorsNG.Worker.Batcher.Registry do
       []
     end
   end
+
   # Given a list of batches, return a list of tuples:
   # {batch.id, [list of PR numbers (pr_xref) of all patches in the batch]}
   defp batch_prs(batches) do
     Enum.map(batches, fn batch ->
-      pr_xrefs = batch.id
-      |> Patch.all_for_batch()
-      |> Repo.all()
-      |> Enum.map(& &1.pr_xref)
+      pr_xrefs =
+        batch.id
+        |> Patch.all_for_batch()
+        |> Repo.all()
+        |> Enum.map(& &1.pr_xref)
 
       {batch.id, pr_xrefs}
     end)

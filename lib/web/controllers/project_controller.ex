@@ -112,15 +112,19 @@ defmodule BorsNG.ProjectController do
       from(p in Patch,
         where: p.project_id == ^project.id,
         where: p.open,
-        left_join: upd in UserPatchDelegation, on: upd.patch_id == p.id,
-        left_join: u in User, on: u.id == upd.user_id,
+        left_join: upd in UserPatchDelegation,
+        on: upd.patch_id == p.id,
+        left_join: u in User,
+        on: u.id == upd.user_id,
         select: {p.id, u}
       )
       |> Repo.all()
-      |> Enum.reject(fn {_patch_id, user} -> is_nil(user) end)  # Remove patches with no delegated users
+      # Remove patches with no delegated users
+      |> Enum.reject(fn {_patch_id, user} -> is_nil(user) end)
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
-    {delegated_patches, undelegated_patches} = unbatched_patches
+    {delegated_patches, undelegated_patches} =
+      unbatched_patches
       |> Enum.split_with(&Map.get(patch_users_map, &1.id))
 
     is_synchronizing =
@@ -365,33 +369,33 @@ defmodule BorsNG.ProjectController do
     end
   end
 
- defp get_or_insert_user_by_login(project, login) do
-  case Repo.get_by(User, login: login) do
-    nil ->
-      {:installation, project.installation.installation_xref}
-      |> GitHub.get_user_by_login!(login)
-      |> case do
-        nil ->
-          nil
+  defp get_or_insert_user_by_login(project, login) do
+    case Repo.get_by(User, login: login) do
+      nil ->
+        {:installation, project.installation.installation_xref}
+        |> GitHub.get_user_by_login!(login)
+        |> case do
+          nil ->
+            nil
 
-        gh_user ->
-          case Repo.get_by(User, user_xref: gh_user.id) do
-            nil ->
-              User.changeset(%User{}, %{
-                user_xref: gh_user.id,
-                login: gh_user.login
-              })
-              |> Repo.insert!()
+          gh_user ->
+            case Repo.get_by(User, user_xref: gh_user.id) do
+              nil ->
+                User.changeset(%User{}, %{
+                  user_xref: gh_user.id,
+                  login: gh_user.login
+                })
+                |> Repo.insert!()
 
-            user ->
-              user
-          end
-      end
+              user ->
+                user
+            end
+        end
 
-    user ->
-      user
+      user ->
+        user
+    end
   end
- end
 
   def add_reviewer(_, :ro, _, _), do: raise(BorsNG.PermissionDeniedError)
 

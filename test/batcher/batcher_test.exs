@@ -3959,9 +3959,10 @@ defmodule BorsNG.Worker.BatcherTest do
     Batcher.handle_call({:set_priority, patch3.id, 10}, nil, proj.id)
     Batcher.handle_cast({:reviewed, patch3.id, "rvr"}, proj.id)
     # Push the third one's timer, so it'll start now.
-    [batch3] = Repo.all(Batch)
-      |> Enum.reject(& &1.id == batch.id)
-      |> Enum.reject(& &1.id == batch2.id)
+    [batch3] =
+      Repo.all(Batch)
+      |> Enum.reject(&(&1.id == batch.id))
+      |> Enum.reject(&(&1.id == batch2.id))
 
     batch3
     |> Batch.changeset(%{last_polled: 0})
@@ -4060,8 +4061,15 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                commits: %{
                  "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
-                 "iniN" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["iniN"]},
-                 "iniNP" => %{commit_message: "Merge #3\n\n3:  r=rvr a=[unknown]\n\n\n\nCo-authored-by: c <g>\n", parents: ["iniN", "P"]}
+                 "iniN" => %{
+                   commit_message: "[ci skip][skip ci][skip netlify]",
+                   parents: ["iniN"]
+                 },
+                 "iniNP" => %{
+                   commit_message:
+                     "Merge #3\n\n3:  r=rvr a=[unknown]\n\n\n\nCo-authored-by: c <g>\n",
+                   parents: ["iniN", "P"]
+                 }
                },
                comments: %{1 => ["Build succeeded:\n  * ci"], 2 => [], 3 => []},
                statuses: %{
@@ -4149,11 +4157,25 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                commits: %{
                  "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
-                 "iniN" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["iniN"]},
-                  "iniNP" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["iniNP"]},
-                  "iniNPO" => %{commit_message: "Merge #2\n\n2:  r=rvr a=[unknown]\n\n\n\nCo-authored-by: b <f>\n", parents: ["iniNP", "O"]}
+                 "iniN" => %{
+                   commit_message: "[ci skip][skip ci][skip netlify]",
+                   parents: ["iniN"]
+                 },
+                 "iniNP" => %{
+                   commit_message: "[ci skip][skip ci][skip netlify]",
+                   parents: ["iniNP"]
+                 },
+                 "iniNPO" => %{
+                   commit_message:
+                     "Merge #2\n\n2:  r=rvr a=[unknown]\n\n\n\nCo-authored-by: b <f>\n",
+                   parents: ["iniNP", "O"]
+                 }
                },
-               comments: %{1 => ["Build succeeded:\n  * ci"], 2 => [], 3 => ["Build succeeded:\n  * ci"]},
+               comments: %{
+                 1 => ["Build succeeded:\n  * ci"],
+                 2 => [],
+                 3 => ["Build succeeded:\n  * ci"]
+               },
                statuses: %{
                  "iniN" => %{"bors" => :ok},
                  "iniNP" => %{"bors" => :ok},
@@ -6591,8 +6613,11 @@ defmodule BorsNG.Worker.BatcherTest do
     Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
 
     # Ensure no batches or links were created for this patch
-    assert Repo.all(from b in Batch, where: b.project_id == ^proj.id and b.state in [:waiting, :running]) == []
-    assert Repo.all(from l in LinkPatchBatch, where: l.patch_id == ^patch.id) == []
+    assert Repo.all(
+             from(b in Batch, where: b.project_id == ^proj.id and b.state in [:waiting, :running])
+           ) == []
+
+    assert Repo.all(from(l in LinkPatchBatch, where: l.patch_id == ^patch.id)) == []
   end
 
   test "purges closed patches before starting a waiting batch (early cancel)", %{proj: proj} do
@@ -6623,7 +6648,7 @@ defmodule BorsNG.Worker.BatcherTest do
     Batcher.handle_info({:poll, :once}, proj.id)
 
     # The link should be removed
-    assert Repo.all(from l in LinkPatchBatch, where: l.batch_id == ^batch.id) == []
+    assert Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^batch.id)) == []
     # The batch should be marked canceled (not deleted by early-cancel path)
     assert Repo.get!(Batch, batch.id).state == :canceled
   end

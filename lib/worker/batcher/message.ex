@@ -197,6 +197,7 @@ defmodule BorsNG.Worker.Batcher.Message do
       |> Enum.filter(&(&1.author_email != user_email && &1.author_name != user_name))
       |> Enum.map(&"Co-authored-by: #{&1.author_name} <#{&1.author_email}>")
       |> Enum.join("\n")
+
     # possible TODO: get Co-authored-by lines from each commit message?
     # cf. https://github.com/bors-ng/bors-ng/issues/987
 
@@ -205,23 +206,24 @@ defmodule BorsNG.Worker.Batcher.Message do
     # cf. https://github.com/bors-ng/bors-ng/issues/1041
     {body_co_authors, message_body} = filter_lines(message_body, ~r/^Co-authored-by: /)
     # join body_co_authors to commit_co_authors and then remove all empty lines
-    co_authors = body_co_authors <> "\n" <> commit_co_authors
+    co_authors =
+      (body_co_authors <> "\n" <> commit_co_authors)
       |> String.split("\n")
       |> Enum.uniq()
-      |> Enum.reject(& &1 == "")
+      |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n")
 
     "#{pr.title} (##{pr.number})\n\n#{String.trim(message_body)}\n\n#{co_authors}\n"
   end
 
-defp filter_lines(text, regex) do
-  {matching, remaining} =
-    text
-    |> String.split("\n")
-    |> Enum.split_with(&Regex.match?(regex, &1))
+  defp filter_lines(text, regex) do
+    {matching, remaining} =
+      text
+      |> String.split("\n")
+      |> Enum.split_with(&Regex.match?(regex, &1))
 
-  {Enum.join(matching, "\n"), Enum.join(remaining, "\n")}
-end
+    {Enum.join(matching, "\n"), Enum.join(remaining, "\n")}
+  end
 
   def generate_commit_message(
         patch_links,

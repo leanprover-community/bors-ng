@@ -514,10 +514,11 @@ defmodule BorsNG.Command do
 
     Permission.undelegate(undelegatee.id, c.patch.id)
 
-    readd_command = case c.patch.author do
-      ^undelegatee -> "bors d+"
-      _ -> "bors d=#{undelegatee.login}"
-    end
+    readd_command =
+      case c.patch.author do
+        ^undelegatee -> "bors d+"
+        _ -> "bors d=#{undelegatee.login}"
+      end
 
     c.project.repo_xref
     |> Project.installation_connection(Repo)

@@ -242,7 +242,11 @@ defmodule BorsNG.WebhookControllerTest do
         last_polled: DateTime.to_unix(DateTime.utc_now(), :second) - 100
       })
 
-    Repo.insert!(%BorsNG.Database.LinkPatchBatch{patch_id: patch.id, batch_id: batch.id, reviewer: "rvr"})
+    Repo.insert!(%BorsNG.Database.LinkPatchBatch{
+      patch_id: patch.id,
+      batch_id: batch.id,
+      reviewer: "rvr"
+    })
 
     # Send PR closed webhook
     body_params = %{
@@ -274,7 +278,9 @@ defmodule BorsNG.WebhookControllerTest do
     refute patch2.open
 
     # Link removed and empty batch deleted
-    assert Repo.all(from l in BorsNG.Database.LinkPatchBatch, where: l.batch_id == ^batch.id) == []
+    assert Repo.all(from(l in BorsNG.Database.LinkPatchBatch, where: l.batch_id == ^batch.id)) ==
+             []
+
     assert Repo.get(BorsNG.Database.Batch, batch.id) == nil
   end
 

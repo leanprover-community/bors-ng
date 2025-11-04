@@ -428,7 +428,11 @@ defmodule BorsNG.CommandTest do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
         branches: %{},
-        comments: %{1 => ["bors d+"], 2 => ["bors d=reviewer"], 3 => ["bors #{undelegate_command}"]},
+        comments: %{
+          1 => ["bors d+"],
+          2 => ["bors d=reviewer"],
+          3 => ["bors #{undelegate_command}"]
+        },
         statuses: %{},
         pulls: %{
           1 => pr
@@ -504,107 +508,113 @@ defmodule BorsNG.CommandTest do
     ]
   end
 
-  test_with_params "delegate-= removes delegations properly", %{proj: proj}, fn undelegate_command ->
-    pr = %BorsNG.GitHub.Pr{
-      number: 1,
-      title: "Test",
-      body: "Mess",
-      state: :open,
-      base_ref: "master",
-      head_sha: "00000001",
-      head_ref: "update",
-      base_repo_id: 13,
-      head_repo_id: 13,
-      user: %{
-        id: 2,
-        login: "pr_author"
-      }
-    }
+  test_with_params "delegate-= removes delegations properly",
+                   %{proj: proj},
+                   fn undelegate_command ->
+                     pr = %BorsNG.GitHub.Pr{
+                       number: 1,
+                       title: "Test",
+                       body: "Mess",
+                       state: :open,
+                       base_ref: "master",
+                       head_sha: "00000001",
+                       head_ref: "update",
+                       base_repo_id: 13,
+                       head_repo_id: 13,
+                       user: %{
+                         id: 2,
+                         login: "pr_author"
+                       }
+                     }
 
-    GitHub.ServerMock.put_state(%{
-      {{:installation, 91}, 14} => %{
-        branches: %{},
-        comments: %{1 => ["bors d+"], 2 => ["bors d=reviewer"], 3 => ["bors #{undelegate_command}"]},
-        statuses: %{},
-        pulls: %{
-          1 => pr
-        }
-      }
-    })
+                     GitHub.ServerMock.put_state(%{
+                       {{:installation, 91}, 14} => %{
+                         branches: %{},
+                         comments: %{
+                           1 => ["bors d+"],
+                           2 => ["bors d=reviewer"],
+                           3 => ["bors #{undelegate_command}"]
+                         },
+                         statuses: %{},
+                         pulls: %{
+                           1 => pr
+                         }
+                       }
+                     })
 
-    {:ok, user} =
-      Repo.insert(%BorsNG.Database.User{
-        user_xref: 1,
-        is_admin: true,
-        login: "repo_owner"
-      })
+                     {:ok, user} =
+                       Repo.insert(%BorsNG.Database.User{
+                         user_xref: 1,
+                         is_admin: true,
+                         login: "repo_owner"
+                       })
 
-    {:ok, _} =
-      Repo.insert(%BorsNG.Database.User{
-        user_xref: 3,
-        is_admin: false,
-        login: "reviewer1"
-      })
+                     {:ok, _} =
+                       Repo.insert(%BorsNG.Database.User{
+                         user_xref: 3,
+                         is_admin: false,
+                         login: "reviewer1"
+                       })
 
-    {:ok, _} =
-      Repo.insert(%BorsNG.Database.User{
-        user_xref: 4,
-        is_admin: false,
-        login: "reviewer2"
-      })
+                     {:ok, _} =
+                       Repo.insert(%BorsNG.Database.User{
+                         user_xref: 4,
+                         is_admin: false,
+                         login: "reviewer2"
+                       })
 
-    {:ok, _} =
-      Repo.insert(%BorsNG.Database.Patch{
-        project_id: proj.id,
-        pr_xref: 1,
-        commit: "N",
-        into_branch: "master"
-      })
+                     {:ok, _} =
+                       Repo.insert(%BorsNG.Database.Patch{
+                         project_id: proj.id,
+                         pr_xref: 1,
+                         commit: "N",
+                         into_branch: "master"
+                       })
 
-    Repo.insert(%BorsNG.Database.LinkUserProject{
-      user_id: user.id,
-      project_id: proj.id
-    })
+                     Repo.insert(%BorsNG.Database.LinkUserProject{
+                       user_id: user.id,
+                       project_id: proj.id
+                     })
 
-    c1 = %Command{
-      project: proj,
-      commenter: user,
-      comment: "bors d+",
-      pr_xref: 1
-    }
+                     c1 = %Command{
+                       project: proj,
+                       commenter: user,
+                       comment: "bors d+",
+                       pr_xref: 1
+                     }
 
-    Command.run(c1)
+                     Command.run(c1)
 
-    c2 = %Command{
-      project: proj,
-      commenter: user,
-      comment: "bors d=reviewer1,reviewer2",
-      pr_xref: 1
-    }
+                     c2 = %Command{
+                       project: proj,
+                       commenter: user,
+                       comment: "bors d=reviewer1,reviewer2",
+                       pr_xref: 1
+                     }
 
-    Command.run(c2)
+                     Command.run(c2)
 
-    [p1, p2, p3] = Repo.all(BorsNG.Database.UserPatchDelegation)
-    p1 = Repo.preload(p1, :user)
-    assert p1.user.user_xref == 2
-    p2 = Repo.preload(p2, :user)
-    assert p2.user.user_xref == 3
-    p3 = Repo.preload(p3, :user)
-    assert p3.user.user_xref == 4
+                     [p1, p2, p3] = Repo.all(BorsNG.Database.UserPatchDelegation)
+                     p1 = Repo.preload(p1, :user)
+                     assert p1.user.user_xref == 2
+                     p2 = Repo.preload(p2, :user)
+                     assert p2.user.user_xref == 3
+                     p3 = Repo.preload(p3, :user)
+                     assert p3.user.user_xref == 4
 
-    c3 = %Command{
-      project: proj,
-      commenter: user,
-      comment: "bors #{undelegate_command}pr_author,reviewer2",
-      pr_xref: 1
-    }
+                     c3 = %Command{
+                       project: proj,
+                       commenter: user,
+                       comment: "bors #{undelegate_command}pr_author,reviewer2",
+                       pr_xref: 1
+                     }
 
-    Command.run(c3)
+                     Command.run(c3)
 
-    [p4] = Repo.all(BorsNG.Database.UserPatchDelegation)
-    p4 = Repo.preload(p4, :user)
-    assert p4.user.user_xref == 3
-  end do
+                     [p4] = Repo.all(BorsNG.Database.UserPatchDelegation)
+                     p4 = Repo.preload(p4, :user)
+                     assert p4.user.user_xref == 3
+                   end do
     [
       {"delegate-="},
       {"d-="}
