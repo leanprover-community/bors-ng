@@ -101,8 +101,7 @@ defmodule BorsNG.Database.Context.Permission do
   def undelegate(user_id, patch_id) do
     Repo.delete_all(
       from(d in UserPatchDelegation,
-        where:
-          d.user_id == ^user_id and d.patch_id == ^patch_id
+        where: d.user_id == ^user_id and d.patch_id == ^patch_id
       )
     )
   end
@@ -110,8 +109,7 @@ defmodule BorsNG.Database.Context.Permission do
   def undelegate_patch(patch_id) do
     Repo.delete_all(
       from(d in UserPatchDelegation,
-        where:
-          d.patch_id == ^patch_id
+        where: d.patch_id == ^patch_id
       )
     )
   end
@@ -119,8 +117,7 @@ defmodule BorsNG.Database.Context.Permission do
   def undelegate_user(user_id) do
     Repo.delete_all(
       from(d in UserPatchDelegation,
-        where:
-          d.user_id == ^user_id
+        where: d.user_id == ^user_id
       )
     )
   end

@@ -439,16 +439,25 @@ defmodule BorsNG.GitHub do
     else
       case result do
         :ok ->
-          Logger.info("call_with_retry(#{action}): succeeded when current_delay was #{current_delay}")
+          Logger.info(
+            "call_with_retry(#{action}): succeeded when current_delay was #{current_delay}"
+          )
+
           :ok
 
         {:ok, _} = success ->
-          Logger.info("call_with_retry(#{action}): succeeded when current_delay was #{current_delay}")
+          Logger.info(
+            "call_with_retry(#{action}): succeeded when current_delay was #{current_delay}"
+          )
+
           success
 
         _ when current_delay > max_delay ->
           # Final attempt - return whatever we get
-          Logger.warning("call_with_retry(#{action}): final attempt when current_delay was #{current_delay}")
+          Logger.warning(
+            "call_with_retry(#{action}): final attempt when current_delay was #{current_delay}"
+          )
+
           GenServer.call(BorsNG.GitHub, {action, repo_conn, params}, timeout)
 
         _ ->

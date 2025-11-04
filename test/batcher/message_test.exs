@@ -449,6 +449,4 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     assert expected_message == actual_message
   end
-
-
 end

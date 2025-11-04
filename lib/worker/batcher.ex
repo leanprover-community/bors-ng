@@ -402,94 +402,96 @@ defmodule BorsNG.Worker.Batcher do
     if Enum.empty?(patch_links) do
       now = DateTime.to_unix(DateTime.utc_now(), :second)
       send_status(repo_conn, batch, :canceled)
+
       batch
       |> Batch.changeset(%{state: :canceled, commit: nil, last_polled: now})
       |> Repo.update!()
+
       send_zulip(batch, :canceled)
       Project.ping!(project.id)
       :canceled
     else
+      stmp = "#{project.staging_branch}.tmp"
 
-    stmp = "#{project.staging_branch}.tmp"
+      base = get_base(repo_conn, batch.into_branch)
 
-    base = get_base(repo_conn, batch.into_branch)
-
-    tbase = %{
-      tree: base.tree,
-      commit:
-        GitHub.synthesize_commit!(
-          repo_conn,
-          %{
-            branch: stmp,
-            tree: base.tree,
-            parents: [base.commit],
-            commit_message: "[ci skip][skip ci][skip netlify]",
-            committer: nil
-          }
-        )
-    }
-
-    do_merge_patch = fn %{patch: patch}, branch ->
-      pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
-
-      case branch do
-        :conflict ->
-          :conflict
-
-        :canceled ->
-          :canceled
-
-        :race ->
-          :race
-
-        _ when pr.head_sha != patch.commit ->
-          :race
-
-        _ ->
-          GitHub.merge_branch!(
+      tbase = %{
+        tree: base.tree,
+        commit:
+          GitHub.synthesize_commit!(
             repo_conn,
             %{
-              from: patch.commit,
-              to: stmp,
-              commit_message:
-                "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{patch.pr_xref}"
+              branch: stmp,
+              tree: base.tree,
+              parents: [base.commit],
+              commit_message: "[ci skip][skip ci][skip netlify]",
+              committer: nil
             }
           )
+      }
+
+      do_merge_patch = fn %{patch: patch}, branch ->
+        pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
+
+        case branch do
+          :conflict ->
+            :conflict
+
+          :canceled ->
+            :canceled
+
+          :race ->
+            :race
+
+          _ when pr.head_sha != patch.commit ->
+            :race
+
+          _ ->
+            GitHub.merge_branch!(
+              repo_conn,
+              %{
+                from: patch.commit,
+                to: stmp,
+                commit_message:
+                  "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{patch.pr_xref}"
+              }
+            )
+        end
       end
-    end
 
-    merge = Enum.reduce(patch_links, tbase, do_merge_patch)
+      merge = Enum.reduce(patch_links, tbase, do_merge_patch)
 
-    {status, commit} =
-      start_waiting_merged_batch(
-        batch,
-        patch_links,
-        base,
-        merge
-      )
+      {status, commit} =
+        start_waiting_merged_batch(
+          batch,
+          patch_links,
+          base,
+          merge
+        )
 
-    now = DateTime.to_unix(DateTime.utc_now(), :second)
+      now = DateTime.to_unix(DateTime.utc_now(), :second)
 
-    GitHub.delete_branch!(repo_conn, stmp)
-    send_status(repo_conn, batch, status)
+      GitHub.delete_branch!(repo_conn, stmp)
+      send_status(repo_conn, batch, status)
 
-    case status do
-      :running ->
-        # when a batch starts set priority to 100
-        # so that we can move patches to the "front of the line" without interrupting running batches
-        raise_batch_priority(batch, 100)
+      case status do
+        :running ->
+          # when a batch starts set priority to 100
+          # so that we can move patches to the "front of the line" without interrupting running batches
+          raise_batch_priority(batch, 100)
 
-      _ -> :ok
-    end
+        _ ->
+          :ok
+      end
 
-    batch
-    |> Batch.changeset(%{state: status, commit: commit, last_polled: now})
-    |> Repo.update!()
+      batch
+      |> Batch.changeset(%{state: status, commit: commit, last_polled: now})
+      |> Repo.update!()
 
-    send_zulip(batch, status)
+      send_zulip(batch, status)
 
-    Project.ping!(batch.project_id)
-    status
+      Project.ping!(batch.project_id)
+      status
     end
   end
 
@@ -507,10 +509,13 @@ defmodule BorsNG.Worker.Batcher do
     # and then if the next time we call the GitHub branch API we receive the same commit,
     # we retry the API call with an exponentially increasing delay, until max_delay is exceeded.
     last_commit = Process.get(:last_commit)
-    result = GitHub.get_branch!(
+
+    result =
+      GitHub.get_branch!(
         repo_conn,
         into_branch
-    )
+      )
+
     if Application.get_env(:bors, :is_test) do
       Process.put(:last_commit, result.commit)
       result
@@ -522,7 +527,10 @@ defmodule BorsNG.Worker.Batcher do
 
         %{commit: ^last_commit} ->
           # Exceeded max delay but commit unchanged
-          Logger.warn("get_base: exceeded max delay but commit unchanged: #{inspect(last_commit)}")
+          Logger.warn(
+            "get_base: exceeded max delay but commit unchanged: #{inspect(last_commit)}"
+          )
+
           result
 
         res ->
@@ -530,12 +538,15 @@ defmodule BorsNG.Worker.Batcher do
           # Note that we reset the last_commit to :nil if the batch fails;
           # see the :error case of complete_batch/3
           Process.put(:last_commit, res.commit)
-          Logger.info("get_base: commit changed: #{inspect(last_commit)}. current_delay was #{current_delay}.")
+
+          Logger.info(
+            "get_base: commit changed: #{inspect(last_commit)}. current_delay was #{current_delay}."
+          )
+
           res
       end
     end
   end
-
 
   defp start_waiting_merged_batch(_batch, [], _, _) do
     {:canceled, nil}
@@ -887,7 +898,7 @@ defmodule BorsNG.Worker.Batcher do
 
     # The batch failed, so it's OK to push the next batch on top of the same commit we saw
     # see do_get_base/4
-    Process.put(:last_commit, :nil)
+    Process.put(:last_commit, nil)
 
     if state == :retrying do
       poll_after_delay(project)
@@ -917,9 +928,11 @@ defmodule BorsNG.Worker.Batcher do
         {:ok, _} ->
           Logger.info("push_with_retry: succeeded when timeout was #{timeout}")
           result
+
         _ when timeout >= 20_480 ->
           Logger.warning("push_with_retry: failed when timeout was #{timeout}")
           result
+
         _ ->
           Process.sleep(timeout)
           push_with_retry(repo_conn, commit, into_branch, timeout * 2)
@@ -1330,14 +1343,15 @@ defmodule BorsNG.Worker.Batcher do
   defp send_zulip(_, :ok), do: :ok
   # :error | :conflict | :canceled -> send notification
   defp send_zulip(batch, state) do
-    {fail_message, pr_messages} = try do
-      build_message(batch, state)
-    rescue
-      e ->
-        e_message = "Failed to build message:\n#{inspect(e, pretty: true, width: 60)}"
-        Logger.error(e_message)
-        {"⚠️ bors batch failed!\n\nBatch #{batch.id}: #{state}\n\n#{e_message}", []}
-    end
+    {fail_message, pr_messages} =
+      try do
+        build_message(batch, state)
+      rescue
+        e ->
+          e_message = "Failed to build message:\n#{inspect(e, pretty: true, width: 60)}"
+          Logger.error(e_message)
+          {"⚠️ bors batch failed!\n\nBatch #{batch.id}: #{state}\n\n#{e_message}", []}
+      end
 
     Zulip.send_message(fail_message)
 
@@ -1348,17 +1362,21 @@ defmodule BorsNG.Worker.Batcher do
   # see also lib/web/templates/project/show.html.eex
   defp build_message(batch, state) do
     project = Repo.get(Project, batch.project_id)
-    project_pr_url = Confex.fetch_env!(:bors, :html_github_root) <> "/" <> project.name <> "/pull/"
+
+    project_pr_url =
+      Confex.fetch_env!(:bors, :html_github_root) <> "/" <> project.name <> "/pull/"
 
     statuses = Repo.all(Status.all_for_batch(batch.id))
-    statuses_message = if Enum.empty?(statuses) do
-      ""
-    else
-       "Status check(s):\n" <>
-      (statuses
-      |> Enum.map(&format_status/1)
-      |> Enum.join("\n"))
-    end
+
+    statuses_message =
+      if Enum.empty?(statuses) do
+        ""
+      else
+        "Status check(s):\n" <>
+          (statuses
+           |> Enum.map(&format_status/1)
+           |> Enum.join("\n"))
+      end
 
     patch_links_pr_xrefs =
       Repo.all(LinkPatchBatch.from_batch(batch.id))

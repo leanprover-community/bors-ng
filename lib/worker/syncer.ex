@@ -50,8 +50,8 @@ defmodule BorsNG.Worker.Syncer do
         ) ::
           {:ok, Project.t()} | {:error, any()}
   def synchronize_project_collaborators_by_role(project, collaborators, association, github_perm)
+      # keep in sync with @atom_list_no_nil in database/project_permission.ex
       when association in [:users, :members] and
-             # keep in sync with @atom_list_no_nil in database/project_permission.ex
              github_perm in [:admin, :maintain, :push, :triage, :pull] do
     authorized_users =
       collaborators
