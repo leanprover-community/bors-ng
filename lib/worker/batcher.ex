@@ -392,6 +392,23 @@ defmodule BorsNG.Worker.Batcher do
     patch_links =
       Repo.all(LinkPatchBatch.from_batch(batch.id))
       |> Enum.sort_by(& &1.patch.pr_xref)
+      |> Enum.reject(fn l ->
+        closed = l.patch.open == false
+        if closed, do: Repo.delete!(l)
+        closed
+      end)
+
+    # If all patches were closed and removed, cancel the batch early
+    if Enum.empty?(patch_links) do
+      now = DateTime.to_unix(DateTime.utc_now(), :second)
+      send_status(repo_conn, batch, :canceled)
+      batch
+      |> Batch.changeset(%{state: :canceled, commit: nil, last_polled: now})
+      |> Repo.update!()
+      send_zulip(batch, :canceled)
+      Project.ping!(project.id)
+      :canceled
+    else
 
     stmp = "#{project.staging_branch}.tmp"
 
@@ -473,6 +490,7 @@ defmodule BorsNG.Worker.Batcher do
 
     Project.ping!(batch.project_id)
     status
+    end
   end
 
   # Private function to handle retry logic with exponential backoff

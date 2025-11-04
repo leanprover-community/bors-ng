@@ -6566,6 +6566,68 @@ defmodule BorsNG.Worker.BatcherTest do
     assert sorted == {:waiting, [batch3, batch, batch2]}
   end
 
+  test "does not enqueue closed PR on review", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        open: false
+      }
+      |> Repo.insert!()
+
+    # Attempt to review a closed patch
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    # Ensure no batches or links were created for this patch
+    assert Repo.all(from b in Batch, where: b.project_id == ^proj.id and b.state in [:waiting, :running]) == []
+    assert Repo.all(from l in LinkPatchBatch, where: l.patch_id == ^patch.id) == []
+  end
+
+  test "purges closed patches before starting a waiting batch (early cancel)", %{proj: proj} do
+    # Create a closed patch linked into a waiting batch
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        open: false
+      }
+      |> Repo.insert!()
+
+    batch =
+      %Batch{
+        project_id: proj.id,
+        state: :waiting,
+        into_branch: "master",
+        last_polled: DateTime.to_unix(DateTime.utc_now(), :second) - 100
+      }
+      |> Repo.insert!()
+
+    %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id, reviewer: "rvr"}
+    |> Repo.insert!()
+
+    # Trigger a single poll cycle; should early-cancel the batch without touching GitHub
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    # The link should be removed
+    assert Repo.all(from l in LinkPatchBatch, where: l.batch_id == ^batch.id) == []
+    # The batch should be marked canceled (not deleted by early-cancel path)
+    assert Repo.get!(Batch, batch.id).state == :canceled
+  end
+
   test "gather_co_authors() collects unique commit authors", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
