@@ -212,6 +212,72 @@ defmodule BorsNG.WebhookControllerTest do
     assert branches == ["master"]
   end
 
+  test "closing a PR removes it from waiting batches", %{conn: conn, project: proj} do
+    # Minimal GitHub state to allow comment posting if needed
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    # Create an open patch and add it to a waiting batch
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true
+      })
+
+    batch =
+      Repo.insert!(%BorsNG.Database.Batch{
+        project_id: proj.id,
+        state: :waiting,
+        into_branch: "master",
+        last_polled: DateTime.to_unix(DateTime.utc_now(), :second) - 100
+      })
+
+    Repo.insert!(%BorsNG.Database.LinkPatchBatch{patch_id: patch.id, batch_id: batch.id, reviewer: "rvr"})
+
+    # Send PR closed webhook
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "closed",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "closed",
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => "time",
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    # Ensure the batcher processed the cancel cast by doing a synchronous call
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    :ok = BorsNG.Worker.Batcher.set_is_single(batcher, patch.id, false)
+
+    # Patch should be closed
+    patch2 = Repo.get!(Patch, patch.id)
+    refute patch2.open
+
+    # Link removed and empty batch deleted
+    assert Repo.all(from l in BorsNG.Database.LinkPatchBatch, where: l.batch_id == ^batch.id) == []
+    assert Repo.get(BorsNG.Database.Batch, batch.id) == nil
+  end
+
   def wait_until_other_branch_is_removed do
     branches =
       GitHub.ServerMock.get_state()

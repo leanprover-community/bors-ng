@@ -360,6 +360,10 @@ defmodule BorsNG.WebhookController do
   def do_webhook_pr(_conn, %{action: "closed", project: project, patch: p}) do
     Project.ping!(project.id)
     Repo.update!(Patch.changeset(p, %{open: false}))
+    # Ensure a closed PR is removed from any waiting/running batches and try jobs
+    batcher = Batcher.Registry.get(project.id)
+    # Batcher.cancel is the same as running bors r-
+    Batcher.cancel(batcher, p.id)
     BranchDeleter.delete(p)
   end
 
