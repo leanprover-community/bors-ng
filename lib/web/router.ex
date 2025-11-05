@@ -114,6 +114,20 @@ defmodule BorsNG.Router do
     post("/:provider", WebhookController, :webhook)
   end
 
+  # Unauthenticated JSON API
+  scope "/api", BorsNG do
+    pipe_through(:browser_ajax)
+
+    get("/active-batches", ApiController, :active_batches)
+  end
+
+  # Unauthenticated project-scoped JSON endpoint
+  scope "/repositories", BorsNG do
+    pipe_through(:browser_ajax)
+
+    get("/:id/active-batches", ApiController, :project_active_batches)
+  end
+
   # Fetch the current user from the session and add it to `conn.assigns`. This
   # will allow you to have access to the current user in your views with
   # `@current_user`.
