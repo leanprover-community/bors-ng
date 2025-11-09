@@ -132,6 +132,8 @@ defmodule BorsNG.Worker.Batcher do
         patch
         |> Patch.changeset(%{priority: priority})
         |> Repo.update!()
+
+        Project.ping!(project_id)
     end
 
     {:reply, :ok, project_id}
@@ -328,6 +330,8 @@ defmodule BorsNG.Worker.Batcher do
       reviewer: reviewer
     })
     |> Repo.insert!()
+
+    Project.ping!(project.id)
 
     if is_new_batch do
       put_incomplete_on_hold(repo_conn, batch)
