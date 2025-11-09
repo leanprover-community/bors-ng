@@ -501,6 +501,8 @@ defmodule BorsNG.Command do
   def run(c, :undelegate) do
     Permission.undelegate_patch(c.patch.id)
 
+    Project.ping!(c.project.id)
+
     c.project.repo_xref
     |> Project.installation_connection(Repo)
     |> GitHub.post_comment!(
@@ -513,6 +515,8 @@ defmodule BorsNG.Command do
     undelegatee = get_or_insert_user_by_login(c, login)
 
     Permission.undelegate(undelegatee.id, c.patch.id)
+
+    Project.ping!(c.project.id)
 
     readd_command =
       case c.patch.author do
@@ -567,6 +571,8 @@ defmodule BorsNG.Command do
     # Note that a user can be delegated multiple times
     # TODO: fix at the database level?
     Permission.delegate(delegatee, c.patch)
+
+    Project.ping!(c.project.id)
 
     c.project.repo_xref
     |> Project.installation_connection(Repo)
