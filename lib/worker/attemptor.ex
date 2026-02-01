@@ -18,6 +18,8 @@ defmodule BorsNG.Worker.Attemptor do
   alias BorsNG.Worker.Batcher
   alias BorsNG.Database.Attempt
   alias BorsNG.Database.AttemptStatus
+  alias BorsNG.Database.Context.Logging
+  alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.Repo
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
@@ -175,7 +177,7 @@ defmodule BorsNG.Worker.Attemptor do
   defp start_attempt(attempt, project) do
     attempt =
       attempt
-      |> Repo.preload([:patch])
+      |> Repo.preload(patch: [:author])
 
     stmp = "#{project.trying_branch}.tmp"
     repo_conn = get_repo_conn(project)
@@ -227,6 +229,8 @@ defmodule BorsNG.Worker.Attemptor do
 
         case toml do
           {:ok, toml} ->
+            commit_message = build_try_commit_message(project, patch, arguments, toml)
+
             commit =
               GitHub.synthesize_commit!(
                 repo_conn,
@@ -234,7 +238,7 @@ defmodule BorsNG.Worker.Attemptor do
                   branch: project.trying_branch,
                   tree: merged.tree,
                   parents: [base.commit, patch.commit],
-                  commit_message: "Try \##{patch.pr_xref}:#{arguments}",
+                  commit_message: commit_message,
                   committer: toml.committer
                 }
               )
@@ -387,5 +391,35 @@ defmodule BorsNG.Worker.Attemptor do
   @spec get_repo_conn(%Project{}) :: {{:installation, number}, number}
   defp get_repo_conn(project) do
     Project.installation_connection(project.repo_xref, Repo)
+  end
+
+  defp build_try_commit_message(project, patch, arguments, toml) do
+    reviewer = fetch_try_reviewer(patch)
+    link = %LinkPatchBatch{patch: patch, reviewer: reviewer}
+    co_authors = Batcher.gather_co_authors(%{project: project}, [link])
+    template = "Try ${PR_REFS}#{try_arguments_suffix(arguments)}"
+
+    Batcher.Message.generate_commit_message(
+      [link],
+      toml.cut_body_after,
+      co_authors,
+      template
+    )
+  end
+
+  defp try_arguments_suffix(arguments) do
+    case arguments do
+      "" -> ":"
+      nil -> ":"
+      _ -> ":#{arguments}"
+    end
+  end
+
+  defp fetch_try_reviewer(patch) do
+    case Logging.most_recent_cmd(patch) do
+      {user, {:try, _}} -> user.login
+      {user, :try} -> user.login
+      _ -> "try"
+    end
   end
 end
