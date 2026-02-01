@@ -13,6 +13,10 @@ defmodule BorsNG.Worker.AttemptorTest do
   alias BorsNG.Database.Repo
   alias BorsNG.Database.User
   alias BorsNG.GitHub
+  alias BorsNG.GitHub.Commit
+  alias BorsNG.GitHub.FullUser
+  alias BorsNG.GitHub.Pr
+  alias BorsNG.GitHub.User, as: GitHubUser
 
   setup do
     inst =
@@ -141,6 +145,77 @@ defmodule BorsNG.Worker.AttemptorTest do
              statuses,
              &(&1.identifier == "continuous-integration/appveyor/branch")
            )
+  end
+
+  test "respects use_squash_merge for try commits", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "trying" => "", "trying.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        pr_commits: %{
+          1 => [
+            %Commit{
+              sha: "c1",
+              author_name: "Ada",
+              author_email: "ada@example.com",
+              commit_message: "feat: add stuff",
+              tree_sha: "t1"
+            }
+          ]
+        },
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Add feature",
+            body: "Body",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            user: %GitHubUser{id: 42, login: "ada", avatar_url: "https://example.com"}
+          }
+        },
+        statuses: %{"iniN" => []},
+        files: %{
+          "trying.tmp" => %{
+            "bors.toml" => ~s"""
+            status = [ "ci/test" ]
+            use_squash_merge = true
+            """
+          }
+        }
+      },
+      users: %{
+        "ada" => %FullUser{
+          id: 42,
+          login: "ada",
+          avatar_url: "https://example.com",
+          email: "ada@example.com",
+          name: "Ada"
+        }
+      }
+    })
+
+    patch = new_patch(proj, 1, "N")
+    Attemptor.handle_cast({:tried, patch.id, ""}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+
+    assert repo.branches["trying"] == "iniN"
+
+    expected_message =
+      Batcher.Message.generate_squash_commit_message(
+        repo.pulls[1],
+        repo.pr_commits[1],
+        "ada@example.com",
+        "Ada",
+        nil
+      )
+
+    assert repo.commits["iniN"].commit_message == expected_message
   end
 
   test "infer from .appveyor.yml", %{proj: proj} do

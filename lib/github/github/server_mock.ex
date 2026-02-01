@@ -358,6 +358,37 @@ defmodule BorsNG.GitHub.ServerMock do
   end
 
   def do_handle_call(
+        :create_commit,
+        repo_conn,
+        {%{
+           tree: tree,
+           parents: parents,
+           commit_message: commit_message,
+           committer: _committer
+         }},
+        state
+      ) do
+    with {:ok, repo} <- Map.fetch(state, repo_conn),
+         {:ok, commits} <- Map.fetch(repo, :commits) do
+      nsha = tree
+
+      commits =
+        Map.put(commits, nsha, %{
+          parents: parents,
+          commit_message: commit_message
+        })
+
+      repo = %{repo | commits: commits}
+      state = %{state | repo_conn => repo}
+      {{:ok, nsha}, state}
+    end
+    |> case do
+      {{:ok, _}, _} = res -> res
+      _ -> {{:error, :create_commit}, state}
+    end
+  end
+
+  def do_handle_call(
         :synthesize_commit,
         repo_conn,
         {%{

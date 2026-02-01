@@ -229,19 +229,38 @@ defmodule BorsNG.Worker.Attemptor do
 
         case toml do
           {:ok, toml} ->
-            commit_message = build_try_commit_message(project, patch, arguments, toml)
-
             commit =
-              GitHub.synthesize_commit!(
-                repo_conn,
-                %{
-                  branch: project.trying_branch,
-                  tree: merged.tree,
-                  parents: [base.commit, patch.commit],
-                  commit_message: commit_message,
-                  committer: toml.committer
-                }
-              )
+              if toml.use_squash_merge do
+                {commit_message, committer} =
+                  build_try_squash_commit(repo_conn, patch, toml)
+
+                commit =
+                  GitHub.create_commit!(
+                    repo_conn,
+                    %{
+                      tree: merged.tree,
+                      parents: [base.commit],
+                      commit_message: commit_message,
+                      committer: committer
+                    }
+                  )
+
+                GitHub.force_push!(repo_conn, commit, project.trying_branch)
+                commit
+              else
+                commit_message = build_try_commit_message(project, patch, arguments, toml)
+
+                GitHub.synthesize_commit!(
+                  repo_conn,
+                  %{
+                    branch: project.trying_branch,
+                    tree: merged.tree,
+                    parents: [base.commit, patch.commit],
+                    commit_message: commit_message,
+                    committer: toml.committer
+                  }
+                )
+              end
 
             state = setup_statuses(attempt, toml)
             now = DateTime.to_unix(DateTime.utc_now(), :second)
@@ -405,6 +424,34 @@ defmodule BorsNG.Worker.Attemptor do
       co_authors,
       template
     )
+  end
+
+  defp build_try_squash_commit(repo_conn, patch, toml) do
+    {:ok, commits} = GitHub.get_pr_commits(repo_conn, patch.pr_xref)
+    {:ok, pr} = GitHub.get_pr(repo_conn, patch.pr_xref)
+
+    {token, _} = repo_conn
+    user = GitHub.get_user_by_login!(token, pr.user.login)
+
+    user_email =
+      if user.email != nil do
+        user.email
+      else
+        "#{user.id}+#{user.login}@users.noreply.github.com"
+      end
+
+    user_name = user.name || user.login
+
+    commit_message =
+      Batcher.Message.generate_squash_commit_message(
+        pr,
+        commits,
+        user_email,
+        user_name,
+        toml.cut_body_after
+      )
+
+    {commit_message, %{name: user_name, email: user_email}}
   end
 
   defp try_arguments_suffix(arguments) do
