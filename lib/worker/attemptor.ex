@@ -231,8 +231,7 @@ defmodule BorsNG.Worker.Attemptor do
           {:ok, toml} ->
             commit =
               if toml.use_squash_merge do
-                {commit_message, committer} =
-                  build_try_squash_commit(repo_conn, patch, toml)
+                {commit_message, committer} = build_try_squash_commit(repo_conn, patch, toml)
 
                 commit =
                   GitHub.create_commit!(
