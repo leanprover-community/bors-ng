@@ -275,9 +275,12 @@ defmodule BorsNG.Worker.Batcher.Message do
   def cut_body(body, nil), do: body
 
   def cut_body(body, cut) do
-    body
+    # HACK: we put a newline at the start of the string so that, e.g.
+    # cut = "\n---" will cut even if "---" is at the start of body
+    ("\n" <> body)
     |> String.splitter(cut)
     |> Enum.at(0)
+    |> String.trim()
   end
 
   def suppress_pings(nil), do: nil

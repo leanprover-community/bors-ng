@@ -211,6 +211,10 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert "" == Message.cut_body(nil, "b")
   end
 
+  test "cut body with phantom newline before start of string" do
+    assert "" == Message.cut_body("---\n hey ignore me", "\n---")
+  end
+
   test "cut commit message bodies" do
     expected_message = """
     Merge #1
@@ -274,8 +278,11 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     title = "Synchronize background and foreground processing"
 
+    # also test that whitespace is cut
     body = """
     Fixes that annoying bug.
+
+
 
     <!-- boilerplate follows -->
 
