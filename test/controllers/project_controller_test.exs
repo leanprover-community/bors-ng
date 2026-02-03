@@ -2,6 +2,7 @@ defmodule BorsNG.ProjectControllerTest do
   use BorsNG.ConnCase
 
   alias BorsNG.Database.Batch
+  alias BorsNG.Database.Attempt
   alias BorsNG.Database.Installation
   alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.LinkUserProject
@@ -9,6 +10,7 @@ defmodule BorsNG.ProjectControllerTest do
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.Database.User
+  alias BorsNG.Database.UserPatchDelegation
   alias BorsNG.GitHub
 
   setup do
@@ -77,7 +79,8 @@ defmodule BorsNG.ProjectControllerTest do
     Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
     conn = get(conn, project_path(conn, :show, project))
     assert html_response(conn, 200) =~ "Awaiting review"
-    refute html_response(conn, 200) =~ "Waiting"
+    refute html_response(conn, 200) =~ "Waiting to run"
+    refute html_response(conn, 200) =~ "Waiting to be tried"
   end
 
   test "show a batched patch", %{conn: conn, project: project, user: user} do
@@ -95,7 +98,43 @@ defmodule BorsNG.ProjectControllerTest do
     Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
     conn = get(conn, project_path(conn, :show, project))
     refute html_response(conn, 200) =~ "Awaiting review"
-    assert html_response(conn, 200) =~ "Waiting"
+    assert html_response(conn, 200) =~ "Waiting to run"
+  end
+
+  test "show a delegated patch", %{conn: conn, project: project, user: user} do
+    conn = login(conn)
+
+    patch = Repo.insert!(%Patch{project_id: project.id})
+    Repo.insert!(%UserPatchDelegation{patch_id: patch.id, user_id: user.id})
+    Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+
+    conn = get(conn, project_path(conn, :show, project))
+    assert html_response(conn, 200) =~ "Delegated"
+  end
+
+  test "show trying and waiting attempts", %{conn: conn, project: project, user: user} do
+    conn = login(conn)
+
+    patch_waiting = Repo.insert!(%Patch{project_id: project.id, commit: "PC1"})
+    patch_running = Repo.insert!(%Patch{project_id: project.id, commit: "PC2"})
+
+    Repo.insert!(%Attempt{
+      patch_id: patch_waiting.id,
+      into_branch: "master",
+      state: :waiting
+    })
+
+    Repo.insert!(%Attempt{
+      patch_id: patch_running.id,
+      into_branch: "master",
+      commit: "TC2",
+      state: :running
+    })
+
+    Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+    conn = get(conn, project_path(conn, :show, project))
+    assert html_response(conn, 200) =~ "Trying"
+    assert html_response(conn, 200) =~ "Waiting to be tried"
   end
 
   test "do not show an unlinked project", %{conn: conn, project: project} do

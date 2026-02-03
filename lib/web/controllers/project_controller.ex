@@ -19,6 +19,7 @@ defmodule BorsNG.ProjectController do
   alias BorsNG.Database.LinkUserProject
   alias BorsNG.Database.Project
   alias BorsNG.Database.Batch
+  alias BorsNG.Database.Attempt
   alias BorsNG.Database.Crash
   alias BorsNG.Database.Patch
   alias BorsNG.Database.User
@@ -102,6 +103,18 @@ defmodule BorsNG.ProjectController do
       |> Repo.all()
       |> Enum.map(&batch_info/1)
 
+    trying_attempts =
+      project.id
+      |> Attempt.all_for_project(:running)
+      |> Repo.all()
+      |> Repo.preload(:patch)
+
+    waiting_attempts =
+      project.id
+      |> Attempt.all_for_project(:waiting)
+      |> Repo.all()
+      |> Repo.preload(:patch)
+
     unbatched_patches =
       project.id
       |> Patch.all_for_project(:awaiting_review)
@@ -136,6 +149,8 @@ defmodule BorsNG.ProjectController do
     render(conn, "show.html",
       project: project,
       batches: batches,
+      trying_attempts: trying_attempts,
+      waiting_attempts: waiting_attempts,
       is_synchronizing: is_synchronizing,
       patch_users_map: patch_users_map,
       delegated_patches: delegated_patches,
