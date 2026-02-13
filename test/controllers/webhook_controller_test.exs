@@ -2,9 +2,11 @@ defmodule BorsNG.WebhookControllerTest do
   use BorsNG.ConnCase
 
   alias BorsNG.Database.Installation
+  alias BorsNG.Database.Attempt
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
+  alias BorsNG.Database.UserPatchDelegation
   alias BorsNG.Database.User
   alias BorsNG.GitHub.Pr
   alias BorsNG.GitHub
@@ -282,6 +284,213 @@ defmodule BorsNG.WebhookControllerTest do
              []
 
     assert Repo.get(BorsNG.Database.Batch, batch.id) == nil
+  end
+
+  test "converting a PR to draft cancels active work, removes delegations, and posts notice", %{
+    conn: conn,
+    project: proj,
+    user: user
+  } do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true
+      })
+
+    batch =
+      Repo.insert!(%BorsNG.Database.Batch{
+        project_id: proj.id,
+        state: :waiting,
+        into_branch: "master",
+        last_polled: DateTime.to_unix(DateTime.utc_now(), :second) - 100
+      })
+
+    Repo.insert!(%BorsNG.Database.LinkPatchBatch{
+      patch_id: patch.id,
+      batch_id: batch.id,
+      reviewer: "rvr"
+    })
+
+    now = DateTime.to_unix(DateTime.utc_now(), :second)
+
+    Attempt.new(patch, "")
+    |> Attempt.changeset(%{
+      state: :running,
+      commit: "TRY",
+      timeout_at: now + 3600,
+      last_polled: now
+    })
+    |> Repo.insert!()
+
+    Repo.insert!(%UserPatchDelegation{user_id: user.id, patch_id: patch.id})
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "converted_to_draft",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "draft" => true,
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+    _ = :sys.get_state(attemptor)
+
+    assert Repo.all(BorsNG.Database.Batch.all_for_patch(patch.id, :incomplete)) == []
+    assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
+    assert Repo.all(from(d in UserPatchDelegation, where: d.patch_id == ^patch.id)) == []
+
+    comments =
+      GitHub.ServerMock.get_state()
+      |> Map.get({{:installation, 31}, 13})
+      |> Map.get(:comments)
+      |> Map.get(1)
+
+    assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
+    assert Enum.any?(comments, &String.contains?(&1, "will ignore commands"))
+  end
+
+  test "ignore pull_request_review_comment commands on draft PR", %{conn: conn} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "comment" => %{
+        "body" => "bors ping",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      },
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "draft" => true,
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request_review_comment")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    comments =
+      GitHub.ServerMock.get_state()
+      |> Map.get({{:installation, 31}, 13})
+      |> Map.get(:comments)
+      |> Map.get(1)
+
+    assert comments == []
+  end
+
+  test "converting a running PR to draft posts canceled message and draft notice", %{
+    conn: conn,
+    project: proj
+  } do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true
+      })
+
+    batch =
+      Repo.insert!(%BorsNG.Database.Batch{
+        project_id: proj.id,
+        state: :running,
+        into_branch: "master",
+        last_polled: DateTime.to_unix(DateTime.utc_now(), :second) - 100
+      })
+
+    Repo.insert!(%BorsNG.Database.LinkPatchBatch{
+      patch_id: patch.id,
+      batch_id: batch.id,
+      reviewer: "rvr"
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "converted_to_draft",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "draft" => true,
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+
+    comments =
+      GitHub.ServerMock.get_state()
+      |> Map.get({{:installation, 31}, 13})
+      |> Map.get(:comments)
+      |> Map.get(1)
+
+    assert Enum.any?(comments, &(&1 == "Canceled."))
+    assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
   end
 
   def wait_until_other_branch_is_removed do

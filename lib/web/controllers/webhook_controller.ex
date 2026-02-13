@@ -66,7 +66,9 @@ defmodule BorsNG.WebhookController do
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.BranchDeleter
   alias BorsNG.Command
+  alias BorsNG.Database.Attempt
   alias BorsNG.Database.Batch
+  alias BorsNG.Database.Context.Permission
   alias BorsNG.Database.Installation
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
@@ -182,28 +184,36 @@ defmodule BorsNG.WebhookController do
     is_created = conn.body_params["action"] == "created"
 
     if is_created do
-      project =
-        Repo.get_by!(Project,
-          repo_xref: conn.body_params["repository"]["id"]
-        )
-
-      commenter =
-        conn.body_params["comment"]["user"]
-        |> GitHub.User.from_json!()
-        |> Syncer.sync_user()
-
-      comment = conn.body_params["comment"]["body"]
       pr = GitHub.Pr.from_json!(conn.body_params["pull_request"])
 
-      %Command{
-        project: project,
-        commenter: commenter,
-        comment: comment,
-        pr_xref: conn.body_params["pull_request"]["number"],
-        pr: pr,
-        patch: Syncer.sync_patch(project.id, pr)
-      }
-      |> Command.run()
+      if pr.draft do
+        Logger.debug([
+          "Ignoring pull_request_review_comment command for draft PR: ",
+          conn.body_params["pull_request"]["number"]
+        ])
+      else
+        project =
+          Repo.get_by!(Project,
+            repo_xref: conn.body_params["repository"]["id"]
+          )
+
+        commenter =
+          conn.body_params["comment"]["user"]
+          |> GitHub.User.from_json!()
+          |> Syncer.sync_user()
+
+        comment = conn.body_params["comment"]["body"]
+
+        %Command{
+          project: project,
+          commenter: commenter,
+          comment: comment,
+          pr_xref: conn.body_params["pull_request"]["number"],
+          pr: pr,
+          patch: Syncer.sync_patch(project.id, pr)
+        }
+        |> Command.run()
+      end
     end
   end
 
@@ -211,28 +221,36 @@ defmodule BorsNG.WebhookController do
     is_submitted = conn.body_params["action"] == "submitted"
 
     if is_submitted do
-      project =
-        Repo.get_by!(Project,
-          repo_xref: conn.body_params["repository"]["id"]
-        )
-
-      commenter =
-        conn.body_params["review"]["user"]
-        |> GitHub.User.from_json!()
-        |> Syncer.sync_user()
-
-      comment = conn.body_params["review"]["body"]
       pr = GitHub.Pr.from_json!(conn.body_params["pull_request"])
 
-      %Command{
-        project: project,
-        commenter: commenter,
-        comment: comment,
-        pr_xref: conn.body_params["pull_request"]["number"],
-        pr: pr,
-        patch: Syncer.sync_patch(project.id, pr)
-      }
-      |> Command.run()
+      if pr.draft do
+        Logger.debug([
+          "Ignoring pull_request_review command for draft PR: ",
+          conn.body_params["pull_request"]["number"]
+        ])
+      else
+        project =
+          Repo.get_by!(Project,
+            repo_xref: conn.body_params["repository"]["id"]
+          )
+
+        commenter =
+          conn.body_params["review"]["user"]
+          |> GitHub.User.from_json!()
+          |> Syncer.sync_user()
+
+        comment = conn.body_params["review"]["body"]
+
+        %Command{
+          project: project,
+          commenter: commenter,
+          comment: comment,
+          pr_xref: conn.body_params["pull_request"]["number"],
+          pr: pr,
+          patch: Syncer.sync_patch(project.id, pr)
+        }
+        |> Command.run()
+      end
     end
   end
 
@@ -326,8 +344,43 @@ defmodule BorsNG.WebhookController do
     })
   end
 
-  def do_webhook_pr(conn, %{is_draft: true}) do
-    Logger.debug(["Ignoring draft PR: ", conn.body_params["pull_request"]["number"]])
+  def do_webhook_pr(_conn, %{is_draft: true, project: project, patch: patch, action: action})
+      when action != "closed" do
+    had_incomplete_batch =
+      patch.id
+      |> Batch.all_for_patch(:incomplete)
+      |> Repo.one()
+      |> Kernel.is_nil()
+      |> Kernel.not()
+
+    had_incomplete_attempt =
+      patch.id
+      |> Attempt.all_for_patch(:incomplete)
+      |> Repo.one()
+      |> Kernel.is_nil()
+      |> Kernel.not()
+
+    {delegation_count, _} = Permission.undelegate_patch(patch.id)
+
+    if had_incomplete_batch do
+      batcher = Batcher.Registry.get(project.id)
+      Batcher.cancel(batcher, patch.id)
+    end
+
+    if had_incomplete_attempt do
+      attemptor = Attemptor.Registry.get(project.id)
+      Attemptor.cancel(attemptor, patch.id)
+    end
+
+    if action == "converted_to_draft" or had_incomplete_batch or had_incomplete_attempt or
+         delegation_count > 0 do
+      project.repo_xref
+      |> Project.installation_connection(Repo)
+      |> GitHub.post_comment!(
+        patch.pr_xref,
+        draft_mode_message(had_incomplete_batch, had_incomplete_attempt, delegation_count)
+      )
+    end
   end
 
   def do_webhook_pr(conn, %{
@@ -401,4 +454,26 @@ defmodule BorsNG.WebhookController do
   def do_webhook_pr(_conn, %{action: action}) do
     Logger.info(["WebhookController: Got unknown action: ", action])
   end
+
+  defp draft_mode_message(had_incomplete_batch, had_incomplete_attempt, delegation_count) do
+    action_summary =
+      []
+      |> maybe_prepend_action(had_incomplete_batch, "removed this PR from the merge queue")
+      |> maybe_prepend_action(had_incomplete_attempt, "canceled active try jobs")
+      |> maybe_prepend_action(delegation_count > 0, "removed existing delegations")
+      |> Enum.reverse()
+      |> case do
+        [] -> "No active bors state needed cleanup."
+        actions -> "I #{Enum.join(actions, ", ")}."
+      end
+
+    """
+    This pull request is now in draft mode. #{action_summary}
+
+    While this PR remains draft, bors will ignore commands on this PR. Mark it ready for review before using commands like `bors r+` or `bors try`.
+    """
+  end
+
+  defp maybe_prepend_action(actions, true, action), do: [action | actions]
+  defp maybe_prepend_action(actions, false, _action), do: actions
 end
