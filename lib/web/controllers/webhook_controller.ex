@@ -267,13 +267,21 @@ defmodule BorsNG.WebhookController do
 
     case {action, branch} do
       {"completed", ^staging_branch} ->
-        Batch
-        |> Repo.get_by!(commit: sha, project_id: project.id)
-        |> Batch.changeset(%{last_polled: 0})
-        |> Repo.update!()
+        case Repo.get_by(Batch, commit: sha, project_id: project.id) do
+          nil ->
+            Logger.debug([
+              "Ignoring check_suite completed for unknown staging commit: ",
+              sha
+            ])
 
-        batcher = Batcher.Registry.get(project.id)
-        Batcher.poll(batcher)
+          batch ->
+            batch
+            |> Batch.changeset(%{last_polled: 0})
+            |> Repo.update!()
+
+            batcher = Batcher.Registry.get(project.id)
+            Batcher.poll(batcher)
+        end
 
       {"completed", ^trying_branch} ->
         attemptor = Attemptor.Registry.get(project.id)

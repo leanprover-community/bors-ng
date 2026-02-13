@@ -556,6 +556,24 @@ defmodule BorsNG.WebhookControllerTest do
     assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
   end
 
+  test "ignore check_suite completed for unknown staging commit", %{conn: conn} do
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "completed",
+      "check_suite" => %{
+        "head_branch" => "staging",
+        "head_sha" => "missing_batch_commit"
+      }
+    }
+
+    conn =
+      conn
+      |> put_req_header("x-github-event", "check_suite")
+      |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert conn.status == 200
+  end
+
   def wait_until_other_branch_is_removed do
     branches =
       GitHub.ServerMock.get_state()
