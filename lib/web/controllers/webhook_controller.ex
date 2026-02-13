@@ -417,6 +417,8 @@ defmodule BorsNG.WebhookController do
     batcher = Batcher.Registry.get(project.id)
     # Batcher.cancel is the same as running bors r-
     Batcher.cancel(batcher, p.id)
+    attemptor = Attemptor.Registry.get(project.id)
+    Attemptor.cancel(attemptor, p.id)
     BranchDeleter.delete(p)
   end
 
@@ -429,6 +431,8 @@ defmodule BorsNG.WebhookController do
   def do_webhook_pr(conn, %{action: "synchronize", project: pro, patch: p}) do
     batcher = Batcher.Registry.get(pro.id)
     Batcher.cancel(batcher, p.id)
+    attemptor = Attemptor.Registry.get(pro.id)
+    Attemptor.cancel(attemptor, p.id)
     commit = conn.body_params["pull_request"]["head"]["sha"]
     Repo.update!(Patch.changeset(p, %{commit: commit}))
   end

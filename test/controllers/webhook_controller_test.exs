@@ -250,6 +250,17 @@ defmodule BorsNG.WebhookControllerTest do
       reviewer: "rvr"
     })
 
+    now = DateTime.to_unix(DateTime.utc_now(), :second)
+
+    Attempt.new(patch, "")
+    |> Attempt.changeset(%{
+      state: :running,
+      commit: "TRY",
+      timeout_at: now + 3600,
+      last_polled: now
+    })
+    |> Repo.insert!()
+
     # Send PR closed webhook
     body_params = %{
       "repository" => %{"id" => 13},
@@ -273,7 +284,9 @@ defmodule BorsNG.WebhookControllerTest do
 
     # Ensure the batcher processed the cancel cast by doing a synchronous call
     batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
     :ok = BorsNG.Worker.Batcher.set_is_single(batcher, patch.id, false)
+    _ = :sys.get_state(attemptor)
 
     # Patch should be closed
     patch2 = Repo.get!(Patch, patch.id)
@@ -284,6 +297,56 @@ defmodule BorsNG.WebhookControllerTest do
              []
 
     assert Repo.get(BorsNG.Database.Batch, batch.id) == nil
+    assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
+  end
+
+  test "synchronize webhook cancels active try jobs", %{conn: conn, project: proj} do
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "A",
+        into_branch: "master",
+        open: true
+      })
+
+    now = DateTime.to_unix(DateTime.utc_now(), :second)
+
+    Attempt.new(patch, "")
+    |> Attempt.changeset(%{
+      state: :running,
+      commit: "TRY",
+      timeout_at: now + 3600,
+      last_polled: now
+    })
+    |> Repo.insert!()
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "synchronize",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "draft" => false,
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "B", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(attemptor)
+
+    assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
+    assert Repo.get!(Patch, patch.id).commit == "B"
   end
 
   test "converting a PR to draft cancels active work, removes delegations, and posts notice", %{

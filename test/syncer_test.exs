@@ -7,6 +7,9 @@ defmodule BorsNG.Worker.SyncerTest do
   alias BorsNG.GitHub
   alias BorsNG.Database.Repo
   alias BorsNG.Database.Installation
+  alias BorsNG.Database.Attempt
+  alias BorsNG.Database.Batch
+  alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Worker.Syncer
@@ -131,6 +134,65 @@ defmodule BorsNG.Worker.SyncerTest do
     assert p2.title == "Test PR X"
     assert p2.into_branch == "master"
     assert p2.open
+  end
+
+  test "close during synchronize cancels running merge and try work", %{
+    proj: proj,
+    proj_conn: proj_conn
+  } do
+    GitHub.ServerMock.put_state(%{
+      proj_conn => %{
+        pulls: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        collaborators: []
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        title: "Test PR",
+        into_branch: "master",
+        open: true
+      })
+
+    batch =
+      Repo.insert!(%Batch{
+        project_id: proj.id,
+        state: :waiting,
+        into_branch: "master",
+        last_polled: DateTime.to_unix(DateTime.utc_now(), :second) - 100
+      })
+
+    Repo.insert!(%LinkPatchBatch{
+      patch_id: patch.id,
+      batch_id: batch.id,
+      reviewer: "rvr"
+    })
+
+    now = DateTime.to_unix(DateTime.utc_now(), :second)
+
+    Attempt.new(patch, "")
+    |> Attempt.changeset(%{
+      state: :running,
+      commit: "TRY",
+      timeout_at: now + 3600,
+      last_polled: now
+    })
+    |> Repo.insert!()
+
+    Syncer.synchronize_project(proj.id)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    :ok = BorsNG.Worker.Batcher.set_is_single(batcher, patch.id, false)
+    _ = :sys.get_state(attemptor)
+
+    refute Repo.get!(Patch, patch.id).open
+    assert Repo.all(Batch.all_for_patch(patch.id, :incomplete)) == []
+    assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
   end
 
   test "update commit on changed patch", %{proj: proj, proj_conn: proj_conn} do

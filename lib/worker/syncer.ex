@@ -6,6 +6,8 @@ defmodule BorsNG.Worker.Syncer do
   """
 
   alias BorsNG.Worker.Syncer
+  alias BorsNG.Worker.Attemptor
+  alias BorsNG.Worker.Batcher
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
@@ -135,7 +137,12 @@ defmodule BorsNG.Worker.Syncer do
     sync_patch(project_id, pr)
   end
 
-  def do_synchronize!(_project_id, {:close, patch}) do
+  def do_synchronize!(project_id, {:close, patch}) do
+    batcher = Batcher.Registry.get(project_id)
+    Batcher.cancel(batcher, patch.id)
+    attemptor = Attemptor.Registry.get(project_id)
+    Attemptor.cancel(attemptor, patch.id)
+
     patch
     |> Patch.changeset(%{open: false})
     |> Repo.update!()
