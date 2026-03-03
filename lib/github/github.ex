@@ -329,16 +329,19 @@ defmodule BorsNG.GitHub do
     :ok
   end
 
-  @spec get_user_by_login!(ttoken, binary) :: {:ok, tuser} | :error | nil
+  @spec get_user_by_login!(ttoken, binary) :: tuser | nil
   def get_user_by_login!(token, login) do
-    {:ok, user} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_user_by_login, token, {String.trim(login)}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
-
+    {:ok, user} = get_user_by_login(token, login)
     user
+  end
+
+  @spec get_user_by_login(ttoken, binary) :: {:ok, tuser | nil} | {:error, term}
+  def get_user_by_login(token, login) do
+    GenServer.call(
+      BorsNG.GitHub,
+      {:get_user_by_login, token, {String.trim(login)}},
+      Confex.fetch_env!(:bors, :api_github_timeout)
+    )
   end
 
   @spec belongs_to_team?(tconn, String.t(), String.t(), String.t()) ::
