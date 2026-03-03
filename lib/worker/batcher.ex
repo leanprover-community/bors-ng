@@ -574,90 +574,73 @@ defmodule BorsNG.Worker.Batcher do
                 Logger.debug("Patch Link #{inspect(patch_link)}")
                 Logger.debug("Patch #{inspect(patch_link.patch)}")
 
-                {:ok, commits} = GitHub.get_pr_commits(repo_conn, patch_link.patch.pr_xref)
-                {:ok, pr} = GitHub.get_pr(repo_conn, patch_link.patch.pr_xref)
-
-                {token, _} = repo_conn
-                user = GitHub.get_user_by_login!(token, pr.user.login)
-
-                Logger.debug("PR #{inspect(pr)}")
-                Logger.debug("User #{inspect(user)}")
-
-                # If a user doesn't have a public email address in their GH profile
-                # then use their ID based email
-                user_email =
-                  if user.email != nil do
-                    user.email
-                  else
-                    "#{user.id}+#{user.login}@users.noreply.github.com"
-                  end
-
-                user_name = user.name || user.login
-
-                # The head sha is the final commit in the PR.
-                source_sha = pr.head_sha
-                Logger.info("Staging branch #{stmp}")
-                Logger.info("Commit sha #{source_sha}")
-
-                # Create a merge commit for each PR
-                # because each PR is merged on top of each other in stmp, we can verify against any merge conflicts
-                merge_commit =
-                  GitHub.merge_branch!(
-                    repo_conn,
-                    %{
-                      from: source_sha,
-                      to: stmp,
-                      commit_message:
-                        "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{source_sha}"
-                    }
-                  )
-
-                Logger.info("Merge Commit #{inspect(merge_commit)}")
-
-                Logger.info("Previous Head #{inspect(prev_head)}")
-
-                # Then compress the merge commit into tree into a single commit
-                # append it to the previous commit
-                # Because the merges are iterative the contain *only* the changes from the PR vs the previous PR(or head)
-
-                commit_message =
-                  Batcher.Message.generate_squash_commit_message(
-                    pr,
-                    commits,
-                    user_email,
-                    user_name,
-                    toml.cut_body_after
-                  )
-
                 cpt =
-                  case merge_commit do
-                    :conflict ->
-                      :conflict
+                  case get_squash_pr_data(repo_conn, patch_link.patch, toml) do
+                    {:ok,
+                     %{
+                       commit_message: commit_message,
+                       source_sha: source_sha,
+                       committer: committer
+                     }} ->
+                      Logger.info("Staging branch #{stmp}")
+                      Logger.info("Commit sha #{source_sha}")
 
-                    _ ->
-                      case GitHub.create_commit(
-                             repo_conn,
-                             %{
-                               tree: merge_commit.tree,
-                               parents: [prev_head],
-                               commit_message: commit_message,
-                               committer: %{name: user_name, email: user_email}
-                             }
-                           ) do
-                        {:ok, commit_sha} ->
-                          commit_sha
+                      # Create a merge commit for each PR
+                      # because each PR is merged on top of each other in stmp, we can verify against any merge conflicts
+                      merge_commit =
+                        GitHub.merge_branch!(
+                          repo_conn,
+                          %{
+                            from: source_sha,
+                            to: stmp,
+                            commit_message:
+                              "[ci skip][skip ci][skip netlify] -bors-staging-tmp-#{source_sha}"
+                          }
+                        )
 
-                        {:error, :create_commit, status, _body, request_id} = error ->
-                          Logger.warning(
-                            "start_waiting_merged_batch: create_commit failed with status #{status}, request_id=#{inspect(request_id)}"
-                          )
+                      Logger.info("Merge Commit #{inspect(merge_commit)}")
 
-                          error
+                      Logger.info("Previous Head #{inspect(prev_head)}")
 
-                        {:error, :create_commit} = error ->
-                          Logger.warning("start_waiting_merged_batch: create_commit failed")
-                          error
+                      # Then compress the merge commit into tree into a single commit
+                      # append it to the previous commit
+                      # Because the merges are iterative the contain *only* the changes from the PR vs the previous PR(or head)
+                      case merge_commit do
+                        :conflict ->
+                          :conflict
+
+                        _ ->
+                          case GitHub.create_commit(
+                                 repo_conn,
+                                 %{
+                                   tree: merge_commit.tree,
+                                   parents: [prev_head],
+                                   commit_message: commit_message,
+                                   committer: committer
+                                 }
+                               ) do
+                            {:ok, commit_sha} ->
+                              commit_sha
+
+                            {:error, :create_commit, status, _body, request_id} = error ->
+                              Logger.warning(
+                                "start_waiting_merged_batch: create_commit failed with status #{status}, request_id=#{inspect(request_id)}"
+                              )
+
+                              error
+
+                            {:error, :create_commit} = error ->
+                              Logger.warning("start_waiting_merged_batch: create_commit failed")
+                              error
+                          end
                       end
+
+                    {:error, reason} = error ->
+                      Logger.warning(
+                        "start_waiting_merged_batch: unable to build squash commit metadata for PR #{patch_link.patch.pr_xref}: #{inspect(reason)}"
+                      )
+
+                      error
                   end
 
                 Logger.info("Commit Sha #{inspect(cpt)}")
@@ -666,10 +649,10 @@ defmodule BorsNG.Worker.Batcher do
                   :conflict ->
                     {:halt, :conflict}
 
-                  {:error, :create_commit} = error ->
+                  {:error, _, _, _, _} = error ->
                     {:halt, error}
 
-                  {:error, _, _, _, _} = error ->
+                  {:error, _} = error ->
                     {:halt, error}
 
                   commit_sha ->
@@ -680,10 +663,10 @@ defmodule BorsNG.Worker.Batcher do
             GitHub.delete_branch!(repo_conn, stmp)
 
             case new_head do
-              {:error, :create_commit} = error ->
+              {:error, _, _, _, _} = error ->
                 error
 
-              {:error, _, _, _, _} = error ->
+              {:error, _} = error ->
                 error
 
               head ->
@@ -696,10 +679,10 @@ defmodule BorsNG.Worker.Batcher do
 
         if toml.use_squash_merge do
           case parents do
-            {:error, :create_commit} ->
+            {:error, _, _, _, _} ->
               {:error, nil}
 
-            {:error, _, _, _, _} ->
+            {:error, _} ->
               {:error, nil}
 
             _ ->
@@ -770,6 +753,51 @@ defmodule BorsNG.Worker.Batcher do
 
     {:error, nil}
   end
+
+  defp get_squash_pr_data(repo_conn, patch, toml) do
+    with {:ok, commits} <- GitHub.get_pr_commits(repo_conn, patch.pr_xref),
+         {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref),
+         {:ok, user_email, user_name} <- get_squash_author(repo_conn, pr) do
+      commit_message =
+        Batcher.Message.generate_squash_commit_message(
+          pr,
+          commits,
+          user_email,
+          user_name,
+          toml.cut_body_after
+        )
+
+      {:ok,
+       %{
+         commit_message: commit_message,
+         source_sha: pr.head_sha,
+         committer: %{name: user_name, email: user_email}
+       }}
+    end
+  end
+
+  defp get_squash_author({token, _repo_xref}, pr) when not is_nil(pr.user) do
+    case GitHub.get_user_by_login(token, pr.user.login) do
+      {:ok, nil} ->
+        {:ok, "#{pr.user.id}+#{pr.user.login}@users.noreply.github.com", pr.user.login}
+
+      {:ok, user} ->
+        user_email =
+          if user.email != nil do
+            user.email
+          else
+            "#{user.id}+#{user.login}@users.noreply.github.com"
+          end
+
+        user_name = user.name || user.login
+        {:ok, user_email, user_name}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp get_squash_author(_, _), do: {:error, :missing_pr_user}
 
   def gather_co_authors(batch, patch_links) do
     repo_conn = get_repo_conn(batch.project)

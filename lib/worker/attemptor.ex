@@ -233,30 +233,38 @@ defmodule BorsNG.Worker.Attemptor do
           {:ok, toml} ->
             commit_result =
               if toml.use_squash_merge do
-                {commit_message, committer} = build_try_squash_commit(repo_conn, patch, toml)
+                case build_try_squash_commit(repo_conn, patch, toml) do
+                  {:ok, {commit_message, committer}} ->
+                    case GitHub.create_commit(
+                           repo_conn,
+                           %{
+                             tree: merged.tree,
+                             parents: [base.commit],
+                             commit_message: commit_message,
+                             committer: committer
+                           }
+                         ) do
+                      {:ok, commit} ->
+                        GitHub.force_push!(repo_conn, commit, project.trying_branch)
+                        {:ok, commit}
 
-                case GitHub.create_commit(
-                       repo_conn,
-                       %{
-                         tree: merged.tree,
-                         parents: [base.commit],
-                         commit_message: commit_message,
-                         committer: committer
-                       }
-                     ) do
-                  {:ok, commit} ->
-                    GitHub.force_push!(repo_conn, commit, project.trying_branch)
-                    {:ok, commit}
+                      {:error, :create_commit, status, _body, request_id} = error ->
+                        Logger.warning(
+                          "start_attempt: create_commit failed with status #{status}, request_id=#{inspect(request_id)}"
+                        )
 
-                  {:error, :create_commit, status, _body, request_id} = error ->
+                        error
+
+                      {:error, :create_commit} = error ->
+                        Logger.warning("start_attempt: create_commit failed")
+                        error
+                    end
+
+                  {:error, reason} = error ->
                     Logger.warning(
-                      "start_attempt: create_commit failed with status #{status}, request_id=#{inspect(request_id)}"
+                      "start_attempt: unable to build squash commit metadata: #{inspect(reason)}"
                     )
 
-                    error
-
-                  {:error, :create_commit} = error ->
-                    Logger.warning("start_attempt: create_commit failed")
                     error
                 end
               else
@@ -294,6 +302,11 @@ defmodule BorsNG.Worker.Attemptor do
                 |> Repo.update!()
 
               {:error, :create_commit} ->
+                attempt
+                |> Attempt.changeset(%{state: :error})
+                |> Repo.update!()
+
+              {:error, _reason} ->
                 attempt
                 |> Attempt.changeset(%{state: :error})
                 |> Repo.update!()
@@ -453,32 +466,44 @@ defmodule BorsNG.Worker.Attemptor do
   end
 
   defp build_try_squash_commit(repo_conn, patch, toml) do
-    {:ok, commits} = GitHub.get_pr_commits(repo_conn, patch.pr_xref)
-    {:ok, pr} = GitHub.get_pr(repo_conn, patch.pr_xref)
+    with {:ok, commits} <- GitHub.get_pr_commits(repo_conn, patch.pr_xref),
+         {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref),
+         {:ok, user_email, user_name} <- get_squash_author(repo_conn, pr) do
+      commit_message =
+        Batcher.Message.generate_squash_commit_message(
+          pr,
+          commits,
+          user_email,
+          user_name,
+          toml.cut_body_after
+        )
 
-    {token, _} = repo_conn
-    user = GitHub.get_user_by_login!(token, pr.user.login)
-
-    user_email =
-      if user.email != nil do
-        user.email
-      else
-        "#{user.id}+#{user.login}@users.noreply.github.com"
-      end
-
-    user_name = user.name || user.login
-
-    commit_message =
-      Batcher.Message.generate_squash_commit_message(
-        pr,
-        commits,
-        user_email,
-        user_name,
-        toml.cut_body_after
-      )
-
-    {commit_message, %{name: user_name, email: user_email}}
+      {:ok, {commit_message, %{name: user_name, email: user_email}}}
+    end
   end
+
+  defp get_squash_author({token, _repo_xref}, pr) when not is_nil(pr.user) do
+    case GitHub.get_user_by_login(token, pr.user.login) do
+      {:ok, nil} ->
+        {:ok, "#{pr.user.id}+#{pr.user.login}@users.noreply.github.com", pr.user.login}
+
+      {:ok, user} ->
+        user_email =
+          if user.email != nil do
+            user.email
+          else
+            "#{user.id}+#{user.login}@users.noreply.github.com"
+          end
+
+        user_name = user.name || user.login
+        {:ok, user_email, user_name}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp get_squash_author(_, _), do: {:error, :missing_pr_user}
 
   defp try_arguments_suffix(arguments) do
     case arguments do
