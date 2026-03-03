@@ -1221,53 +1221,66 @@ defmodule BorsNG.Worker.Batcher do
       {:ok, code_owner} = Batcher.GetCodeOwners.get(repo_conn, patch.into_branch)
       Logger.info("CODEOWNERS file #{inspect(code_owner)}")
 
-      {:ok, files} = GitHub.get_pr_files(repo_conn, patch.pr_xref)
-      Logger.info("Files found: #{inspect(files)}")
+      case GitHub.get_pr_files(repo_conn, patch.pr_xref) do
+        {:ok, files} ->
+          Logger.info("Files found: #{inspect(files)}")
 
-      required_reviews = BorsNG.CodeOwnerParser.list_required_reviews(code_owner, files)
+          required_reviews = BorsNG.CodeOwnerParser.list_required_reviews(code_owner, files)
 
-      passed_review =
-        repo_conn
-        |> GitHub.get_reviews!(patch.pr_xref)
+          passed_review =
+            repo_conn
+            |> GitHub.get_reviews!(patch.pr_xref)
 
-      Logger.info("Passed reviews: #{inspect(passed_review)}")
+          Logger.info("Passed reviews: #{inspect(passed_review)}")
 
-      # Convert the list of required reviewers into a list of true/false
-      # true indicates that the reviewers requirement was satisfied,
-      # false if it is open
-      approved_reviews =
-        Enum.map(required_reviews, fn x ->
-          # Convert a list of OR reviewers into a true or false
-          Enum.any?(x, fn required ->
-            if String.contains?(required, "/") do
-              # Remove leading @ for team name
-              # Split into org name and team name
-              [org_name, team_name | _] =
-                String.slice(required, 1, String.length(required) - 1)
-                |> String.split("/")
+          # Convert the list of required reviewers into a list of true/false
+          # true indicates that the reviewers requirement was satisfied,
+          # false if it is open
+          approved_reviews =
+            Enum.map(required_reviews, fn x ->
+              # Convert a list of OR reviewers into a true or false
+              Enum.any?(x, fn required ->
+                if String.contains?(required, "/") do
+                  # Remove leading @ for team name
+                  # Split into org name and team name
+                  [org_name, team_name | _] =
+                    String.slice(required, 1, String.length(required) - 1)
+                    |> String.split("/")
 
-              # Loop through reviewers, if they on the team accept their approval
-              team_approved =
-                Enum.any?(passed_review["approvers"], fn username ->
-                  GitHub.belongs_to_team?(repo_conn, org_name, team_name, username)
-                end)
+                  # Loop through reviewers, if they on the team accept their approval
+                  team_approved =
+                    Enum.any?(passed_review["approvers"], fn username ->
+                      GitHub.belongs_to_team?(repo_conn, org_name, team_name, username)
+                    end)
 
-              Logger.info("Approved: #{inspect(team_approved)}")
-              team_approved
-            else
-              Enum.any?(passed_review["approvers"], fn username ->
-                String.slice(required, 1, String.length(required) - 1) == username
+                  Logger.info("Approved: #{inspect(team_approved)}")
+                  team_approved
+                else
+                  Enum.any?(passed_review["approvers"], fn username ->
+                    String.slice(required, 1, String.length(required) - 1) == username
+                  end)
+                end
               end)
-            end
-          end)
-        end)
+            end)
 
-      code_owner_approval = Enum.reduce(approved_reviews, true, fn x, acc -> x && acc end)
+          code_owner_approval = Enum.reduce(approved_reviews, true, fn x, acc -> x && acc end)
 
-      Logger.info("Approved reviews: #{inspect(approved_reviews)}")
-      Logger.info("Code Owner approval: #{inspect(code_owner_approval)}")
+          Logger.info("Approved reviews: #{inspect(approved_reviews)}")
+          Logger.info("Code Owner approval: #{inspect(code_owner_approval)}")
 
-      code_owner_approval
+          code_owner_approval
+
+        {:error, :get_pr_files, status, _} ->
+          Logger.warning(
+            "check_code_owner: get_pr_files failed for PR #{patch.pr_xref} with status #{status}"
+          )
+
+          false
+
+        {:error, :get_pr_files} ->
+          Logger.warning("check_code_owner: get_pr_files failed for PR #{patch.pr_xref}")
+          false
+      end
     end
   end
 

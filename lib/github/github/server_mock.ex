@@ -99,7 +99,8 @@ defmodule BorsNG.GitHub.ServerMock do
           },
           :users => %{bitstring => tuser},
           :merge_conflict => integer,
-          :create_commit_error => integer
+          :create_commit_error => integer,
+          :get_pr_files_error => integer
         }
 
   def put_state(state) do
@@ -189,18 +190,43 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(
+        :get_pr_files,
+        repo_conn,
+        params,
+        %{get_pr_files_error: 0} = state
+      ) do
+    do_handle_call(
+      :get_pr_files,
+      repo_conn,
+      params,
+      %{state | :get_pr_files_error => nil}
+    )
+  end
+
+  def do_handle_call(
+        :get_pr_files,
+        _repo_conn,
+        {pr_xref},
+        %{get_pr_files_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    {{:error, :get_pr_files, 502, pr_xref}, %{state | :get_pr_files_error => n - 1}}
+  end
+
   def do_handle_call(:get_pr_files, repo_conn, {_pr_xref}, state) do
-    files =
-      with {:ok, repo} <- Map.fetch(state, repo_conn),
-           {:ok, files} <- Map.fetch(repo, :files) do
-        Enum.map(files["Z"], fn {k, _} ->
+    with {:ok, repo} <- Map.fetch(state, repo_conn),
+         {:ok, files} <- Map.fetch(repo, :files),
+         {:ok, z_files} <- Map.fetch(files, "Z") do
+      files =
+        Enum.map(z_files, fn {k, _} ->
           %BorsNG.GitHub.File{filename: k}
         end)
-      else
-        _ -> {{:error, :get_pr_files}, state}
-      end
 
-    {{:ok, files}, state}
+      {{:ok, files}, state}
+    else
+      _ -> {{:error, :get_pr_files}, state}
+    end
   end
 
   def do_handle_call(:get_pr_commits, repo_conn, {pr_xref}, state) do

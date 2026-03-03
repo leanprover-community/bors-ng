@@ -608,6 +608,71 @@ defmodule BorsNG.Worker.BatcherTest do
     assert [] == Repo.all(Batch)
   end
 
+  test "rejects patch when get_pr_files fails during CODEOWNERS check", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        teams: %{
+          "my_org" => %{
+            "my_team" => %{}
+          }
+        },
+        statuses: %{"Z" => %{"cn" => :ok}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        reviews: %{1 => %{"APPROVED" => 0, "CHANGES_REQUESTED" => 0, "approvers" => []}},
+        files: %{
+          "Z" => %{
+            "bors.toml" => ~s"""
+            status = [ "ci" ]
+            pr_status = [ "cn" ]
+            use_codeowners = true
+            """
+          },
+          "master" => %{
+            ".github/CODEOWNERS" => ~s"""
+            bors.toml               @my_org/my_team
+            """
+          }
+        }
+      },
+      get_pr_files_error: 1
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "Z",
+        into_branch: "master"
+      }
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvrr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+
+    assert repo.comments[1] == [":-1: Rejected because of missing code owner approval"]
+    assert repo.statuses["Z"]["cn"] == :ok
+
+    # When preflight checks reject a patch, no batch should be created.
+    assert [] == Repo.all(Batch)
+  end
+
   test "rejects a patch with missing require reviewers - path docs/CODEOWNERS", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
