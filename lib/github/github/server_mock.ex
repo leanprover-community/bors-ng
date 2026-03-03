@@ -101,7 +101,9 @@ defmodule BorsNG.GitHub.ServerMock do
           :merge_conflict => integer,
           :create_commit_error => integer,
           :get_pr_files_error => integer,
-          :get_commit_status_error => integer
+          :get_commit_status_error => integer,
+          :get_labels_error => integer,
+          :get_reviews_error => integer
         }
 
   def put_state(state) do
@@ -531,6 +533,30 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(
+        :get_labels,
+        repo_conn,
+        params,
+        %{get_labels_error: 0} = state
+      ) do
+    do_handle_call(
+      :get_labels,
+      repo_conn,
+      params,
+      %{state | :get_labels_error => nil}
+    )
+  end
+
+  def do_handle_call(
+        :get_labels,
+        _repo_conn,
+        {_issue_xref},
+        %{get_labels_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    {{:error, :get_labels, 502, "Bad Gateway"}, %{state | :get_labels_error => n - 1}}
+  end
+
   def do_handle_call(:get_labels, repo_conn, {issue_xref}, state) do
     with(
       {:ok, repo} <- Map.fetch(state, repo_conn),
@@ -541,6 +567,30 @@ defmodule BorsNG.GitHub.ServerMock do
       {:ok, _} = res -> {res, state}
       _ -> {{:ok, []}, state}
     end
+  end
+
+  def do_handle_call(
+        :get_reviews,
+        repo_conn,
+        params,
+        %{get_reviews_error: 0} = state
+      ) do
+    do_handle_call(
+      :get_reviews,
+      repo_conn,
+      params,
+      %{state | :get_reviews_error => nil}
+    )
+  end
+
+  def do_handle_call(
+        :get_reviews,
+        _repo_conn,
+        {_issue_xref, _sha},
+        %{get_reviews_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    {{:error, :get_reviews, 502, "Bad Gateway"}, %{state | :get_reviews_error => n - 1}}
   end
 
   def do_handle_call(:get_reviews, repo_conn, {issue_xref, sha}, state) do
