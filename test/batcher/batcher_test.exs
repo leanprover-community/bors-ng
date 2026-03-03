@@ -1231,6 +1231,44 @@ defmodule BorsNG.Worker.BatcherTest do
            }
   end
 
+  test "times out immediately when prerun timeout is zero", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{
+          "Z" => %{
+            "bors.toml" => ~s"""
+            status = [ "ci" ]
+            pr_status = [ "cn" ]
+            prerun_timeout_sec = 0
+            """
+          }
+        }
+      }
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "Z",
+        into_branch: "master"
+      }
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+
+    assert state[{{:installation, 91}, 14}].comments[1] == [
+             "GitHub status checks took too long to complete, so bors is giving up. You can adjust bors configuration to have it wait longer if you like."
+           ]
+
+    assert [] == Repo.all(Batch)
+  end
+
   test "waits when get_labels fails during preflight", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

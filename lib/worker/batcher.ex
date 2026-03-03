@@ -162,18 +162,11 @@ defmodule BorsNG.Worker.Batcher do
           {:ok, max_batch_size} ->
             run(reviewer, patch, max_batch_size)
 
+          {:waiting, toml} ->
+            handle_waiting_preflight(repo_conn, reviewer, patch, 0, toml)
+
           :waiting ->
-            {:ok, toml} = Batcher.GetBorsToml.get(repo_conn, patch.commit)
-
-            case toml.prerun_timeout_sec do
-              0 ->
-                send_message(repo_conn, [patch], {:preflight, :timeout})
-
-              _ ->
-                send_message(repo_conn, [patch], {:preflight, :waiting})
-                Logger.info("Start Poll Patch #{patch.id} prerun")
-                Process.send_after(self(), {:prerun_poll, 0, {reviewer, patch}}, 0)
-            end
+            handle_waiting_preflight(repo_conn, reviewer, patch, 0)
 
           {:error, message} ->
             send_message(repo_conn, [patch], {:preflight, message})
@@ -265,20 +258,15 @@ defmodule BorsNG.Worker.Batcher do
         Logger.info("Patch #{patch.id} already left prerun, exiting prerun poll loop")
 
       _ ->
-        {:ok, toml} = Batcher.GetBorsToml.get(repo_conn, patch.commit)
-
-        prerun_timeout_ms = toml.prerun_timeout_sec * 1000
-        elapsed = try_num * @prerun_poll_period
-
         case patch_preflight(repo_conn, patch) do
           {:ok, max_batch_size} ->
             run(reviewer, patch, max_batch_size)
 
-          :waiting when elapsed > prerun_timeout_ms ->
-            send_message(repo_conn, [patch], {:preflight, :timeout})
+          {:waiting, toml} ->
+            handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml)
 
           :waiting ->
-            Process.send_after(self(), {:prerun_poll, try_num + 1, args}, @prerun_poll_period)
+            handle_waiting_preflight(repo_conn, reviewer, patch, try_num)
 
           {:error, message} ->
             send_message(repo_conn, [patch], {:preflight, message})
@@ -1216,8 +1204,8 @@ defmodule BorsNG.Worker.Batcher do
         {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
         {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
         {_, false, _, _, _, _, _} -> {:error, :pr_status}
-        {_, _, false, _, _, _, _} -> :waiting
-        {_, _, _, false, _, _, _} -> :waiting
+        {_, _, false, _, _, _, _} -> {:waiting, toml}
+        {_, _, _, false, _, _, _} -> {:waiting, toml}
         {_, _, _, _, _, _, :insufficient} -> {:error, :insufficient_up_to_date_approvals}
       end
     else
@@ -1226,7 +1214,7 @@ defmodule BorsNG.Worker.Batcher do
           "patch_preflight: transient GitHub read failure for patch #{patch.id}: #{inspect(error)}"
         )
 
-        :waiting
+        {:waiting, toml}
     end
   end
 
@@ -1235,6 +1223,35 @@ defmodule BorsNG.Worker.Batcher do
       GitHub.get_commit_reviews(repo_conn, patch.pr_xref, patch.commit)
     else
       {:ok, nil}
+    end
+  end
+
+  defp handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml \\ nil) do
+    prerun_timeout_sec =
+      case toml do
+        nil -> 30 * 60
+        x -> x.prerun_timeout_sec
+      end
+
+    prerun_timeout_ms = prerun_timeout_sec * 1000
+    elapsed = try_num * @prerun_poll_period
+
+    cond do
+      prerun_timeout_sec == 0 ->
+        send_message(repo_conn, [patch], {:preflight, :timeout})
+
+      elapsed > prerun_timeout_ms ->
+        send_message(repo_conn, [patch], {:preflight, :timeout})
+
+      true ->
+        send_message(repo_conn, [patch], {:preflight, :waiting})
+        Logger.info("Start Poll Patch #{patch.id} prerun")
+
+        Process.send_after(
+          self(),
+          {:prerun_poll, try_num + 1, {reviewer, patch}},
+          @prerun_poll_period
+        )
     end
   end
 
