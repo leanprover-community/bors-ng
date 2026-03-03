@@ -1340,6 +1340,47 @@ defmodule BorsNG.Worker.BatcherTest do
     assert [] == Repo.all(Batch)
   end
 
+  test "waits when get_commit_reviews fails during preflight", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :ok}},
+        files: %{
+          "Z" => %{
+            "bors.toml" => ~s"""
+            status = [ "ci" ]
+            pr_status = [ "cn" ]
+            required_approvals = 1
+            up_to_date_approvals = true
+            """
+          }
+        },
+        reviews: %{1 => %{"APPROVED" => 1, "CHANGES_REQUESTED" => 0}}
+      },
+      get_reviews_error: 1
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "Z",
+        into_branch: "master"
+      }
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    state = GitHub.ServerMock.get_state()
+
+    assert state[{{:installation, 91}, 14}].comments[1] == [
+             ":clock1: Waiting for PR status (GitHub check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."
+           ]
+
+    assert [] == Repo.all(Batch)
+  end
+
   test "Poll on a pending (waiting) PR status. Then accept after that CI succeeds.", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
