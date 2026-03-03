@@ -1,4 +1,6 @@
 defmodule BorsNG.Worker.Attemptor do
+  require Logger
+
   @moduledoc """
   An "Attemptor" manages the set of running attempts (that is, "try jobs").
   It implements this set of rules:
@@ -229,48 +231,73 @@ defmodule BorsNG.Worker.Attemptor do
 
         case toml do
           {:ok, toml} ->
-            commit =
+            commit_result =
               if toml.use_squash_merge do
                 {commit_message, committer} = build_try_squash_commit(repo_conn, patch, toml)
 
-                commit =
-                  GitHub.create_commit!(
-                    repo_conn,
-                    %{
-                      tree: merged.tree,
-                      parents: [base.commit],
-                      commit_message: commit_message,
-                      committer: committer
-                    }
-                  )
+                case GitHub.create_commit(
+                       repo_conn,
+                       %{
+                         tree: merged.tree,
+                         parents: [base.commit],
+                         commit_message: commit_message,
+                         committer: committer
+                       }
+                     ) do
+                  {:ok, commit} ->
+                    GitHub.force_push!(repo_conn, commit, project.trying_branch)
+                    {:ok, commit}
 
-                GitHub.force_push!(repo_conn, commit, project.trying_branch)
-                commit
+                  {:error, :create_commit, status, _body, request_id} = error ->
+                    Logger.warning(
+                      "start_attempt: create_commit failed with status #{status}, request_id=#{inspect(request_id)}"
+                    )
+
+                    error
+
+                  {:error, :create_commit} = error ->
+                    Logger.warning("start_attempt: create_commit failed")
+                    error
+                end
               else
                 commit_message = build_try_commit_message(project, patch, arguments, toml)
 
-                GitHub.synthesize_commit!(
-                  repo_conn,
-                  %{
-                    branch: project.trying_branch,
-                    tree: merged.tree,
-                    parents: [base.commit, patch.commit],
-                    commit_message: commit_message,
-                    committer: toml.committer
-                  }
-                )
+                {:ok,
+                 GitHub.synthesize_commit!(
+                   repo_conn,
+                   %{
+                     branch: project.trying_branch,
+                     tree: merged.tree,
+                     parents: [base.commit, patch.commit],
+                     commit_message: commit_message,
+                     committer: toml.committer
+                   }
+                 )}
               end
 
-            state = setup_statuses(attempt, toml)
-            now = DateTime.to_unix(DateTime.utc_now(), :second)
+            case commit_result do
+              {:ok, commit} ->
+                state = setup_statuses(attempt, toml)
+                now = DateTime.to_unix(DateTime.utc_now(), :second)
 
-            attempt
-            |> Attempt.changeset(%{
-              state: state,
-              commit: commit,
-              last_polled: now
-            })
-            |> Repo.update!()
+                attempt
+                |> Attempt.changeset(%{
+                  state: state,
+                  commit: commit,
+                  last_polled: now
+                })
+                |> Repo.update!()
+
+              {:error, _, _, _, _} ->
+                attempt
+                |> Attempt.changeset(%{state: :error})
+                |> Repo.update!()
+
+              {:error, :create_commit} ->
+                attempt
+                |> Attempt.changeset(%{state: :error})
+                |> Repo.update!()
+            end
 
           {:error, message} ->
             setup_statuses_error(

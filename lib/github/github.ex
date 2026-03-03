@@ -205,12 +205,7 @@ defmodule BorsNG.GitHub do
           committer: tcommitter | nil
         }) :: binary
   def create_commit!(repo_conn, info) do
-    {:ok, sha} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:create_commit, repo_conn, {info}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
+    {:ok, sha} = create_commit(repo_conn, info)
 
     sha
   end
@@ -220,11 +215,16 @@ defmodule BorsNG.GitHub do
           parents: [bitstring],
           commit_message: bitstring,
           committer: tcommitter | nil
-        }) :: {:ok, binary} | {:error, term, term}
+        }) :: {:ok, binary} | {:error, term, term, term, term}
   def create_commit(repo_conn, info) do
+    call_with_retry(:create_commit, repo_conn, {info})
+  end
+
+  @spec get_file(tconn, binary, binary) :: {:ok, binary | nil} | {:error, term, term, term, term}
+  def get_file(repo_conn, branch, path) do
     GenServer.call(
       BorsNG.GitHub,
-      {:create_commit, repo_conn, {info}},
+      {:get_file, repo_conn, {branch, path}},
       Confex.fetch_env!(:bors, :api_github_timeout)
     )
   end
@@ -293,14 +293,21 @@ defmodule BorsNG.GitHub do
 
   @spec get_file!(tconn, binary, binary) :: binary | nil
   def get_file!(repo_conn, branch, path) do
-    {:ok, file} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_file, repo_conn, {branch, path}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
+    case call_with_retry(:get_file, repo_conn, {branch, path}, 500, 4_000) do
+      {:ok, file} ->
+        file
 
-    file
+      {:error, :get_file, status, _body, request_id} ->
+        Logger.warning(
+          "get_file!(#{path}): failed with status #{status}, request_id=#{inspect(request_id)}"
+        )
+
+        nil
+
+      {:error, :get_file} ->
+        Logger.warning("get_file!(#{path}): failed")
+        nil
+    end
   end
 
   @spec post_comment!(tconn, number, binary) :: :ok

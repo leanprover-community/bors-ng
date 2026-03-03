@@ -6,6 +6,7 @@ defmodule BorsNG.GitHub.ServerHttpTest do
 
     @status_path "/repositories/1/commits/sha/status"
     @checks_path "/repositories/1/commits/sha/check-runs"
+    @contents_path "/repositories/1/contents/bors.toml"
     @scenario_key {__MODULE__, :scenario}
     @base_url_key {__MODULE__, :base_url}
 
@@ -62,6 +63,15 @@ defmodule BorsNG.GitHub.ServerHttpTest do
                 [{"link", next}]
               )
           end
+
+        {:get_file_ok, "GET", @contents_path} ->
+          reply(conn, 200, "status = [\"ci/test\"]")
+
+        {:get_file_missing, "GET", @contents_path} ->
+          reply(conn, 404, "not found")
+
+        {:get_file_error, "GET", @contents_path} ->
+          reply(conn, 502, "bad gateway", [{"x-github-request-id", "REQ123"}])
 
         _ ->
           reply(conn, 404, "not found")
@@ -140,6 +150,39 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     assert {:ok, statuses} = get_commit_status()
     assert Map.has_key?(statuses, "first-page")
     assert Map.has_key?(statuses, "second-page")
+  end
+
+  test "get_file returns body for 200 responses" do
+    ScenarioPlug.set_scenario(:get_file_ok)
+
+    assert {:ok, "status = [\"ci/test\"]"} =
+             BorsNG.GitHub.Server.do_handle_call(
+               :get_file,
+               {{:raw, "token"}, 1},
+               {"main", "bors.toml"}
+             )
+  end
+
+  test "get_file returns nil for 404 responses" do
+    ScenarioPlug.set_scenario(:get_file_missing)
+
+    assert {:ok, nil} =
+             BorsNG.GitHub.Server.do_handle_call(
+               :get_file,
+               {{:raw, "token"}, 1},
+               {"main", "bors.toml"}
+             )
+  end
+
+  test "get_file returns structured error for non-200/404 responses" do
+    ScenarioPlug.set_scenario(:get_file_error)
+
+    assert {:error, :get_file, 502, "bad gateway", "REQ123"} =
+             BorsNG.GitHub.Server.do_handle_call(
+               :get_file,
+               {{:raw, "token"}, 1},
+               {"main", "bors.toml"}
+             )
   end
 
   defp get_commit_status do

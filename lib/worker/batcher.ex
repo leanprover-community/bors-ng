@@ -570,7 +570,7 @@ defmodule BorsNG.Worker.Batcher do
             GitHub.force_push!(repo_conn, base.commit, stmp)
 
             new_head =
-              Enum.reduce(patch_links, base.commit, fn patch_link, prev_head ->
+              Enum.reduce_while(patch_links, base.commit, fn patch_link, prev_head ->
                 Logger.debug("Patch Link #{inspect(patch_link)}")
                 Logger.debug("Patch #{inspect(patch_link.patch)}")
 
@@ -635,39 +635,85 @@ defmodule BorsNG.Worker.Batcher do
                       :conflict
 
                     _ ->
-                      GitHub.create_commit!(
-                        repo_conn,
-                        %{
-                          tree: merge_commit.tree,
-                          parents: [prev_head],
-                          commit_message: commit_message,
-                          committer: %{name: user_name, email: user_email}
-                        }
-                      )
+                      case GitHub.create_commit(
+                             repo_conn,
+                             %{
+                               tree: merge_commit.tree,
+                               parents: [prev_head],
+                               commit_message: commit_message,
+                               committer: %{name: user_name, email: user_email}
+                             }
+                           ) do
+                        {:ok, commit_sha} ->
+                          commit_sha
+
+                        {:error, :create_commit, status, _body, request_id} = error ->
+                          Logger.warning(
+                            "start_waiting_merged_batch: create_commit failed with status #{status}, request_id=#{inspect(request_id)}"
+                          )
+
+                          error
+
+                        {:error, :create_commit} = error ->
+                          Logger.warning("start_waiting_merged_batch: create_commit failed")
+                          error
+                      end
                   end
 
                 Logger.info("Commit Sha #{inspect(cpt)}")
-                cpt
+
+                case cpt do
+                  :conflict ->
+                    {:halt, :conflict}
+
+                  {:error, :create_commit} = error ->
+                    {:halt, error}
+
+                  {:error, _, _, _, _} = error ->
+                    {:halt, error}
+
+                  commit_sha ->
+                    {:cont, commit_sha}
+                end
               end)
 
             GitHub.delete_branch!(repo_conn, stmp)
-            [new_head]
+
+            case new_head do
+              {:error, :create_commit} = error ->
+                error
+
+              {:error, _, _, _, _} = error ->
+                error
+
+              head ->
+                [head]
+            end
           else
             parents = [base.commit | Enum.map(patch_links, & &1.patch.commit)]
             parents
           end
 
         if toml.use_squash_merge do
-          # This will avoid creating a merge commit, which is important since it will prevent
-          # bors from polluting th git blame history with it's own name
-          head = Enum.at(parents, 0)
+          case parents do
+            {:error, :create_commit} ->
+              {:error, nil}
 
-          if head == :conflict do
-            {:conflict, nil}
-          else
-            GitHub.force_push!(repo_conn, head, batch.project.staging_branch)
-            setup_statuses(batch, toml)
-            {:running, head}
+            {:error, _, _, _, _} ->
+              {:error, nil}
+
+            _ ->
+              # This will avoid creating a merge commit, which is important since it will prevent
+              # bors from polluting th git blame history with it's own name
+              head = Enum.at(parents, 0)
+
+              if head == :conflict do
+                {:conflict, nil}
+              else
+                GitHub.force_push!(repo_conn, head, batch.project.staging_branch)
+                setup_statuses(batch, toml)
+                {:running, head}
+              end
           end
         else
           commit_message =

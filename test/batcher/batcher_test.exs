@@ -8,9 +8,11 @@ defmodule BorsNG.Worker.BatcherTest do
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
-  alias BorsNG.GitHub.Pr
   alias BorsNG.Database.Status
   alias BorsNG.GitHub
+  alias BorsNG.GitHub.FullUser
+  alias BorsNG.GitHub.Pr
+  alias BorsNG.GitHub.User, as: GitHubUser
 
   import Ecto.Query
 
@@ -6851,6 +6853,95 @@ defmodule BorsNG.Worker.BatcherTest do
 
     # There should be no more items in the queue now
     [] = Repo.all(Batch.all_for_project(proj.id, :waiting))
+  end
+
+  test "marks batch as error when squash create_commit fails", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{
+          "master" => "ini",
+          "staging" => "",
+          "staging.tmp" => "",
+          "staging-squash-merge.tmp" => ""
+        },
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{
+          "staging.tmp" => %{
+            "bors.toml" => ~s"""
+            status = [ "ci/test" ]
+            use_squash_merge = true
+            """
+          }
+        },
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Body",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            user: %GitHubUser{id: 42, login: "ada", avatar_url: "https://example.com"},
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [
+            %GitHub.Commit{
+              sha: "c1",
+              author_name: "Ada",
+              author_email: "ada@example.com",
+              commit_message: "feat: add stuff",
+              tree_sha: "t1"
+            }
+          ]
+        }
+      },
+      users: %{
+        "ada" => %FullUser{
+          id: 42,
+          login: "ada",
+          avatar_url: "https://example.com",
+          email: "ada@example.com",
+          name: "Ada"
+        }
+      },
+      create_commit_error: 1
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master"
+      }
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    assert batch.state == :waiting
+
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    assert batch.state == :error
+
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+
+    assert repo.statuses["N"]["bors"] == :error
+    assert repo.branches["staging"] == ""
   end
 
   defp ordered_batches(proj) do

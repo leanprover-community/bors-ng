@@ -218,6 +218,72 @@ defmodule BorsNG.Worker.AttemptorTest do
     assert repo.commits["iniN"].commit_message == expected_message
   end
 
+  test "marks attempt as error when squash create_commit fails", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "trying" => "", "trying.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        pr_commits: %{
+          1 => [
+            %Commit{
+              sha: "c1",
+              author_name: "Ada",
+              author_email: "ada@example.com",
+              commit_message: "feat: add stuff",
+              tree_sha: "t1"
+            }
+          ]
+        },
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Add feature",
+            body: "Body",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            user: %GitHubUser{id: 42, login: "ada", avatar_url: "https://example.com"}
+          }
+        },
+        statuses: %{"iniN" => []},
+        files: %{
+          "trying.tmp" => %{
+            "bors.toml" => ~s"""
+            status = [ "ci/test" ]
+            use_squash_merge = true
+            """
+          }
+        }
+      },
+      users: %{
+        "ada" => %FullUser{
+          id: 42,
+          login: "ada",
+          avatar_url: "https://example.com",
+          email: "ada@example.com",
+          name: "Ada"
+        }
+      },
+      create_commit_error: 1
+    })
+
+    patch = new_patch(proj, 1, "N")
+    Attemptor.handle_cast({:tried, patch.id, ""}, proj.id)
+
+    attempt = Repo.get_by!(Attempt, patch_id: patch.id)
+    assert attempt.state == :error
+    assert Repo.all(AttemptStatus) == []
+
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+    assert repo.branches["trying"] == ""
+    assert repo.comments[1] == []
+  end
+
   test "infer from .appveyor.yml", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

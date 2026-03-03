@@ -98,7 +98,8 @@ defmodule BorsNG.GitHub.ServerMock do
             repos: [trepo]
           },
           :users => %{bitstring => tuser},
-          :merge_conflict => integer
+          :merge_conflict => integer,
+          :create_commit_error => integer
         }
 
   def put_state(state) do
@@ -360,6 +361,31 @@ defmodule BorsNG.GitHub.ServerMock do
   def do_handle_call(
         :create_commit,
         repo_conn,
+        params,
+        %{create_commit_error: 0} = state
+      ) do
+    do_handle_call(
+      :create_commit,
+      repo_conn,
+      params,
+      %{state | :create_commit_error => nil}
+    )
+  end
+
+  def do_handle_call(
+        :create_commit,
+        _repo_conn,
+        _params,
+        %{create_commit_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    error = {:error, :create_commit, 502, "Bad Gateway", "MOCK-502"}
+    {error, %{state | :create_commit_error => n - 1}}
+  end
+
+  def do_handle_call(
+        :create_commit,
+        repo_conn,
         {%{
            tree: tree,
            parents: parents,
@@ -431,7 +457,7 @@ defmodule BorsNG.GitHub.ServerMock do
   def do_handle_call(:force_push, repo_conn, {sha, to}, state) do
     with {:ok, repo} <- Map.fetch(state, repo_conn),
          {:ok, branches} <- Map.fetch(repo, :branches) do
-      branches = %{branches | to => sha}
+      branches = Map.put(branches, to, sha)
       repo = %{repo | branches: branches}
       state = %{state | repo_conn => repo}
       {{:ok, sha}, state}

@@ -431,7 +431,7 @@ defmodule BorsNG.GitHub.Server do
   end
 
   def do_handle_call(:get_file, repo_conn, {branch, path}) do
-    %{body: raw, status: status} =
+    resp =
       get!(
         repo_conn,
         "contents/#{path}",
@@ -439,13 +439,19 @@ defmodule BorsNG.GitHub.Server do
         query: [ref: branch]
       )
 
-    res =
-      case status do
-        404 -> nil
-        200 -> raw
-      end
+    case resp do
+      %{body: raw, status: 200} ->
+        {:ok, raw}
 
-    {:ok, res}
+      %{status: 404} ->
+        {:ok, nil}
+
+      %{body: body, status: status, headers: headers} ->
+        {:error, :get_file, status, body, Map.new(headers)["x-github-request-id"]}
+
+      %{body: body, status: status} ->
+        {:error, :get_file, status, body, nil}
+    end
   end
 
   def do_handle_call(:post_comment, repo_conn, {number, body}) do
