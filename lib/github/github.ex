@@ -257,38 +257,38 @@ defmodule BorsNG.GitHub do
 
   @spec get_labels!(tconn, integer | bitstring) :: [bitstring]
   def get_labels!(repo_conn, issue_xref) do
-    {:ok, labels} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_labels, repo_conn, {issue_xref}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
+    {:ok, labels} = get_labels(repo_conn, issue_xref)
 
     labels
+  end
+
+  @spec get_labels(tconn, integer | bitstring) :: {:ok, [bitstring]} | {:error, term}
+  def get_labels(repo_conn, issue_xref) do
+    call_with_retry(:get_labels, repo_conn, {issue_xref}, 500, 4_000)
   end
 
   @spec get_reviews!(tconn, integer | bitstring) :: map
   def get_reviews!(repo_conn, issue_xref) do
-    {:ok, labels} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_reviews, repo_conn, {issue_xref}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
+    {:ok, labels} = get_reviews(repo_conn, issue_xref)
 
     labels
   end
 
+  @spec get_reviews(tconn, integer | bitstring) :: {:ok, map} | {:error, term}
+  def get_reviews(repo_conn, issue_xref) do
+    call_with_retry(:get_reviews, repo_conn, {issue_xref}, 500, 4_000)
+  end
+
   @spec get_commit_reviews!(tconn, integer | bitstring, binary) :: map
   def get_commit_reviews!(repo_conn, issue_xref, sha) do
-    {:ok, labels} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_reviews, repo_conn, {issue_xref, sha}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
+    {:ok, labels} = get_commit_reviews(repo_conn, issue_xref, sha)
 
     labels
+  end
+
+  @spec get_commit_reviews(tconn, integer | bitstring, binary) :: {:ok, map} | {:error, term}
+  def get_commit_reviews(repo_conn, issue_xref, sha) do
+    call_with_retry(:get_reviews, repo_conn, {issue_xref, sha}, 500, 4_000)
   end
 
   @spec get_file!(tconn, binary, binary) :: binary | nil

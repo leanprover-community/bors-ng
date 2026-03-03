@@ -1161,69 +1161,80 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp patch_preflight(repo_conn, patch, {:ok, toml}) do
-    passed_label =
-      repo_conn
-      |> GitHub.get_labels!(patch.pr_xref)
-      |> MapSet.new()
-      |> MapSet.disjoint?(MapSet.new(toml.block_labels))
+    with {:ok, labels} <- GitHub.get_labels(repo_conn, patch.pr_xref),
+         {:ok, github_commit_statuses} <- GitHub.get_commit_status(repo_conn, patch.commit),
+         {:ok, reviews} <- GitHub.get_reviews(repo_conn, patch.pr_xref),
+         {:ok, commit_reviews} <- maybe_get_commit_reviews(repo_conn, patch, toml) do
+      passed_label =
+        labels
+        |> MapSet.new()
+        |> MapSet.disjoint?(MapSet.new(toml.block_labels))
 
-    github_commit_statuses = GitHub.get_commit_status!(repo_conn, patch.commit)
-    pr_status_mapset = MapSet.new(toml.pr_status)
+      pr_status_mapset = MapSet.new(toml.pr_status)
 
-    no_error_status =
-      github_commit_statuses
-      |> Enum.filter(fn {_, status} -> status == :error end)
-      |> Enum.map(fn {context, _} -> context end)
-      |> MapSet.new()
-      |> MapSet.disjoint?(pr_status_mapset)
+      no_error_status =
+        github_commit_statuses
+        |> Enum.filter(fn {_, status} -> status == :error end)
+        |> Enum.map(fn {context, _} -> context end)
+        |> MapSet.new()
+        |> MapSet.disjoint?(pr_status_mapset)
 
-    no_waiting_status =
-      github_commit_statuses
-      |> Enum.filter(fn {_, status} -> status == :running end)
-      |> Enum.map(fn {context, _} -> context end)
-      |> MapSet.new()
-      |> MapSet.disjoint?(pr_status_mapset)
+      no_waiting_status =
+        github_commit_statuses
+        |> Enum.filter(fn {_, status} -> status == :running end)
+        |> Enum.map(fn {context, _} -> context end)
+        |> MapSet.new()
+        |> MapSet.disjoint?(pr_status_mapset)
 
-    # We wait to have all required pr statuses set.
-    no_unset_status =
-      github_commit_statuses
-      |> Enum.filter(fn {context, _} -> MapSet.member?(pr_status_mapset, context) end)
-      |> Enum.count() == Enum.count(pr_status_mapset)
+      # We wait to have all required pr statuses set.
+      no_unset_status =
+        github_commit_statuses
+        |> Enum.filter(fn {context, _} -> MapSet.member?(pr_status_mapset, context) end)
+        |> Enum.count() == Enum.count(pr_status_mapset)
 
-    code_owners_approved = check_code_owner(repo_conn, patch, toml)
+      code_owners_approved = check_code_owner(repo_conn, patch, toml)
 
-    #    {:error, {:missing_code_owner_approval, "My team"}}
+      # fetching all reviews even when up_to_date_approvals is on to catch cases of rejected reviews.
+      passed_review = reviews |> reviews_status(toml)
 
-    # fetching all reviews even when up_to_date_approvals is on to catch cases of rejected reviews.
-    passed_review =
-      repo_conn
-      |> GitHub.get_reviews!(patch.pr_xref)
-      |> reviews_status(toml)
+      passed_up_to_date_review =
+        if toml.required_approvals && toml.up_to_date_approvals do
+          commit_reviews |> reviews_status(toml)
+        else
+          :sufficient
+        end
 
-    passed_up_to_date_review =
-      if toml.required_approvals && toml.up_to_date_approvals do
-        repo_conn
-        |> GitHub.get_commit_reviews!(patch.pr_xref, patch.commit)
-        |> reviews_status(toml)
-      else
-        :sufficient
+      Logger.info(
+        "Code review status: Label Check #{passed_label} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
+      )
+
+      case {passed_label, no_error_status, no_waiting_status, no_unset_status, passed_review,
+            code_owners_approved, passed_up_to_date_review} do
+        {true, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
+        {false, _, _, _, _, _, _} -> {:error, :blocked_labels}
+        {_, _, _, _, :insufficient, _, _} -> {:error, :insufficient_approvals}
+        {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
+        {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
+        {_, false, _, _, _, _, _} -> {:error, :pr_status}
+        {_, _, false, _, _, _, _} -> :waiting
+        {_, _, _, false, _, _, _} -> :waiting
+        {_, _, _, _, _, _, :insufficient} -> {:error, :insufficient_up_to_date_approvals}
       end
+    else
+      error when is_tuple(error) and tuple_size(error) >= 2 and elem(error, 0) == :error ->
+        Logger.warning(
+          "patch_preflight: transient GitHub read failure for patch #{patch.id}: #{inspect(error)}"
+        )
 
-    Logger.info(
-      "Code review status: Label Check #{passed_label} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
-    )
+        :waiting
+    end
+  end
 
-    case {passed_label, no_error_status, no_waiting_status, no_unset_status, passed_review,
-          code_owners_approved, passed_up_to_date_review} do
-      {true, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
-      {false, _, _, _, _, _, _} -> {:error, :blocked_labels}
-      {_, _, _, _, :insufficient, _, _} -> {:error, :insufficient_approvals}
-      {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
-      {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
-      {_, false, _, _, _, _, _} -> {:error, :pr_status}
-      {_, _, false, _, _, _, _} -> :waiting
-      {_, _, _, false, _, _, _} -> :waiting
-      {_, _, _, _, _, _, :insufficient} -> {:error, :insufficient_up_to_date_approvals}
+  defp maybe_get_commit_reviews(repo_conn, patch, toml) do
+    if toml.required_approvals && toml.up_to_date_approvals do
+      GitHub.get_commit_reviews(repo_conn, patch.pr_xref, patch.commit)
+    else
+      {:ok, nil}
     end
   end
 
