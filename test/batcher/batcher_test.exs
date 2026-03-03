@@ -7156,6 +7156,46 @@ defmodule BorsNG.Worker.BatcherTest do
     assert repo.statuses["N"]["bors"] == :running
   end
 
+  test "keeps running batch alive when get_commit_status fails during poll", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{},
+        statuses: %{}
+      },
+      get_commit_status_error: 1
+    })
+
+    batch =
+      %Batch{
+        project_id: proj.id,
+        state: :running,
+        into_branch: "master",
+        commit: "Z",
+        last_polled: 0,
+        timeout_at: DateTime.to_unix(DateTime.utc_now(), :second) + 3600
+      }
+      |> Repo.insert!()
+
+    %Status{
+      batch_id: batch.id,
+      identifier: "ci",
+      url: nil,
+      state: :running
+    }
+    |> Repo.insert!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.get!(Batch, batch.id)
+    assert batch.state == :running
+    assert batch.last_polled > 0
+
+    [status] = Repo.all(Status.all_for_batch(batch.id))
+    assert status.state == :running
+  end
+
   defp ordered_batches(proj) do
     Batch.all_for_project(proj.id, :waiting)
     |> join(:inner, [b], l in assoc(b, :patches))

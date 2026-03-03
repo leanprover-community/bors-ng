@@ -245,14 +245,14 @@ defmodule BorsNG.GitHub do
           binary => tstatus
         }
   def get_commit_status!(repo_conn, sha) do
-    {:ok, status} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_commit_status, repo_conn, {sha}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
+    {:ok, status} = get_commit_status(repo_conn, sha)
 
     status
+  end
+
+  @spec get_commit_status(tconn, binary) :: {:ok, %{binary => tstatus}} | {:error, term}
+  def get_commit_status(repo_conn, sha) do
+    call_with_retry(:get_commit_status, repo_conn, {sha}, 500, 4_000)
   end
 
   @spec get_labels!(tconn, integer | bitstring) :: [bitstring]

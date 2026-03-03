@@ -100,7 +100,8 @@ defmodule BorsNG.GitHub.ServerMock do
           :users => %{bitstring => tuser},
           :merge_conflict => integer,
           :create_commit_error => integer,
-          :get_pr_files_error => integer
+          :get_pr_files_error => integer,
+          :get_commit_status_error => integer
         }
 
   def put_state(state) do
@@ -492,6 +493,30 @@ defmodule BorsNG.GitHub.ServerMock do
       {{:ok, _}, _} = res -> res
       _ -> {{:error, :force_push}, state}
     end
+  end
+
+  def do_handle_call(
+        :get_commit_status,
+        repo_conn,
+        params,
+        %{get_commit_status_error: 0} = state
+      ) do
+    do_handle_call(
+      :get_commit_status,
+      repo_conn,
+      params,
+      %{state | :get_commit_status_error => nil}
+    )
+  end
+
+  def do_handle_call(
+        :get_commit_status,
+        _repo_conn,
+        _params,
+        %{get_commit_status_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    {{:error, :get_commit_status, 502}, %{state | :get_commit_status_error => n - 1}}
   end
 
   def do_handle_call(:get_commit_status, repo_conn, {sha}, state) do

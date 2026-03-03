@@ -829,16 +829,30 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp poll_running_batch(batch) do
-    batch.project
-    |> get_repo_conn()
-    |> GitHub.get_commit_status!(batch.commit)
-    |> Enum.each(fn {identifier, state} ->
-      batch.id
-      |> Status.get_for_batch(identifier)
-      |> Repo.update_all(set: [state: state, identifier: identifier])
-    end)
+    repo_conn = get_repo_conn(batch.project)
 
-    maybe_complete_batch(batch)
+    case GitHub.get_commit_status(repo_conn, batch.commit) do
+      {:ok, statuses} ->
+        statuses
+        |> Enum.each(fn {identifier, state} ->
+          batch.id
+          |> Status.get_for_batch(identifier)
+          |> Repo.update_all(set: [state: state, identifier: identifier])
+        end)
+
+        maybe_complete_batch(batch)
+
+      error when is_tuple(error) and tuple_size(error) >= 2 and elem(error, 0) == :error ->
+        Logger.warning(
+          "poll_running_batch: get_commit_status failed for batch #{batch.id} commit #{batch.commit}: #{inspect(error)}"
+        )
+
+        now = DateTime.to_unix(DateTime.utc_now(), :second)
+
+        batch
+        |> Batch.changeset(%{last_polled: now})
+        |> Repo.update!()
+    end
   end
 
   defp maybe_complete_batch(batch) do
