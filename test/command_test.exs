@@ -765,6 +765,118 @@ defmodule BorsNG.CommandTest do
            } = GitHub.ServerMock.get_state()
   end
 
+  test "run ping does not require a GitHub PR fetch", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => []},
+        statuses: %{}
+      }
+    })
+
+    c = %Command{
+      project: proj,
+      commenter: nil,
+      comment: "bors ping",
+      pr_xref: 1
+    }
+
+    Command.run(c)
+
+    assert %{
+             {{:installation, 91}, 14} => %{
+               comments: %{1 => ["pong"]}
+             }
+           } = GitHub.ServerMock.get_state()
+  end
+
+  test "retry works with existing patch even if PR is unavailable from GitHub", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => []},
+        statuses: %{}
+      }
+    })
+
+    {:ok, commenter} =
+      Repo.insert(%BorsNG.Database.User{
+        user_xref: 1,
+        login: "commenter"
+      })
+
+    {:ok, patch} =
+      Repo.insert(%BorsNG.Database.Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master"
+      })
+
+    {:ok, _} =
+      Repo.insert(%BorsNG.Database.LinkMemberProject{
+        user_id: commenter.id,
+        project_id: proj.id
+      })
+
+    Command.run(%Command{
+      project: proj,
+      commenter: commenter,
+      comment: "bors ping",
+      patch: patch,
+      pr_xref: 1
+    })
+
+    Command.run(%Command{
+      project: proj,
+      commenter: commenter,
+      comment: "bors retry",
+      patch: patch,
+      pr_xref: 1
+    })
+
+    assert %{
+             {{:installation, 91}, 14} => %{
+               comments: %{1 => ["pong", "pong"]}
+             }
+           } = GitHub.ServerMock.get_state()
+  end
+
+  test "member command exits cleanly when patch and GitHub PR are unavailable", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => []},
+        statuses: %{}
+      }
+    })
+
+    {:ok, commenter} =
+      Repo.insert(%BorsNG.Database.User{
+        user_xref: 1,
+        login: "commenter"
+      })
+
+    {:ok, _} =
+      Repo.insert(%BorsNG.Database.LinkMemberProject{
+        user_id: commenter.id,
+        project_id: proj.id
+      })
+
+    Command.run(%Command{
+      project: proj,
+      commenter: commenter,
+      comment: "bors retry",
+      pr_xref: 1
+    })
+
+    assert %{
+             {{:installation, 91}, 14} => %{
+               comments: %{1 => []}
+             }
+           } = GitHub.ServerMock.get_state()
+  end
+
   test "running bros command should post brofist", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

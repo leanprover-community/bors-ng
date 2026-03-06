@@ -36,11 +36,7 @@ defmodule BorsNG.GitHub do
   @spec get_pr_files(tconn, integer) ::
           {:ok, [BorsNG.GitHub.File.t()]} | {:error, term}
   def get_pr_files(repo_conn, pr_xref) do
-    GenServer.call(
-      BorsNG.GitHub,
-      {:get_pr_files, repo_conn, {pr_xref}},
-      Confex.fetch_env!(:bors, :api_github_timeout)
-    )
+    call_with_retry(:get_pr_files, repo_conn, {pr_xref}, 500, 4_000)
   end
 
   @spec get_pr!(tconn, integer | bitstring) :: BorsNG.GitHub.Pr.t()
@@ -52,11 +48,7 @@ defmodule BorsNG.GitHub do
   @spec get_pr(tconn, integer | bitstring) ::
           {:ok, BorsNG.GitHub.Pr.t()} | {:error, term}
   def get_pr(repo_conn, pr_xref) do
-    GenServer.call(
-      BorsNG.GitHub,
-      {:get_pr, repo_conn, {pr_xref}},
-      Confex.fetch_env!(:bors, :api_github_timeout)
-    )
+    call_with_retry(:get_pr, repo_conn, {pr_xref}, 500, 4_000)
   end
 
   @spec update_pr_base!(tconn, BorsNG.GitHub.Pr.t()) :: BorsNG.GitHub.Pr.t()
@@ -100,11 +92,7 @@ defmodule BorsNG.GitHub do
   @spec get_pr_commits(tconn, integer | bitstring) ::
           {:ok, [BorsNG.GitHub.Commit.t()]} | {:error, term}
   def get_pr_commits(repo_conn, pr_xref) do
-    GenServer.call(
-      BorsNG.GitHub,
-      {:get_pr_commits, repo_conn, {pr_xref}},
-      Confex.fetch_env!(:bors, :api_github_timeout)
-    )
+    call_with_retry(:get_pr_commits, repo_conn, {pr_xref}, 500, 4_000)
   end
 
   @spec get_open_prs!(tconn) :: [tpr]
@@ -220,13 +208,9 @@ defmodule BorsNG.GitHub do
     call_with_retry(:create_commit, repo_conn, {info})
   end
 
-  @spec get_file(tconn, binary, binary) :: {:ok, binary | nil} | {:error, term, term, term, term}
+  @spec get_file(tconn, binary, binary) :: {:ok, binary | nil} | {:error, term}
   def get_file(repo_conn, branch, path) do
-    GenServer.call(
-      BorsNG.GitHub,
-      {:get_file, repo_conn, {branch, path}},
-      Confex.fetch_env!(:bors, :api_github_timeout)
-    )
+    call_with_retry(:get_file, repo_conn, {branch, path}, 500, 4_000)
   end
 
   @spec force_push!(tconn, binary, binary) :: binary
@@ -306,6 +290,22 @@ defmodule BorsNG.GitHub do
 
       {:error, :get_file} ->
         Logger.warning("get_file!(#{path}): failed")
+        nil
+
+      {:error, reason, _} ->
+        Logger.warning("get_file!(#{path}): failed with #{inspect(reason)}")
+        nil
+
+      {:error, reason, _, _} ->
+        Logger.warning("get_file!(#{path}): failed with #{inspect(reason)}")
+        nil
+
+      {:error, reason, _, _, _} ->
+        Logger.warning("get_file!(#{path}): failed with #{inspect(reason)}")
+        nil
+
+      {:error, reason} ->
+        Logger.warning("get_file!(#{path}): failed with #{inspect(reason)}")
         nil
     end
   end
@@ -438,11 +438,29 @@ defmodule BorsNG.GitHub do
   # Private function to handle retry logic with exponential backoff
   defp call_with_retry(action, repo_conn, params, min_delay \\ 1_000, max_delay \\ 5_000) do
     timeout = Confex.fetch_env!(:bors, :api_github_timeout)
-    do_call_with_retry(action, repo_conn, params, timeout, min_delay, max_delay)
+    started_at = System.monotonic_time(:millisecond)
+
+    do_call_with_retry(
+      action,
+      repo_conn,
+      params,
+      timeout,
+      min_delay,
+      max_delay,
+      started_at
+    )
   end
 
-  defp do_call_with_retry(action, repo_conn, params, timeout, current_delay, max_delay) do
-    result = GenServer.call(BorsNG.GitHub, {action, repo_conn, params}, timeout)
+  defp do_call_with_retry(
+         action,
+         repo_conn,
+         params,
+         timeout,
+         current_delay,
+         max_delay,
+         started_at
+       ) do
+    result = safe_genserver_call(action, repo_conn, params, timeout)
 
     if Application.get_env(:bors, :is_test) do
       result
@@ -462,18 +480,67 @@ defmodule BorsNG.GitHub do
 
           success
 
-        _ when current_delay > max_delay ->
-          # Final attempt - return whatever we get
-          Logger.warning(
-            "call_with_retry(#{action}): final attempt when current_delay was #{current_delay}"
-          )
-
-          GenServer.call(BorsNG.GitHub, {action, repo_conn, params}, timeout)
-
         _ ->
-          Process.sleep(current_delay)
-          do_call_with_retry(action, repo_conn, params, timeout, current_delay * 2, max_delay)
+          if retry_timeout_elapsed?(action, started_at) do
+            Logger.warning(
+              "call_with_retry(#{action}): giving up when current_delay was #{current_delay}"
+            )
+
+            result
+          else
+            delay = min(current_delay, max_delay)
+            Process.sleep(add_jitter(delay))
+
+            do_call_with_retry(
+              action,
+              repo_conn,
+              params,
+              timeout,
+              min(current_delay * 2, max_delay),
+              max_delay,
+              started_at
+            )
+          end
       end
     end
+  end
+
+  defp safe_genserver_call(action, repo_conn, params, timeout) do
+    GenServer.call(BorsNG.GitHub, {action, repo_conn, params}, timeout)
+  catch
+    :exit, {:timeout, {GenServer, :call, _}} ->
+      {:error, :github_call_timeout, action}
+
+    :exit, {:noproc, {GenServer, :call, _}} ->
+      {:error, :github_server_unavailable, action}
+
+    :exit, reason ->
+      {:error, :github_call_exit, action, reason}
+  end
+
+  defp retry_timeout_elapsed?(action, started_at) do
+    max_elapsed_ms = max_retry_elapsed_ms(action)
+    System.monotonic_time(:millisecond) - started_at >= max_elapsed_ms
+  end
+
+  defp max_retry_elapsed_ms(action)
+       when action in [
+              :get_file,
+              :get_pr,
+              :get_pr_files,
+              :get_pr_commits,
+              :get_commit_status,
+              :get_labels,
+              :get_reviews
+            ] do
+    Confex.get_env(:bors, :api_github_retry_max_elapsed_ms, 180_000)
+  end
+
+  defp max_retry_elapsed_ms(_action) do
+    Confex.get_env(:bors, :api_github_retry_write_max_elapsed_ms, 30_000)
+  end
+
+  defp add_jitter(delay_ms) do
+    delay_ms + :rand.uniform(250) - 1
   end
 end

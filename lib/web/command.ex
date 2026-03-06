@@ -31,6 +31,7 @@ defmodule BorsNG.Command do
   alias BorsNG.Worker.Syncer
 
   import BorsNG.Router.Helpers
+  require Logger
 
   defstruct(
     project: nil,
@@ -60,12 +61,16 @@ defmodule BorsNG.Command do
   def fetch_pr(c) do
     case {c.pr, c.pr_xref} do
       {nil, pr_xref} ->
-        pr =
-          c.project.repo_xref
-          |> Project.installation_connection(Repo)
-          |> GitHub.get_pr!(pr_xref)
+        case c.project.repo_xref
+             |> Project.installation_connection(Repo)
+             |> GitHub.get_pr(pr_xref) do
+          {:ok, pr} ->
+            %Command{c | pr: pr}
 
-        %Command{c | pr: pr}
+          {:error, reason} ->
+            Logger.warning("fetch_pr: failed for PR #{pr_xref}: #{inspect(reason)}")
+            c
+        end
 
       {_, _} ->
         c
@@ -81,8 +86,25 @@ defmodule BorsNG.Command do
     case {c.patch, c.pr, c.pr_xref} do
       {nil, nil, pr_xref} ->
         case Repo.get_by(Patch, project_id: c.project.id, pr_xref: pr_xref) do
-          nil -> c |> fetch_pr() |> fetch_patch()
-          patch -> %Command{c | patch: patch}
+          nil ->
+            c = fetch_pr(c)
+
+            case c.pr do
+              nil -> c
+              _ -> fetch_patch(c)
+            end
+
+          patch ->
+            if is_nil(patch.author_id) and is_nil(c.pr) do
+              c = fetch_pr(c)
+
+              case c.pr do
+                nil -> %Command{c | patch: patch}
+                pr -> %Command{c | patch: Syncer.sync_patch(c.project.id, pr)}
+              end
+            else
+              %Command{c | patch: patch}
+            end
         end
 
       {nil, pr, _} ->
@@ -342,21 +364,37 @@ defmodule BorsNG.Command do
   """
   @spec run(t) :: :ok
   def run(c) do
-    c =
-      c
-      |> fetch_pr()
-      |> fetch_patch()
-
     cmd_list = parse(c.comment)
 
-    cmd_list
-    |> required_permission_level()
-    |> Permission.permission?(c.commenter, c.patch)
-    |> if do
-      Enum.each(cmd_list, &run(c, &1))
-      Enum.each(cmd_list, &log(c, &1))
+    if cmd_list == [] do
+      :ok
     else
-      permission_denied(c)
+      required_permission = required_permission_level(cmd_list)
+
+      if required_permission == :none do
+        c = fetch_patch_local(c)
+        Enum.each(cmd_list, &run(c, &1))
+        maybe_log_commands(c, cmd_list)
+      else
+        c = fetch_patch(c)
+
+        if is_nil(c.patch) do
+          Logger.warning(
+            "Command.run: patch lookup failed for project=#{c.project.id} pr=#{c.pr_xref}"
+          )
+
+          :ok
+        else
+          required_permission
+          |> Permission.permission?(c.commenter, c.patch)
+          |> if do
+            Enum.each(cmd_list, &run(c, &1))
+            Enum.each(cmd_list, &log(c, &1))
+          else
+            permission_denied(c)
+          end
+        end
+      end
     end
   end
 
@@ -429,6 +467,26 @@ defmodule BorsNG.Command do
   @spec log(t, cmd) :: :ok
   def log(c, cmd) do
     Logging.log_cmd(c.patch, c.commenter, cmd)
+  end
+
+  defp fetch_patch_local(c) do
+    case c.patch do
+      nil ->
+        case Repo.get_by(Patch, project_id: c.project.id, pr_xref: c.pr_xref) do
+          nil -> c
+          patch -> %Command{c | patch: patch}
+        end
+
+      _ ->
+        c
+    end
+  end
+
+  defp maybe_log_commands(%Command{patch: nil}, _cmd_list), do: :ok
+  defp maybe_log_commands(%Command{commenter: nil}, _cmd_list), do: :ok
+
+  defp maybe_log_commands(c, cmd_list) do
+    Enum.each(cmd_list, &log(c, &1))
   end
 
   @spec run(t, cmd) :: :ok
