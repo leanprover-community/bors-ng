@@ -519,7 +519,7 @@ defmodule BorsNG.Worker.Batcher do
 
         %{commit: ^last_commit} ->
           # Exceeded max delay but commit unchanged
-          Logger.warn(
+          Logger.warning(
             "get_base: exceeded max delay but commit unchanged: #{inspect(last_commit)}"
           )
 

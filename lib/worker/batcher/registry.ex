@@ -99,7 +99,7 @@ defmodule BorsNG.Worker.Batcher.Registry do
           {names, refs}
 
         pid ->
-          Logger.warn(
+          Logger.warning(
             "Project #{inspect(project_id)} already monitored #{inspect(pid)} by #{inspect(names[project_id])}"
           )
 
@@ -123,7 +123,7 @@ defmodule BorsNG.Worker.Batcher.Registry do
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, {names, refs}) do
-    Logger.warn(
+    Logger.warning(
       "Batcher #{inspect(pid)} for project #{inspect(refs[ref])} crashed with state #{inspect({names, refs})}"
     )
 
