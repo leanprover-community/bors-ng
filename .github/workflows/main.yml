@@ -78,6 +78,11 @@ jobs:
           POSTGRES_DB: bors_test
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
       mysql:
         image: borsng/mysqlnd
         env:
@@ -86,6 +91,11 @@ jobs:
           MYSQL_DATABASE: bors_test
         ports:
           - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
   exfmt:
     name: exfmt
@@ -94,8 +104,8 @@ jobs:
     - uses: actions/checkout@master
     - uses: erlef/setup-beam@v1
       with:
-        otp-version: "27.2"
-        elixir-version: "1.17.3"
+        otp-version: "25.1"
+        elixir-version: "1.14.1"
     - run: mix format --check-formatted
 
   ci-success:

@@ -1,7 +1,6 @@
 import Config
 
 config :bors, BorsNG.Database.RepoMysql,
-  adapter: Ecto.Adapters.MyXQL,
   username: "root",
   password: "",
   database: "bors_test",
@@ -10,7 +9,6 @@ config :bors, BorsNG.Database.RepoMysql,
   priv: "priv/repo"
 
 config :bors, BorsNG.Database.RepoPostgres,
-  adapter: Ecto.Adapters.Postgres,
   url: {:system, "DATABASE_URL_TEST", "postgresql://postgres:Postgres1234@localhost/bors_test"},
   pool: Ecto.Adapters.SQL.Sandbox,
   priv: "priv/repo"
