@@ -15,50 +15,75 @@ queuing, batching, and automatic merging via the GitHub API.
 
 **OTP 25 is NOT supported** – see the `jose` pin below.
 
-## Getting Elixir in this sandbox
+## Installing Elixir
 
-The system apt package only provides Elixir 1.14. Install a current version from
-the GitHub prebuilt ZIP instead:
+If your system package manager only has an old Elixir version, install from the
+GitHub prebuilt ZIPs (pick the ZIP that matches your installed OTP version):
 
 ```bash
+# Example: Elixir 1.17.3 for OTP 25
 curl -sL https://github.com/elixir-lang/elixir/releases/download/v1.17.3/elixir-otp-25.zip \
-     -o /tmp/elixir.zip     # use elixir-otp-26.zip if OTP 26 is installed
+     -o /tmp/elixir.zip
 mkdir -p /opt/elixir-1.17.3
 unzip -q /tmp/elixir.zip -d /opt/elixir-1.17.3
 export PATH=/opt/elixir-1.17.3/bin:$PATH
 export LANG=en_US.UTF-8
-export ELIXIR_ERL_OPTIONS="+fnu"   # needed because locale may be latin1
+# If your locale is latin1, Elixir needs this flag:
+export ELIXIR_ERL_OPTIONS="+fnu"
 ```
 
-## Hex & rebar in this sandbox
+Available ZIP names follow the pattern `elixir-otp-{OTP_MAJOR}.zip`, e.g.
+`elixir-otp-26.zip` for OTP 26.
 
-The sandbox proxy does TLS inspection. Erlang's `httpc` cannot connect to
-`repo.hex.pm` through the proxy. Work around this by running a local HTTP
-mirror that fetches via `curl` (which does trust the proxy CA):
+## Hex & rebar: Erlang httpc / TLS-inspection proxy workaround
+
+**This section only applies if you are working in an environment where Erlang's
+`httpc` cannot reach `repo.hex.pm` directly** (e.g. Claude Code's remote
+sandbox, which runs Erlang traffic through a TLS-inspection proxy whose CA
+Erlang does not trust). `curl` typically works because it uses the system CA
+bundle. If `mix local.hex` and `mix deps.get` work for you normally, skip this
+section.
+
+The workaround is a local HTTP mirror that forwards requests to hex.pm via
+`curl`:
+
+```python
+# /tmp/hex_mirror.py  – run once before mix deps.get
+import subprocess, http.server, socketserver, sys
+
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        r = subprocess.run(
+            ['curl', '-sL', '--compressed', '-w', '\n%{http_code}',
+             'https://repo.hex.pm' + self.path],
+            capture_output=True, timeout=60)
+        body, code = r.stdout.rsplit(b'\n', 1)
+        self.send_response(int(code))
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.ThreadingTCPServer(('127.0.0.1', 8890), H) as s:
+    sys.stderr.write('mirror up\n'); s.serve_forever()
+```
 
 ```bash
-# 1. Start the mirror (see /tmp/hex_mirror2.py in the session – or recreate it)
-python3 /tmp/hex_mirror2.py 2>/tmp/mirror.log &
+python3 /tmp/hex_mirror.py 2>/tmp/mirror.log &
 
-# 2. Point hex at the mirror
+# Point hex at the mirror (127.0.0.1 is typically in no_proxy)
 mix hex.config mirror_url http://127.0.0.1:8890
 mix hex.config api_url    http://127.0.0.1:8890
 
-# 3. Install hex for this Elixir version (since mix local.hex also fails)
+# Install hex/rebar the same way if mix local.hex/rebar also fail:
 curl -sL https://builds.hex.pm/installs/1.16.0/hex-2.4.1.ez -o /tmp/hex-2.4.1.ez
 mix archive.install /tmp/hex-2.4.1.ez --force
-
-# 4. Install rebar3 (mix local.rebar also fails through the proxy)
 curl -sL https://github.com/erlang/rebar3/releases/download/3.22.0/rebar3 \
      -o /usr/local/bin/rebar3 && chmod +x /usr/local/bin/rebar3
 mix local.rebar rebar3 /usr/local/bin/rebar3 --force
-```
 
-After that, `mix deps.get` works with `HEX_UNSAFE_REGISTRY=1` (the registry
-signature cannot be verified over plain HTTP):
-
-```bash
-ELIXIR_ERL_OPTIONS="+fnu" HEX_UNSAFE_REGISTRY=1 mix deps.get
+# Registry signatures can't be verified over plain HTTP:
+HEX_UNSAFE_REGISTRY=1 mix deps.get
 ```
 
 ## Key dependency notes
