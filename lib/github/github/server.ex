@@ -862,8 +862,10 @@ defmodule BorsNG.GitHub.Server do
       |> String.downcase(:ascii)
       |> case do
         "link" ->
-          value = ExLinkHeader.parse!(value)
-          if is_nil(value.next), do: [], else: [value.next]
+          case Regex.run(~r/<([^>]+)>;\s*rel="next"/, value) do
+            [_, url] -> [%{url: url}]
+            nil -> []
+          end
 
         _ ->
           []

@@ -73,7 +73,6 @@ defmodule BorsNg.Mixfile do
       {:tesla, "~> 1.12"},
       {:toml, "~> 0.7"},
       {:hackney, "~> 1.20"},
-      {:ex_link_header, "~> 0.0.5"},
       {:oauth2, "~> 2.1"},
       {:joken, "~> 2.6"},
       {:jose, "== 1.11.10", override: true},

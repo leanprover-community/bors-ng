@@ -97,20 +97,6 @@ CI matrix includes OTP 26, so we pin:
 {:jose, "== 1.11.10", override: true}
 ```
 
-### `ex_link_header 0.0.5` mix.exs patch
-
-`ex_link_header 0.0.5` (the only released version) has a `mix.exs` that calls
-private functions without parentheses – valid in Elixir 1.2 but a compile error
-in 1.16+. After `mix deps.get`, patch the file:
-
-```bash
-sed -i 's/description: description,/description: description(),/' deps/ex_link_header/mix.exs
-sed -i 's/package: package,/package: package(),/'                 deps/ex_link_header/mix.exs
-sed -i 's/deps: deps]/deps: deps()]/'                             deps/ex_link_header/mix.exs
-```
-
-This patch is NOT committed to the repo (it lives in `deps/` which is
-`.gitignore`d). It will need to be re-applied after a `mix deps.get --force`.
 
 ## Building
 
