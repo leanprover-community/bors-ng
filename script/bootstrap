@@ -1,7 +1,0 @@
-#!/bin/sh
-set -e
-while [ ! -d script ] && [ `pwd` != / ]; do
-  cd ..
-done
-sh script/setup
-sh script/server
