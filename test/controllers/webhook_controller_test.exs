@@ -205,6 +205,11 @@ defmodule BorsNG.WebhookControllerTest do
 
     wait_until_other_branch_is_removed()
 
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+    _ = :sys.get_state(attemptor)
+
     branches =
       GitHub.ServerMock.get_state()
       |> Map.get({{:installation, 31}, 13})
@@ -342,7 +347,9 @@ defmodule BorsNG.WebhookControllerTest do
     |> put_req_header("x-github-event", "pull_request")
     |> post(webhook_path(conn, :webhook, "github"), body_params)
 
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
     attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
     _ = :sys.get_state(attemptor)
 
     assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
