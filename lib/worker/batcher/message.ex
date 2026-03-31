@@ -286,7 +286,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   def suppress_pings(nil), do: nil
 
   def suppress_pings(body) do
-    Regex.replace(~R/\B(@\S+)/, body, ~S/`\g{1}`/, global: true)
+    Regex.replace(~r/\B(@\S+)/, body, ~S/`\g{1}`/, global: true)
   end
 
   def generate_bors_toml_error(:parse_failed) do

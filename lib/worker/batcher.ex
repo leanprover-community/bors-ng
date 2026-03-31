@@ -1557,7 +1557,7 @@ defmodule BorsNG.Worker.Batcher do
     {message, patch_links_pr_xrefs_messages}
   end
 
-  defp format_status(status) do
+  def format_status(status) do
     if status.url do
       "- [#{status.identifier} (#{BorsNG.BatchView.stringify_state(status.state)})](#{status.url})"
     else

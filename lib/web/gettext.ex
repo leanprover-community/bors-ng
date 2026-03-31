@@ -21,5 +21,5 @@ defmodule BorsNG.Gettext do
   See the [Gettext Docs](https://hexdocs.pm/gettext) for detailed usage.
   """
 
-  use Gettext, otp_app: :bors
+  use Gettext.Backend, otp_app: :bors
 end
