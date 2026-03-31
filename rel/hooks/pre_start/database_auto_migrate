@@ -1,7 +1,0 @@
-#!/bin/sh
-
-case "$DATABASE_AUTO_MIGRATE" in
-1|true|yes)
-    $RELEASE_ROOT_DIR/bin/bors migrate
-;;
-esac

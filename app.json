@@ -80,10 +80,10 @@
   ],
   "buildpacks": [
     {
-      "url": "https://github.com/HashNuke/heroku-buildpack-elixir.git"
+      "url": "https://github.com/HashNuke/heroku-buildpack-elixir"
     },
     {
-      "url": "https://github.com/gigalixir/gigalixir-buildpack-phoenix-static.git"
+      "url": "https://github.com/gjaldon/heroku-buildpack-phoenix-static"
     }
   ],
   "scripts": {
