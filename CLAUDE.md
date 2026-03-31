@@ -17,12 +17,32 @@ queuing, batching, and automatic merging via the GitHub API.
 
 ## Installing Elixir
 
-If your system package manager only has an old Elixir version, install from the
-GitHub prebuilt ZIPs (pick the ZIP that matches your installed OTP version):
+### Preferred: asdf
+
+The repo includes a `.tool-versions` file pinning Erlang and Elixir. With
+[asdf](https://asdf-vm.com/) installed:
 
 ```bash
-# Example: Elixir 1.17.3 for OTP 25
-curl -sL https://github.com/elixir-lang/elixir/releases/download/v1.17.3/elixir-otp-25.zip \
+asdf plugin add erlang
+asdf plugin add elixir
+asdf install          # reads .tool-versions automatically
+```
+
+Then install Hex and rebar:
+
+```bash
+mix local.hex --force
+mix local.rebar --force
+```
+
+### Alternative: prebuilt ZIPs
+
+If you can't use asdf, install from the GitHub prebuilt ZIPs (pick the ZIP
+that matches your installed OTP version):
+
+```bash
+# Example: Elixir 1.17.3 for OTP 26
+curl -sL https://github.com/elixir-lang/elixir/releases/download/v1.17.3/elixir-otp-26.zip \
      -o /tmp/elixir.zip
 mkdir -p /opt/elixir-1.17.3
 unzip -q /tmp/elixir.zip -d /opt/elixir-1.17.3
@@ -96,6 +116,20 @@ CI matrix includes OTP 26, so we pin:
 ```elixir
 {:jose, "== 1.11.10", override: true}
 ```
+
+### `phoenix_view` and the `formats:` compiler warning
+
+The project uses the legacy `phoenix_view` package and `.eex` templates rather
+than the Phoenix 1.7 `Phoenix.Component` / HEEx pattern. This produces a
+compile-time warning:
+
+```
+warning: use BorsNG.FooController must receive the :formats option
+```
+
+This warning cannot be suppressed without migrating off `phoenix_view`, which
+is a larger task tracked separately. The app works correctly; the warning is
+cosmetic only.
 
 
 ## Building
