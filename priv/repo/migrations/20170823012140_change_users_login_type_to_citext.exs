@@ -2,13 +2,10 @@ defmodule BorsNG.Database.Repo.Migrations.ChangeUsersLoginTypeToCitext do
   use Ecto.Migration
 
   defp fetch_adapter do
-    repo_module =
-      case System.get_env("BORS_DATABASE", "postgresql") do
-        "mysql" -> BorsNG.Database.RepoMysql
-        _ -> BorsNG.Database.RepoPostgres
-      end
-
-    Confex.fetch_env!(:bors, repo_module)[:adapter]
+    case System.get_env("BORS_DATABASE", "postgresql") do
+      "mysql" -> Ecto.Adapters.MyXQL
+      _ -> Ecto.Adapters.Postgres
+    end
   end
 
   def up do

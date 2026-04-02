@@ -47,7 +47,7 @@ defmodule BorsNG.Web do
 
   def router do
     quote do
-      use Phoenix.Router
+      use Phoenix.Router, helpers: true
     end
   end
 

@@ -20,6 +20,11 @@ defmodule BorsNG.BatchController do
     patches = Repo.all(Patch.all_for_batch(batch.id))
     statuses = Repo.all(Status.all_for_batch(batch.id))
 
-    render(conn, "show.html", batch: batch, patches: patches, project: project, statuses: statuses)
+    render(conn, "show.html",
+      batch: batch,
+      patches: patches,
+      project: project,
+      statuses: statuses
+    )
   end
 end

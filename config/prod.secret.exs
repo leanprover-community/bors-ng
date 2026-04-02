@@ -5,7 +5,6 @@ config :bors, BorsNG.Database.RepoPostgres,
   url: {:system, "DATABASE_URL"},
   timeout: {:system, :integer, "DATABASE_TIMEOUT", 15_000},
   pool_size: {:system, :integer, "POOL_SIZE", 10},
-  loggers: [{Ecto.LogEntry, :log, []}],
   ssl: {:system, :boolean, "DATABASE_USE_SSL", true},
   prepare: {:system, :atom, "DATABASE_PREPARE_MODE", :named},
   priv: "priv/repo"
@@ -16,8 +15,6 @@ config :bors, BorsNG.Database.RepoMysql,
   ssl: {:system, :boolean, "DATABASE_USE_SSL", true},
   timeout: {:system, :integer, "DATABASE_TIMEOUT", 15_000},
   pool_size: {:system, :integer, "POOL_SIZE", 10},
-  loggers: [{Ecto.LogEntry, :log, []}],
-  ssl: {:system, :boolean, "DATABASE_USE_SSL", true},
   priv: "priv/repo"
 
 config :bors, BorsNG.Endpoint,

@@ -153,12 +153,28 @@ The batching strategy is O(E log N), where N is again the total number of pull r
 
 # How to run it on your local machine
 
-If you're using a macOS or Linux command line with Docker on it,
-`./script/setup && ./script/server` will set up a local instance,
-with a mocked-out GitHub instance, using Docker to pull in all the underlying dependencies.
-The web server ends up running on <http://localhost:8000/>.
-You can get an Elixir REPL running in the same context as the webserver by running
-`repl` instead of `server`. To run the tests, run `test` instead of `server`.
+You'll need:
+
+  * Elixir and Erlang — see [CONTRIBUTING.md] for how to install with asdf
+  * PostgreSQL (the configuration is in `config/dev.exs`)
+  * NodeJS, to compile the assets in `assets/`
+  * Stock C compilation tools (some dependencies use NIFs)
+
+[CONTRIBUTING.md]: CONTRIBUTING.md
+
+Start a PostgreSQL instance (Docker is the easiest way):
+
+    $ docker run -it --rm --net=host -e POSTGRES_PASSWORD=Postgres1234 postgres:13
+
+Then in another shell:
+
+    $ mix deps.get
+    $ cd assets && npm install && cd ..
+    $ mix ecto.create
+    $ mix ecto.migrate
+    $ mix phx.server
+
+The web server runs on <http://localhost:4000/> with the GitHub API mocked out.
 
 If you log in, it will log you in with the user "space."
 There won't be any repositories, and space will not have admin perms.
@@ -169,40 +185,9 @@ and the [WebhookController] and [GitHub ServerMock] to create the repo.
 [WebhookController]: https://bors-ng.github.io/devdocs/bors-ng/BorsNG.WebhookController.html
 [GitHub ServerMock]: https://bors-ng.github.io/devdocs/bors-ng/BorsNG.GitHub.ServerMock.html
 
-## Setting it up without Docker, like on Windows home edition
+To run tests:
 
-The main things you'll need to run Bors on your laptop are:
-
-  * Familiarity with the command line
-  * Elixir, with a full installation of OTP (the `esl-erlang` package is sufficient)
-  * PostgreSQL; the configuration for it is in config/dev.exs
-  * Stock C compilation tools, because some of bors's dependencies use NIFs
-  * A git client, which you probably already have for downloading this repository
-  * NodeJS, to perform asset compilation
-
-I use [Portable PostgreSQL],
-the [Chocolatey] packages for Elixir, Git, and NodeJS,
-and the Visual C++ build tools from Microsoft.
-
-[Portable PostgreSQL]: https://sourceforge.net/projects/postgresqlportable/
-[Chocolatey]: https://chocolatey.org/packages/Elixir
-
-You can then run it using `mix`:
-
-    $ mix ecto.create
-    $ mix ecto.migrate
-    $ mix phx.server
-
-If you want to use MySQL, add the `-r` flag:
-
-    $ mix ecto.create -r BorsNG.Database.RepoMysql
-
-And it'll run with the GitHub API mocked-out.
-
-To run tests, run:
-
-    $ mix test
-    $ mix dogma
+    $ BORS_DATABASE=postgresql mix test
     $ mix dialyzer
 
 # How to set up your own real instance
@@ -328,7 +313,7 @@ Or you can do it manually:
 
     $ heroku create --buildpack "https://github.com/HashNuke/heroku-buildpack-elixir.git" bors-app
     $ heroku buildpacks:add https://github.com/gigalixir/gigalixir-buildpack-phoenix-static.git
-    $ heroku addons:create heroku-postgresql:hobby-dev
+    $ heroku addons:create heroku-postgresql:mini
     $ heroku config:set \
         MIX_ENV=prod \
         POOL_SIZE=18 \

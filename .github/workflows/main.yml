@@ -14,19 +14,18 @@ jobs:
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        elixir: ["1.12.3", "1.13.4", "1.14.5"]
-        otp_release: ["24.3.4.13", "25.3.2.4"]
+        elixir: ["1.16.3", "1.17.3"]
+        otp_release: ["26.2.5", "27.2"]
         os: [ubuntu-latest]
         database: [postgresql, mysql]
         exclude:
-          - elixir: "1.12.3"
-            otp_release: "25.3.2.4"
-        #  #- elixir: "1.14.1"
-        #  #  otp_release: "23.2"
+          - elixir: "1.16.3"
+            otp_release: "27.2"
     steps:
-      - uses: actions/checkout@master
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: ${{ matrix.otp_release }}
           elixir-version: ${{ matrix.elixir }}
@@ -80,6 +79,11 @@ jobs:
           POSTGRES_DB: bors_test
         ports:
           - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
       mysql:
         image: borsng/mysqlnd
         env:
@@ -93,11 +97,11 @@ jobs:
     name: exfmt
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@master
-    - uses: erlef/setup-beam@v1
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+    - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
       with:
-        otp-version: "25.1"
-        elixir-version: "1.14.1"
+        otp-version: "26.2.5"
+        elixir-version: "1.16.3"
     - run: mix format --check-formatted
 
   ci-success:
@@ -115,21 +119,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: Set up Helm
-        uses: azure/setup-helm@v1
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
-          version: v3.5.3
+          version: v3.17.1
 
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: 3.8
+          python-version: "3.12"
 
       - name: Set up chart-testing
-        uses: helm/chart-testing-action@v2.0.1
+        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
 
       - name: Run chart-testing (list-changed)
         id: list-changed

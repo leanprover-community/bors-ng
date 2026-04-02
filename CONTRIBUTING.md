@@ -101,27 +101,23 @@ You can install Erlang and Elixir as you prefer, one way to do it without
 affecting other development environments is with [asdf](https://asdf-vm.com/#/). The following shows you how to use asdf. If you already have Erlang and Elixir installed
 or prefer to install them in another way just skip to the next section.
 
-**NOTE**: please check the Erlang and Elixir versions against `.github/workflows/main.yml` to make sure you are using a supported version.
+**NOTE**: check `.tool-versions` and `.github/workflows/main.yml` for the currently supported Erlang and Elixir versions.
 
 ### Installing Erlang and Elixir with asdf
 
-To get started developing on bors with asdf install it as per the docs, then
-install Erlang and Elixir with the following commands (we assume you're on linux,
-YMMV on other OSs):
+The repo includes a `.tool-versions` file with the pinned versions. With
+[asdf](https://asdf-vm.com/) installed:
 
 ```sh
-asdf plugin-add erlang
-asdf install erlang 25.3.2.4
-asdf plugin-add elixir
-asdf install elixir 1.14.5
-# in the parent directory
-cat<<EOF > ../.tool-versions
-elixir 1.13.2
-erlang 24.0
-EOF
+asdf plugin add erlang
+asdf plugin add elixir
+asdf install   # reads .tool-versions automatically
+mix local.hex --force
+mix local.rebar --force
 ```
 
-**NOTE**: please double check the Erlang and Elixir versions against `.travis.yml` to make sure you are using a supported version.
+**NOTE**: check `.tool-versions` and `.github/workflows/main.yml` for the
+currently supported Erlang and Elixir versions.
 
 ### Running tests locally
 

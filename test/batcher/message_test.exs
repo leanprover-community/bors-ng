@@ -105,7 +105,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     actual_message =
       Message.generate_message(
         {:push_failed_unknown_failure, "main", 500,
-         '{"status": 500, "message": "Internal server error."}'}
+         ~c'{"status": 500, "message": "Internal server error."}'}
       )
 
     assert expected_message == actual_message

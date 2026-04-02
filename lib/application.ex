@@ -83,14 +83,14 @@ defmodule BorsNG.Application do
       %{
         type: :supervisor,
         id: BorsNG.Worker.Syncer.Registry,
-        start: {Registry, :start_link, [:unique, BorsNG.Worker.Syncer.Registry]}
+        start: {Registry, :start_link, [[keys: :unique, name: BorsNG.Worker.Syncer.Registry]]}
       },
       %{
         type: :supervisor,
         start: {
           Registry,
           :start_link,
-          [:unique, BorsNG.Worker.SyncerInstallation.Registry]
+          [[keys: :unique, name: BorsNG.Worker.SyncerInstallation.Registry]]
         },
         id: Installation
       },
@@ -112,7 +112,7 @@ defmodule BorsNG.Application do
         },
         id: BorsNG.Endpoint
       },
-      {Phoenix.PubSub, [name: BorsNG.PubSub, adapter: Phoenix.PubSub.PG2]}
+      {Phoenix.PubSub, name: BorsNG.PubSub}
     ]
 
     # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
