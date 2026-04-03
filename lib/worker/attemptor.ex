@@ -439,11 +439,13 @@ defmodule BorsNG.Worker.Attemptor do
   defp send_message(repo_conn, patch, message) do
     body = Batcher.Message.generate_message(message)
 
-    GitHub.post_comment!(
-      repo_conn,
-      patch.pr_xref,
-      "## try\n\n#{body}"
-    )
+    case GitHub.post_comment(repo_conn, patch.pr_xref, "## try\n\n#{body}") do
+      :ok ->
+        :ok
+
+      err ->
+        Logger.warning("send_message: failed to post try comment for patch #{patch.id}: #{inspect(err)}")
+    end
   end
 
   @spec get_repo_conn(%Project{}) :: {{:installation, number}, number}
