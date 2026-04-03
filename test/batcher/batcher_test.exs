@@ -2485,6 +2485,112 @@ defmodule BorsNG.Worker.BatcherTest do
            }
   end
 
+  test "batch completes successfully when GitHub status and comment posting fails", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]
+        }
+      },
+      post_commit_status_error: 100,
+      post_comment_error: 100
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    assert batch.state == :running
+
+    # Mark CI as passed; carry error keys through so status posting keeps failing.
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "iniN"},
+        commits: %{
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+          "iniN" => %{
+            commit_message: "Merge #1\n\n1:  r=rvr a=[unknown]\n\n\n\nCo-authored-by: a <e>\n",
+            parents: ["ini", "N"]
+          }
+        },
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{"ci" => :ok}, "N" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]
+        }
+      },
+      post_commit_status_error: 100,
+      post_comment_error: 100
+    })
+
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+
+    # Batch should be marked :ok — the merge happened even though all
+    # GitHub status and comment posts failed.
+    assert batch.state == :ok
+
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+
+    # The merge to master actually happened.
+    assert repo.branches["master"] == "iniN"
+
+    # No "bors" status was written — all post_commit_status calls failed.
+    refute Map.has_key?(repo.statuses["N"] || %{}, "bors")
+    refute Map.has_key?(repo.statuses["iniN"] || %{}, "bors")
+
+    # No comment was posted — all post_comment calls failed.
+    assert repo.comments[1] == []
+  end
+
   test "full runthrough (with wildcard)", %{proj: proj} do
     # Projects are created with a "waiting" state
     GitHub.ServerMock.put_state(%{

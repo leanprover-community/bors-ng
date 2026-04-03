@@ -34,12 +34,11 @@ Most GitHub API calls go through `call_with_retry/4` in `github.ex`, which:
 |-------------------|---------------|-----------|------------------------------------------------|----------|
 | Read operations   | 500 ms        | 4 000 ms  | `api_github_retry_max_elapsed_ms`              | 180 s    |
 | Write operations  | 500 ms        | 4 000 ms  | `api_github_retry_write_max_elapsed_ms`        | 30 s     |
-| `post_commit_status` | 500 ms   | 4 000 ms  | `api_github_retry_max_elapsed_ms`              | 180 s    |
+| `post_commit_status`, `get_branch` | 500 ms | 4 000 ms | `api_github_retry_max_elapsed_ms`   | 180 s    |
 
-Several write operations (`synthesize_commit!`, `force_push!`, `delete_branch!`,
-`merge_branch!`, `post_comment!`) currently bypass `call_with_retry` and use
-direct `GenServer.call` — they get a single attempt with a `api_github_timeout`
-timeout (default 100 s) and no retry.
+All write operations (`synthesize_commit!`, `force_push!`, `delete_branch!`,
+`merge_branch!`, `post_comment!`) now go through `call_with_retry`. Previously
+several of these used direct `GenServer.call` with no retry at all.
 
 ### Single-call timeout
 
@@ -59,10 +58,11 @@ succeeding. A failure here should log and continue, not crash the process.
 Prior to this fix, a GitHub timeout in `send_status` would crash the Batcher
 GenServer, causing the Registry to cancel all batches.
 
-### Layer 2 — Retry coverage for write operations (planned)
+### Layer 2 — Retry coverage for write operations (implemented)
 
-Add `call_with_retry` to the write operations that currently make direct
-GenServer calls. This keeps the crash-on-exhaustion semantics (the batch
+`call_with_retry` was added to the write operations that previously made
+direct GenServer calls (`synthesize_commit!`, `force_push!`, `get_branch!`,
+`post_comment!`). This keeps the crash-on-exhaustion semantics (the batch
 still fails if GitHub is unreachable for the full retry window) but gives
 these calls a fighting chance against brief transient failures.
 

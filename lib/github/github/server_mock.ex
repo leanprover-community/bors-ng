@@ -103,7 +103,9 @@ defmodule BorsNG.GitHub.ServerMock do
           :get_pr_files_error => integer,
           :get_commit_status_error => integer,
           :get_labels_error => integer,
-          :get_reviews_error => integer
+          :get_reviews_error => integer,
+          :post_commit_status_error => integer,
+          :post_comment_error => integer
         }
 
   def put_state(state) do
@@ -628,6 +630,15 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:post_comment, repo_conn, params, %{post_comment_error: 0} = state) do
+    do_handle_call(:post_comment, repo_conn, params, %{state | :post_comment_error => nil})
+  end
+
+  def do_handle_call(:post_comment, _repo_conn, _params, %{post_comment_error: n} = state)
+      when is_integer(n) and n > 0 do
+    {{:error, :post_comment}, %{state | :post_comment_error => n - 1}}
+  end
+
   def do_handle_call(:post_comment, repo_conn, {number, body}, state) do
     with {:ok, repo} <- Map.fetch(state, repo_conn),
          {:ok, comments} <- Map.fetch(repo, :comments),
@@ -642,6 +653,20 @@ defmodule BorsNG.GitHub.ServerMock do
       {:ok, state} -> {:ok, state}
       _ -> {{:error, :post_comment}, state}
     end
+  end
+
+  def do_handle_call(:post_commit_status, repo_conn, params, %{post_commit_status_error: 0} = state) do
+    do_handle_call(:post_commit_status, repo_conn, params, %{state | :post_commit_status_error => nil})
+  end
+
+  def do_handle_call(
+        :post_commit_status,
+        _repo_conn,
+        _params,
+        %{post_commit_status_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    {{:error, :post_commit_status}, %{state | :post_commit_status_error => n - 1}}
   end
 
   def do_handle_call(
