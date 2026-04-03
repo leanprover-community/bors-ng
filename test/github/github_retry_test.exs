@@ -56,6 +56,31 @@ defmodule BorsNG.GitHubRetryTest do
     assert nil == GitHub.get_file!({{:installation, 91}, 14}, "deadbeef", "bors.toml")
   end
 
+  test "post_commit_status returns timeout error instead of crashing caller when GitHub server is stalled" do
+    :sys.suspend(BorsNG.GitHub)
+
+    on_exit(fn ->
+      :sys.resume(BorsNG.GitHub)
+    end)
+
+    assert {:error, :github_call_timeout, :post_commit_status} =
+             GitHub.post_commit_status(
+               {{:installation, 91}, 14},
+               {"abc123", :ok, "Build passed", "https://example.com"}
+             )
+  end
+
+  test "post_comment returns timeout error instead of crashing caller when GitHub server is stalled" do
+    :sys.suspend(BorsNG.GitHub)
+
+    on_exit(fn ->
+      :sys.resume(BorsNG.GitHub)
+    end)
+
+    assert {:error, :github_call_timeout, :post_comment} =
+             GitHub.post_comment({{:installation, 91}, 14}, 1, "hello")
+  end
+
   test "wrappers return server unavailable errors when GitHub server name is not registered" do
     github_pid = Process.whereis(BorsNG.GitHub)
     true = Process.unregister(BorsNG.GitHub)
