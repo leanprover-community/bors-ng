@@ -103,7 +103,7 @@ jobs:
           otp-version: "26.2.5"
           elixir-version: "1.16.3"
       - run: mix deps.get
-      - uses: actions/setup-node@cdca7365b2dadb8aad0a33bc7601856ffabcc48e # v4.3.0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: assets/.node-version
           cache: npm
