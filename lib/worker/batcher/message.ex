@@ -95,8 +95,8 @@ defmodule BorsNG.Worker.Batcher.Message do
     "Configuration problem:\n#{message}"
   end
 
-  def generate_message({:conflict, :failed}) do
-    "Merge conflict."
+  def generate_message({:conflict, :failed, branch}) do
+    "Merge conflict.\n\nMerge or rebase `#{branch}` into this PR and resolve the conflict, then someone with permission can run `bors r+` or `bors retry`."
   end
 
   def generate_message({:conflict, :retrying}) do
@@ -104,7 +104,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:timeout, :failed}) do
-    "Timed out."
+    "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
   end
 
   def generate_message({:timeout, :retrying}) do
@@ -112,7 +112,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:canceled, :failed}) do
-    "Canceled."
+    "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
   end
 
   def generate_message({:canceled, :retrying}) do
@@ -173,8 +173,18 @@ defmodule BorsNG.Worker.Batcher.Message do
           "Build failed (retrying...):"
       end
 
-    ([msg] ++ Enum.map(statuses, &"  * #{gen_status_link(&1)}"))
-    |> Enum.join("\n")
+    body =
+      ([msg] ++ Enum.map(statuses, &"  * #{gen_status_link(&1)}"))
+      |> Enum.join("\n")
+
+    case state do
+      :failed ->
+        body <>
+          "\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
+
+      _ ->
+        body
+    end
   end
 
   def generate_message({:merged, :squashed, target_branch, statuses}) do

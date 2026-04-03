@@ -559,7 +559,12 @@ defmodule BorsNG.WebhookControllerTest do
       |> Map.get(:comments)
       |> Map.get(1)
 
-    assert Enum.any?(comments, &(&1 == "Canceled."))
+    assert Enum.any?(
+             comments,
+             &(&1 ==
+                 "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`.")
+           )
+
     assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
   end
 

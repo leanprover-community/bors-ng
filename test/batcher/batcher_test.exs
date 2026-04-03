@@ -126,7 +126,9 @@ defmodule BorsNG.Worker.BatcherTest do
                branches: %{},
                commits: %{},
                comments: %{
-                 1 => ["Canceled."],
+                 1 => [
+                   "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+                 ],
                  2 => []
                },
                statuses: %{"N" => %{"bors" => :error}},
@@ -175,7 +177,9 @@ defmodule BorsNG.Worker.BatcherTest do
                branches: %{},
                commits: %{},
                comments: %{
-                 1 => ["Canceled."]
+                 1 => [
+                   "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+                 ]
                },
                statuses: %{"N" => %{"bors" => :error}},
                files: %{}
@@ -244,7 +248,9 @@ defmodule BorsNG.Worker.BatcherTest do
                branches: %{},
                commits: %{},
                comments: %{
-                 1 => ["Canceled."],
+                 1 => [
+                   "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+                 ],
                  2 => [
                    "This PR was included in a batch that was canceled, it will be automatically retried"
                  ]
@@ -2981,7 +2987,11 @@ defmodule BorsNG.Worker.BatcherTest do
                commits: %{
                  "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]}
                },
-               comments: %{1 => ["Merge conflict."]},
+               comments: %{
+                 1 => [
+                   "Merge conflict.\n\nMerge or rebase `master` into this PR and resolve the conflict, then someone with permission can run `bors r+` or `bors retry`."
+                 ]
+               },
                statuses: %{"N" => %{"bors" => :error}, "iniN" => %{}},
                pulls: %{
                  1 => %Pr{
@@ -4981,7 +4991,7 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                comments: %{
                  1 => [
-                   "Build failed:\n  * ci",
+                   "Build failed:\n  * ci\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "Build failed (retrying...):\n  * ci"
                  ],
                  2 => ["Build failed (retrying...):\n  * ci"]
@@ -5069,7 +5079,7 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                comments: %{
                  1 => [
-                   "Build failed:\n  * ci",
+                   "Build failed:\n  * ci\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "Build failed (retrying...):\n  * ci"
                  ],
                  2 => ["Build failed (retrying...):\n  * ci"]
@@ -5155,11 +5165,11 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                comments: %{
                  1 => [
-                   "Build failed:\n  * ci",
+                   "Build failed:\n  * ci\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "Build failed (retrying...):\n  * ci"
                  ],
                  2 => [
-                   "Build failed:\n  * ci",
+                   "Build failed:\n  * ci\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "Build failed (retrying...):\n  * ci"
                  ]
                },
@@ -6138,7 +6148,7 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                comments: %{
                  1 => [
-                   "Timed out.",
+                   "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "This PR was included in a batch that timed out, it will be automatically retried"
                  ],
                  2 => [
@@ -6228,7 +6238,7 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                comments: %{
                  1 => [
-                   "Timed out.",
+                   "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "This PR was included in a batch that timed out, it will be automatically retried"
                  ],
                  2 => [
@@ -6320,11 +6330,11 @@ defmodule BorsNG.Worker.BatcherTest do
                },
                comments: %{
                  1 => [
-                   "Timed out.",
+                   "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "This PR was included in a batch that timed out, it will be automatically retried"
                  ],
                  2 => [
-                   "Timed out.",
+                   "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`.",
                    "This PR was included in a batch that timed out, it will be automatically retried"
                  ]
                },

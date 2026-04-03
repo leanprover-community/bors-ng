@@ -35,7 +35,9 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   end
 
   test "generate failure message" do
-    expected_message = "Build failed:\n  * stat"
+    expected_message =
+      "Build failed:\n  * stat\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
+
     example_statuses = [%{url: nil, identifier: "stat"}]
     actual_message = Message.generate_message({:failed, example_statuses})
     assert expected_message == actual_message
@@ -49,13 +51,17 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   end
 
   test "generate conflict message" do
-    expected_message = "Merge conflict."
-    actual_message = Message.generate_message({:conflict, :failed})
+    expected_message =
+      "Merge conflict.\n\nMerge or rebase `main` into this PR and resolve the conflict, then someone with permission can run `bors r+` or `bors retry`."
+
+    actual_message = Message.generate_message({:conflict, :failed, "main"})
     assert expected_message == actual_message
   end
 
   test "generate canceled message" do
-    expected_message = "Canceled."
+    expected_message =
+      "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+
     actual_message = Message.generate_message({:canceled, :failed})
     assert expected_message == actual_message
   end
@@ -69,7 +75,9 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   end
 
   test "generate timeout message" do
-    expected_message = "Timed out."
+    expected_message =
+      "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
+
     actual_message = Message.generate_message({:timeout, :failed})
     assert expected_message == actual_message
   end

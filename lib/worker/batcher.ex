@@ -725,7 +725,13 @@ defmodule BorsNG.Worker.Batcher do
     state = Divider.split_batch_with_conflicts(patch_links, batch)
     poll_after_delay(project)
 
-    send_message(repo_conn, patches, {:conflict, state})
+    conflict_msg =
+      case state do
+        :failed -> {:conflict, :failed, batch.into_branch}
+        other -> {:conflict, other}
+      end
+
+    send_message(repo_conn, patches, conflict_msg)
 
     {:conflict, nil}
   end
