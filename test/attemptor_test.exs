@@ -631,6 +631,60 @@ defmodule BorsNG.Worker.AttemptorTest do
            }
   end
 
+  test "attempt completes successfully when GitHub comment posting fails", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "trying" => "", "trying.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        pr_commits: %{1 => []},
+        statuses: %{"iniN" => []},
+        files: %{"trying.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}}
+      },
+      post_comment_error: 100
+    })
+
+    patch = new_patch(proj, 1, "N")
+    Attemptor.handle_cast({:tried, patch.id, "test"}, proj.id)
+
+    attempt = Repo.get_by!(Attempt, patch_id: patch.id)
+    assert attempt.state == :running
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "trying" => "iniN"},
+        commits: %{
+          "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]},
+          "iniN" => %{
+            commit_message: try_commit_message(patch, "try", "test"),
+            parents: ["ini", "N"]
+          }
+        },
+        comments: %{1 => []},
+        pr_commits: %{1 => []},
+        statuses: %{"iniN" => [{"ci", :ok}]},
+        files: %{"trying.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}}
+      },
+      post_comment_error: 100
+    })
+
+    attempt
+    |> Attempt.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Attemptor.handle_info(:poll, proj.id)
+    attempt = Repo.get_by!(Attempt, patch_id: patch.id)
+
+    # Attempt should complete as :ok even though the result comment couldn't be posted.
+    assert attempt.state == :ok
+
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+
+    # No comment was posted — all post_comment calls failed.
+    assert repo.comments[1] == []
+  end
+
   test "try commit message uses batcher formatting", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

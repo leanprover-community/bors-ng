@@ -1436,14 +1436,17 @@ defmodule BorsNG.Worker.Batcher do
         :ok
 
       _ ->
-        Enum.each(
-          patches,
-          &GitHub.post_comment!(
-            repo_conn,
-            &1.pr_xref,
-            body
-          )
-        )
+        Enum.each(patches, fn patch ->
+          case GitHub.post_comment(repo_conn, patch.pr_xref, body) do
+            :ok ->
+              :ok
+
+            err ->
+              Logger.warning(
+                "send_message: failed to post comment for patch #{patch.id}: #{inspect(err)}"
+              )
+          end
+        end)
     end
   end
 
@@ -1462,31 +1465,38 @@ defmodule BorsNG.Worker.Batcher do
     unless is_nil(commit) do
       {msg, status} = Batcher.Message.generate_status(message)
 
-      repo_conn
-      |> GitHub.post_commit_status!({
-        commit,
-        status,
-        msg,
-        batch_url(Endpoint, :show, id)
-      })
+      case GitHub.post_commit_status(
+             repo_conn,
+             {commit, status, msg, batch_url(Endpoint, :show, id)}
+           ) do
+        :ok ->
+          :ok
+
+        err ->
+          Logger.warning(
+            "send_status: failed to post commit status for batch #{id}: #{inspect(err)}"
+          )
+      end
     end
   end
 
   defp send_status(repo_conn, batch_id, patches, message) do
     {msg, status} = Batcher.Message.generate_status(message)
 
-    Enum.each(
-      patches,
-      &GitHub.post_commit_status!(
-        repo_conn,
-        {
-          &1.commit,
-          status,
-          msg,
-          batch_url(Endpoint, :show, batch_id)
-        }
-      )
-    )
+    Enum.each(patches, fn patch ->
+      case GitHub.post_commit_status(
+             repo_conn,
+             {patch.commit, status, msg, batch_url(Endpoint, :show, batch_id)}
+           ) do
+        :ok ->
+          :ok
+
+        err ->
+          Logger.warning(
+            "send_status: failed to post commit status for patch #{patch.id}: #{inspect(err)}"
+          )
+      end
+    end)
   end
 
   # this should be called whenever the state of a Batch is changed using Batch.changeset

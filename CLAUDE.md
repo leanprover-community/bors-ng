@@ -228,3 +228,7 @@ lib/
 
 The database backend is selected at runtime via `BORS_DATABASE` env var
 (default: `postgresql`). `:persistent_term` holds the chosen repo module.
+
+## RFCs
+
+Additional design documentation may be found in the RFCs repo: https://github.com/bors-ng/rfcs

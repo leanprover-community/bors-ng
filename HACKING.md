@@ -51,6 +51,16 @@ These servers also keep all their state written to Ecto,
 so bors can pick up where it left off if it's restarted.
 
 
+GitHub API resilience
+---------------------
+
+See [GITHUB_API_RESILIENCE.md] for the strategy and known limitations around
+transient GitHub API failures, the `call_with_retry` mechanism, and the
+deliberate tradeoffs in the current design.
+
+[GITHUB_API_RESILIENCE.md]: GITHUB_API_RESILIENCE.md
+
+
 The GitHub glue
 ---------------
 

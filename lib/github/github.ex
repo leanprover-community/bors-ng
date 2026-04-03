@@ -142,13 +142,7 @@ defmodule BorsNG.GitHub do
 
   @spec get_branch!(tconn, binary) :: %{commit: bitstring, tree: bitstring}
   def get_branch!(repo_conn, from) do
-    {:ok, commit} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:get_branch, repo_conn, {from}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
-
+    {:ok, commit} = call_with_retry(:get_branch, repo_conn, {from}, 500, 4_000)
     commit
   end
 
@@ -176,13 +170,7 @@ defmodule BorsNG.GitHub do
           committer: tcommitter | nil
         }) :: binary
   def synthesize_commit!(repo_conn, info) do
-    {:ok, sha} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:synthesize_commit, repo_conn, {info}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
-
+    {:ok, sha} = call_with_retry(:synthesize_commit, repo_conn, {info}, 500, 4_000)
     sha
   end
 
@@ -215,13 +203,7 @@ defmodule BorsNG.GitHub do
 
   @spec force_push!(tconn, binary, binary) :: binary
   def force_push!(repo_conn, sha, to) do
-    {:ok, sha} =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:force_push, repo_conn, {sha, to}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
-
+    {:ok, sha} = call_with_retry(:force_push, repo_conn, {sha, to}, 500, 4_000)
     sha
   end
 
@@ -310,22 +292,25 @@ defmodule BorsNG.GitHub do
     end
   end
 
+  @spec post_comment(tconn, number, binary) :: :ok | {:error, term}
+  def post_comment(repo_conn, number, body) do
+    call_with_retry(:post_comment, repo_conn, {number, body}, 500, 4_000)
+  end
+
   @spec post_comment!(tconn, number, binary) :: :ok
   def post_comment!(repo_conn, number, body) do
-    :ok =
-      GenServer.call(
-        BorsNG.GitHub,
-        {:post_comment, repo_conn, {number, body}},
-        Confex.fetch_env!(:bors, :api_github_timeout)
-      )
-
+    :ok = call_with_retry(:post_comment, repo_conn, {number, body}, 500, 4_000)
     :ok
+  end
+
+  @spec post_commit_status(tconn, {binary, tstatus, binary, binary}) :: :ok | {:error, term}
+  def post_commit_status(repo_conn, {sha, status, msg, url}) do
+    call_with_retry(:post_commit_status, repo_conn, {sha, status, msg, url}, 500, 4_000)
   end
 
   @spec post_commit_status!(tconn, {binary, tstatus, binary, binary}) :: :ok
   def post_commit_status!(repo_conn, {sha, status, msg, url}) do
-    # keep original delay of 11 ms
-    :ok = call_with_retry(:post_commit_status, repo_conn, {sha, status, msg, url}, 11, 11)
+    :ok = call_with_retry(:post_commit_status, repo_conn, {sha, status, msg, url}, 500, 4_000)
     :ok
   end
 
@@ -525,13 +510,15 @@ defmodule BorsNG.GitHub do
 
   defp max_retry_elapsed_ms(action)
        when action in [
+              :get_branch,
               :get_file,
               :get_pr,
               :get_pr_files,
               :get_pr_commits,
               :get_commit_status,
               :get_labels,
-              :get_reviews
+              :get_reviews,
+              :post_commit_status
             ] do
     Confex.get_env(:bors, :api_github_retry_max_elapsed_ms, 180_000)
   end
