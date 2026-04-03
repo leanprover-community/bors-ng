@@ -3,6 +3,7 @@ defmodule BorsNG.CommandTest do
   use ExUnit.Parameterized
 
   alias BorsNG.Command
+  alias BorsNG.Database.Context.Logging
   alias BorsNG.Database.Installation
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
