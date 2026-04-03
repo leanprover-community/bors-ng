@@ -655,8 +655,16 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
-  def do_handle_call(:post_commit_status, repo_conn, params, %{post_commit_status_error: 0} = state) do
-    do_handle_call(:post_commit_status, repo_conn, params, %{state | :post_commit_status_error => nil})
+  def do_handle_call(
+        :post_commit_status,
+        repo_conn,
+        params,
+        %{post_commit_status_error: 0} = state
+      ) do
+    do_handle_call(:post_commit_status, repo_conn, params, %{
+      state
+      | :post_commit_status_error => nil
+    })
   end
 
   def do_handle_call(

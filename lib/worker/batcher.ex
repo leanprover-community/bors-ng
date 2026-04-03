@@ -1442,7 +1442,9 @@ defmodule BorsNG.Worker.Batcher do
               :ok
 
             err ->
-              Logger.warning("send_message: failed to post comment for patch #{patch.id}: #{inspect(err)}")
+              Logger.warning(
+                "send_message: failed to post comment for patch #{patch.id}: #{inspect(err)}"
+              )
           end
         end)
     end
@@ -1463,12 +1465,17 @@ defmodule BorsNG.Worker.Batcher do
     unless is_nil(commit) do
       {msg, status} = Batcher.Message.generate_status(message)
 
-      case GitHub.post_commit_status(repo_conn, {commit, status, msg, batch_url(Endpoint, :show, id)}) do
+      case GitHub.post_commit_status(
+             repo_conn,
+             {commit, status, msg, batch_url(Endpoint, :show, id)}
+           ) do
         :ok ->
           :ok
 
         err ->
-          Logger.warning("send_status: failed to post commit status for batch #{id}: #{inspect(err)}")
+          Logger.warning(
+            "send_status: failed to post commit status for batch #{id}: #{inspect(err)}"
+          )
       end
     end
   end
@@ -1477,12 +1484,17 @@ defmodule BorsNG.Worker.Batcher do
     {msg, status} = Batcher.Message.generate_status(message)
 
     Enum.each(patches, fn patch ->
-      case GitHub.post_commit_status(repo_conn, {patch.commit, status, msg, batch_url(Endpoint, :show, batch_id)}) do
+      case GitHub.post_commit_status(
+             repo_conn,
+             {patch.commit, status, msg, batch_url(Endpoint, :show, batch_id)}
+           ) do
         :ok ->
           :ok
 
         err ->
-          Logger.warning("send_status: failed to post commit status for patch #{patch.id}: #{inspect(err)}")
+          Logger.warning(
+            "send_status: failed to post commit status for patch #{patch.id}: #{inspect(err)}"
+          )
       end
     end)
   end

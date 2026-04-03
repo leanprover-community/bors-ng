@@ -444,7 +444,9 @@ defmodule BorsNG.Worker.Attemptor do
         :ok
 
       err ->
-        Logger.warning("send_message: failed to post try comment for patch #{patch.id}: #{inspect(err)}")
+        Logger.warning(
+          "send_message: failed to post try comment for patch #{patch.id}: #{inspect(err)}"
+        )
     end
   end
 
