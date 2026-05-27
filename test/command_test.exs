@@ -992,6 +992,35 @@ defmodule BorsNG.CommandTest do
       # Garbage
       assert [:delegate] == Command.parse("bors delegate+ for=foo")
     end
+
+    test "for= token may appear anywhere in the argument list" do
+      # for= in the middle
+      assert [
+               {:delegate_to, "alice", 86_400},
+               {:delegate_to, "bob", 86_400}
+             ] == Command.parse("bors d=alice for=24h bob")
+
+      # for= at the very front
+      assert [
+               {:delegate_to, "alice", 86_400},
+               {:delegate_to, "bob", 86_400}
+             ] == Command.parse("bors d=for=24h alice,bob")
+
+      # Mixed comma/space separators with for= mid-list
+      assert [
+               {:delegate_to, "alice", 86_400},
+               {:delegate_to, "bob", 86_400}
+             ] == Command.parse("bors d=alice,for=24h,bob")
+    end
+
+    test "with multiple for= tokens, the last valid one wins" do
+      assert [{:delegate_to, "alice", 604_800}] ==
+               Command.parse("bors d=alice for=24h for=7d")
+
+      # Last malformed → falls back to earlier valid
+      assert [{:delegate_to, "alice", 86_400}] ==
+               Command.parse("bors d=alice for=24h for=garbage")
+    end
   end
 
   test "delegate+ refuses when no for= and no project default", %{inst: inst} do

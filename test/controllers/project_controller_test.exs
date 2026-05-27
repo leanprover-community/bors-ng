@@ -274,4 +274,83 @@ defmodule BorsNG.ProjectControllerTest do
 
     assert resp =~ "Please enter a GitHub user"
   end
+
+  describe "update_delegation_settings" do
+    test "persists the default expiry value", %{conn: conn, project: project, user: user} do
+      Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+
+      conn =
+        conn
+        |> login()
+        |> put(
+          project_path(conn, :update_delegation_settings, project),
+          %{"project" => %{"delegation_default_expiry_sec" => "86400"}}
+        )
+
+      assert redirected_to(conn, 302) =~ "settings"
+
+      updated = Repo.get!(Project, project.id)
+      assert updated.delegation_default_expiry_sec == 86_400
+    end
+
+    test "backfills expires_at on open patches with nil-expiry delegations",
+         %{conn: conn, project: project, user: user} do
+      Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+
+      open_patch = Repo.insert!(%Patch{project_id: project.id, pr_xref: 1, open: true})
+      closed_patch = Repo.insert!(%Patch{project_id: project.id, pr_xref: 2, open: false})
+
+      delegatee =
+        Repo.insert!(%User{user_xref: 4242, login: "alice"})
+
+      open_delegation =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: delegatee.id,
+          patch_id: open_patch.id,
+          expires_at: nil
+        })
+
+      closed_delegation =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: delegatee.id,
+          patch_id: closed_patch.id,
+          expires_at: nil
+        })
+
+      conn =
+        conn
+        |> login()
+        |> put(
+          project_path(conn, :update_delegation_settings, project),
+          %{"project" => %{"delegation_default_expiry_sec" => "3600"}}
+        )
+
+      assert redirected_to(conn, 302) =~ "settings"
+
+      refreshed_open = Repo.get!(UserPatchDelegation, open_delegation.id)
+      assert refreshed_open.expires_at != nil
+
+      # Closed-patch delegations are left alone
+      refreshed_closed = Repo.get!(UserPatchDelegation, closed_delegation.id)
+      assert refreshed_closed.expires_at == nil
+    end
+
+    test "rejects values above the 90-day cap", %{conn: conn, project: project, user: user} do
+      Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+      too_big = BorsNG.Command.delegation_max_duration_sec() + 1
+
+      conn =
+        conn
+        |> login()
+        |> put(
+          project_path(conn, :update_delegation_settings, project),
+          %{"project" => %{"delegation_default_expiry_sec" => Integer.to_string(too_big)}}
+        )
+
+      assert html_response(conn, 200) =~ "Cannot update delegation settings"
+
+      updated = Repo.get!(Project, project.id)
+      assert updated.delegation_default_expiry_sec == nil
+    end
+  end
 end
