@@ -454,30 +454,44 @@ defmodule BorsNG.ProjectController do
     end)
 
     if delegations != [] do
-      conn_info = Project.installation_connection(project.repo_xref, Repo)
-
-      delegations
-      |> Enum.group_by(& &1.patch, & &1.user)
-      |> Enum.each(fn {patch, users} ->
-        logins = users |> Enum.map(& &1.login) |> Enum.uniq() |> Enum.join(", ")
-
-        msg =
-          ":hourglass: Existing delegations on this PR (#{logins}) will expire on " <>
-            "#{Command.format_expires_at(expires_at)} " <>
-            "(in #{Command.format_duration(duration)}) " <>
-            "following a project setting change."
-
-        try do
-          GitHub.post_comment!(conn_info, patch.pr_xref, msg)
-        rescue
-          e ->
-            Logger.warning(
-              "backfill_delegation_expiries: failed to comment on PR ##{patch.pr_xref}: " <>
-                Exception.message(e)
-            )
-        end
+      Task.Supervisor.start_child(Syncer.Supervisor, fn ->
+        announce_backfilled_expiries(project, delegations, expires_at, duration)
       end)
     end
+  end
+
+  # Posts a heads-up comment on each affected PR. Paces the loop so a project
+  # with many open delegated PRs doesn't trip GitHub's secondary rate limit
+  # for comment creation.
+  defp announce_backfilled_expiries(project, delegations, expires_at, duration) do
+    conn_info = Project.installation_connection(project.repo_xref, Repo)
+
+    delegations
+    |> Enum.group_by(& &1.patch, & &1.user)
+    |> Enum.with_index()
+    |> Enum.each(fn {{patch, users}, idx} ->
+      if idx > 0 and not Application.get_env(:bors, :is_test, false) do
+        Process.sleep(750 + :rand.uniform(250))
+      end
+
+      logins = users |> Enum.map(& &1.login) |> Enum.uniq() |> Enum.join(", ")
+
+      msg =
+        ":hourglass: Existing delegations on this PR (#{logins}) will expire on " <>
+          "#{Command.format_expires_at(expires_at)} " <>
+          "(in #{Command.format_duration(duration)}) " <>
+          "following a project setting change."
+
+      try do
+        GitHub.post_comment!(conn_info, patch.pr_xref, msg)
+      rescue
+        e ->
+          Logger.warning(
+            "backfill_delegation_expiries: failed to comment on PR ##{patch.pr_xref}: " <>
+              Exception.message(e)
+          )
+      end
+    end)
   end
 
   defp get_or_insert_user_by_login(project, login) do
