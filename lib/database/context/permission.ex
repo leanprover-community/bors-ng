@@ -102,6 +102,19 @@ defmodule BorsNG.Database.Context.Permission do
     delegated_at_commit = Keyword.get(opts, :delegated_at_commit)
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
+    replace_fields = [:expires_at, :delegated_at_commit, :warning_sent_at, :updated_at]
+
+    # MyXQL rejects :conflict_target; ON DUPLICATE KEY UPDATE keys off the
+    # (user_id, patch_id) unique index regardless.
+    upsert_opts =
+      case Repo.__adapter__() do
+        Ecto.Adapters.MyXQL ->
+          [on_conflict: {:replace, replace_fields}]
+
+        _ ->
+          [on_conflict: {:replace, replace_fields}, conflict_target: [:user_id, :patch_id]]
+      end
+
     Repo.insert!(
       %UserPatchDelegation{
         user_id: user.id,
@@ -112,8 +125,7 @@ defmodule BorsNG.Database.Context.Permission do
         inserted_at: now,
         updated_at: now
       },
-      on_conflict: {:replace, [:expires_at, :delegated_at_commit, :warning_sent_at, :updated_at]},
-      conflict_target: [:user_id, :patch_id]
+      upsert_opts
     )
   end
 
