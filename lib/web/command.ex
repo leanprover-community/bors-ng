@@ -774,16 +774,20 @@ defmodule BorsNG.Command do
     naive_dt
     |> NaiveDateTime.truncate(:second)
     |> NaiveDateTime.to_iso8601()
-    |> Kernel.<>(" UTC")
+    |> Kernel.<>("Z")
   end
 
   @doc false
   def format_duration(seconds) when is_integer(seconds) do
-    cond do
-      seconds < 60 * 60 -> "#{div(seconds, 60)} minutes"
-      seconds < 24 * 60 * 60 -> "#{div(seconds, 60 * 60)} hours"
-      seconds < 7 * 24 * 60 * 60 -> "#{div(seconds, 24 * 60 * 60)} days"
-      true -> "#{div(seconds, 7 * 24 * 60 * 60)} weeks"
-    end
+    {n, unit} =
+      cond do
+        seconds < 60 * 60 -> {div(seconds, 60), "minute"}
+        seconds < 24 * 60 * 60 -> {div(seconds, 60 * 60), "hour"}
+        seconds < 7 * 24 * 60 * 60 -> {div(seconds, 24 * 60 * 60), "day"}
+        true -> {div(seconds, 7 * 24 * 60 * 60), "week"}
+      end
+
+    suffix = if n == 1, do: "", else: "s"
+    "#{n} #{unit}#{suffix}"
   end
 end
