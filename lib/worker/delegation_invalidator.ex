@@ -63,12 +63,12 @@ defmodule BorsNG.Worker.DelegationInvalidator do
   require Logger
 
   @doc """
-  Fire-and-forget entry point. Safe to call from `Task.start`. Loads the
-  patch fresh from the DB to avoid stale state.
+  Fire-and-forget entry point. Safe to call from a supervised task. Loads
+  the patch (with its project) fresh from the DB to avoid stale state.
   """
   @spec invalidate_for_patch(Patch.id()) :: :ok
   def invalidate_for_patch(patch_id) do
-    case Repo.get(Patch, patch_id) do
+    case Repo.one(from(p in Patch, where: p.id == ^patch_id, preload: :project)) do
       nil ->
         :ok
 
@@ -92,8 +92,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     if delegations == [] do
       :ok
     else
-      project = Repo.get!(Project, patch.project_id)
-      conn = Project.installation_connection(project.repo_xref, Repo)
+      conn = Project.installation_connection(patch.project.repo_xref, Repo)
 
       with {:ok, toml} <- GetBorsToml.get(conn, patch.into_branch),
            [_ | _] = patterns <- toml.delegation_invalidate_on_paths do
@@ -117,9 +116,16 @@ defmodule BorsNG.Worker.DelegationInvalidator do
       {:ok, pr_diff_files} ->
         pr_diff_set = MapSet.new(pr_diff_files, & &1.filename)
 
-        Enum.each(delegations, fn d ->
-          check_delegation(conn, patch, patterns, pr_diff_set, d)
-        end)
+        revoked =
+          Enum.flat_map(delegations, fn d ->
+            matching_path(conn, patch, patterns, pr_diff_set, d)
+          end)
+
+        if revoked != [] do
+          ids = Enum.map(revoked, fn {d, _path} -> d.id end)
+          Repo.delete_all(from(d in UserPatchDelegation, where: d.id in ^ids))
+          post_revoke_comment(conn, patch, revoked)
+        end
 
       {:error, reason} ->
         Logger.warning(
@@ -130,7 +136,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     end
   end
 
-  defp check_delegation(conn, patch, patterns, pr_diff_set, delegation) do
+  defp matching_path(conn, patch, patterns, pr_diff_set, delegation) do
     case GitHub.get_pr_compare(conn, delegation.delegated_at_commit, patch.commit) do
       {:ok, delta_files} ->
         matched =
@@ -140,8 +146,8 @@ defmodule BorsNG.Worker.DelegationInvalidator do
           |> Enum.find(&matches_any?(&1, patterns))
 
         case matched do
-          nil -> :ok
-          path -> invalidate!(conn, patch, delegation, path)
+          nil -> []
+          path -> [{delegation, path}]
         end
 
       {:error, reason} ->
@@ -149,7 +155,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
           "DelegationInvalidator: compare(delegation #{delegation.id}, head) failed: #{inspect(reason)}"
         )
 
-        :ok
+        []
     end
   end
 
@@ -158,22 +164,37 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     Enum.any?(patterns, fn pattern -> path == pattern or :glob.matches(path, pattern) end)
   end
 
-  defp invalidate!(conn, patch, delegation, matched_path) do
-    Repo.delete!(delegation)
-
+  defp post_revoke_comment(conn, patch, [{delegation, matched_path}]) do
     msg =
       ":no_entry_sign: Delegation for @#{delegation.user.login} revoked: " <>
         "the latest push touched `#{matched_path}`, which is listed in " <>
         "`[delegation] invalidate_on_paths` in bors.toml. " <>
         "Re-issue with `bors d=#{delegation.user.login} for=...` if appropriate."
 
-    try do
-      GitHub.post_comment!(conn, patch.pr_xref, msg)
-    rescue
-      e ->
-        Logger.warning(
-          "DelegationInvalidator: failed to comment on PR ##{patch.pr_xref}: #{Exception.message(e)}"
-        )
-    end
+    safe_post(conn, patch.pr_xref, msg)
+  end
+
+  defp post_revoke_comment(conn, patch, revoked) do
+    bullets =
+      revoked
+      |> Enum.map(fn {d, path} -> "- @#{d.user.login} — touched `#{path}`" end)
+      |> Enum.join("\n")
+
+    msg =
+      ":no_entry_sign: Delegations revoked because the latest push touched paths " <>
+        "listed in `[delegation] invalidate_on_paths` in bors.toml:\n\n" <>
+        bullets <>
+        "\n\nRe-issue with `bors d=...` if appropriate."
+
+    safe_post(conn, patch.pr_xref, msg)
+  end
+
+  defp safe_post(conn, pr_xref, msg) do
+    GitHub.post_comment!(conn, pr_xref, msg)
+  rescue
+    e ->
+      Logger.warning(
+        "DelegationInvalidator: failed to comment on PR ##{pr_xref}: #{Exception.message(e)}"
+      )
   end
 end

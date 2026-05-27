@@ -154,6 +154,32 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     assert [] == Repo.all(UserPatchDelegation)
   end
 
+  test "combines revocations into a single comment when multiple delegations match",
+       %{user: user, patch: patch} do
+    put_mock(%{
+      {"main", "new_head_sha"} => ["Cargo.toml", ".github/workflows/ci.yml"],
+      {"old_head_a", "new_head_sha"} => ["Cargo.toml"],
+      {"old_head_b", "new_head_sha"} => [".github/workflows/ci.yml"]
+    })
+
+    bob = Repo.insert!(%User{user_xref: 52, login: "bob"})
+
+    delegate!(user, patch, "old_head_a")
+    delegate!(bob, patch, "old_head_b")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [] == Repo.all(UserPatchDelegation)
+
+    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+    assert length(comments) == 1
+    [combined] = comments
+    assert String.contains?(combined, "alice")
+    assert String.contains?(combined, "bob")
+    assert String.contains?(combined, "Cargo.toml")
+    assert String.contains?(combined, ".github/workflows/ci.yml")
+  end
+
   test "no-op when bors.toml has no delegation paths configured", %{user: user, patch: patch} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 93}, 23} => %{
