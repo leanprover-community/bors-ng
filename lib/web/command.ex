@@ -637,19 +637,21 @@ defmodule BorsNG.Command do
   end
 
   def run(c, :delegate) do
-    run(c, {:delegate, nil})
+    patch = Repo.preload(c.patch, :author)
+    delegate_to(c, patch.author, nil)
   end
 
-  def run(c, {:delegate, duration}) do
+  def run(c, {:delegate, duration}) when is_integer(duration) do
     patch = Repo.preload(c.patch, :author)
     delegate_to(c, patch.author, duration)
   end
 
   def run(c, {:delegate_to, login}) do
-    run(c, {:delegate_to, login, nil})
+    delegatee = get_or_insert_user_by_login(c, login)
+    delegate_to(c, delegatee, nil)
   end
 
-  def run(c, {:delegate_to, login, duration}) do
+  def run(c, {:delegate_to, login, duration}) when is_integer(duration) do
     delegatee = get_or_insert_user_by_login(c, login)
     delegate_to(c, delegatee, duration)
   end
