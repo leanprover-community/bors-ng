@@ -39,6 +39,12 @@ defmodule BorsNG.GitHub do
     call_with_retry(:get_pr_files, repo_conn, {pr_xref}, 500, 4_000)
   end
 
+  @spec get_pr_compare(tconn, binary, binary) ::
+          {:ok, [BorsNG.GitHub.File.t()]} | {:error, term}
+  def get_pr_compare(repo_conn, base, head) do
+    call_with_retry(:get_pr_compare, repo_conn, {base, head}, 500, 4_000)
+  end
+
   @spec get_pr!(tconn, integer | bitstring) :: BorsNG.GitHub.Pr.t()
   def get_pr!(repo_conn, pr_xref) do
     {:ok, pr} = get_pr(repo_conn, pr_xref)

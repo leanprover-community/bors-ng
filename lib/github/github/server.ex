@@ -106,6 +106,22 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
+  def do_handle_call(:get_pr_compare, repo_conn, {base, head}) do
+    case get!(repo_conn, "compare/#{base}...#{head}") do
+      %{body: raw, status: 200} ->
+        files =
+          raw
+          |> Jason.decode!()
+          |> Map.get("files", [])
+          |> Enum.map(&GitHub.File.from_json!/1)
+
+        {:ok, files}
+
+      e ->
+        {:error, :get_pr_compare, e.status, {base, head}}
+    end
+  end
+
   def do_handle_call(:get_pr, repo_conn, {pr_xref}) do
     case get!(repo_conn, "pulls/#{pr_xref}") do
       %{body: raw, status: 200} ->

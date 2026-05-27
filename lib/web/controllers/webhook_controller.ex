@@ -65,6 +65,7 @@ defmodule BorsNG.WebhookController do
   alias BorsNG.Worker.Attemptor
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.BranchDeleter
+  alias BorsNG.Worker.DelegationInvalidator
   alias BorsNG.Command
   alias BorsNG.Database.Attempt
   alias BorsNG.Database.Batch
@@ -443,6 +444,11 @@ defmodule BorsNG.WebhookController do
     Attemptor.cancel(attemptor, p.id)
     commit = conn.body_params["pull_request"]["head"]["sha"]
     Repo.update!(Patch.changeset(p, %{commit: commit}))
+
+    # Fire-and-forget: revoke delegations whose author commits since delegation
+    # touch paths configured in bors.toml's [delegation] invalidate_on_paths.
+    # Runs after patch.commit is updated so it sees the new head.
+    Task.start(fn -> DelegationInvalidator.invalidate_for_patch(p.id) end)
   end
 
   def do_webhook_pr(conn, %{action: "edited", patch: patch}) do

@@ -234,6 +234,19 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:get_pr_compare, repo_conn, {base, head}, state) do
+    # Tests put a :compare map on the repo keyed by `{base, head}` whose value
+    # is a list of filenames changed between those two refs.
+    with {:ok, repo} <- Map.fetch(state, repo_conn),
+         {:ok, compare} <- Map.fetch(repo, :compare),
+         {:ok, filenames} <- Map.fetch(compare, {base, head}) do
+      files = Enum.map(filenames, &%BorsNG.GitHub.File{filename: &1})
+      {{:ok, files}, state}
+    else
+      _ -> {{:ok, []}, state}
+    end
+  end
+
   def do_handle_call(:get_pr_commits, repo_conn, {pr_xref}, state) do
     with(
       {:ok, repo} <- Map.fetch(state, repo_conn),
