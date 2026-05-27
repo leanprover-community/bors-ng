@@ -11,6 +11,7 @@ defmodule BorsNG.ProjectController do
 
   use BorsNG.Web, :controller
 
+  alias BorsNG.Command
   alias BorsNG.Worker.Batcher
   alias BorsNG.Database.Context.Dashboard
   alias BorsNG.Database.Context.Permission
@@ -26,6 +27,7 @@ defmodule BorsNG.ProjectController do
   alias BorsNG.Database.UserPatchDelegation
   alias BorsNG.GitHub
   alias BorsNG.Worker.Syncer
+  require Logger
 
   # Auto-grab the project and check the permissions
 
@@ -187,7 +189,8 @@ defmodule BorsNG.ProjectController do
       current_user_id: conn.assigns.user.id,
       update_reviewer_settings: Project.changeset_reviewer_settings(project),
       update_member_settings: Project.changeset_member_settings(project),
-      update_branches: Project.changeset_branches(project)
+      update_branches: Project.changeset_branches(project),
+      update_delegation_settings: Project.changeset_delegation_settings(project)
     )
   end
 
@@ -311,7 +314,8 @@ defmodule BorsNG.ProjectController do
           current_user_id: conn.assigns.user.id,
           update_reviewer_settings: changeset,
           update_member_settings: Project.changeset_member_settings(project),
-          update_branches: Project.changeset_branches(project)
+          update_branches: Project.changeset_branches(project),
+          update_delegation_settings: Project.changeset_delegation_settings(project)
         )
     end
   end
@@ -347,7 +351,8 @@ defmodule BorsNG.ProjectController do
           current_user_id: conn.assigns.user.id,
           update_reviewer_settings: Project.changeset_reviewer_settings(project),
           update_member_settings: changeset,
-          update_branches: Project.changeset_branches(project)
+          update_branches: Project.changeset_branches(project),
+          update_delegation_settings: Project.changeset_delegation_settings(project)
         )
     end
   end
@@ -379,8 +384,99 @@ defmodule BorsNG.ProjectController do
           current_user_id: conn.assigns.user.id,
           update_reviewer_settings: Project.changeset_reviewer_settings(project),
           update_member_settings: Project.changeset_member_settings(project),
-          update_branches: changeset
+          update_branches: changeset,
+          update_delegation_settings: Project.changeset_delegation_settings(project)
         )
+    end
+  end
+
+  def update_delegation_settings(_, :ro, _, _) do
+    raise BorsNG.PermissionDeniedError
+  end
+
+  def update_delegation_settings(conn, :rw, project, %{"project" => pdef}) do
+    was_nil = is_nil(project.delegation_default_expiry_sec)
+
+    result =
+      project
+      |> Project.changeset_delegation_settings(pdef)
+      |> Repo.update()
+
+    case result do
+      {:ok, updated_project} ->
+        if was_nil and not is_nil(updated_project.delegation_default_expiry_sec) do
+          backfill_delegation_expiries(updated_project)
+        end
+
+        conn
+        |> put_flash(:ok, "Successfully updated delegation settings")
+        |> redirect(to: project_path(conn, :settings, project))
+
+      {:error, changeset} ->
+        reviewers = Permission.list_users_for_project(:reviewer, project.id)
+        members = Permission.list_users_for_project(:member, project.id)
+
+        conn
+        |> put_flash(:error, "Cannot update delegation settings")
+        |> render("settings.html",
+          project: project,
+          reviewers: reviewers,
+          members: members,
+          current_user_id: conn.assigns.user.id,
+          update_reviewer_settings: Project.changeset_reviewer_settings(project),
+          update_member_settings: Project.changeset_member_settings(project),
+          update_branches: Project.changeset_branches(project),
+          update_delegation_settings: changeset
+        )
+    end
+  end
+
+  defp backfill_delegation_expiries(project) do
+    duration = project.delegation_default_expiry_sec
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+    expires_at = NaiveDateTime.add(now, duration, :second)
+
+    open_patch_ids =
+      from(p in Patch, where: p.project_id == ^project.id and p.open, select: p.id)
+      |> Repo.all()
+
+    delegations =
+      from(d in UserPatchDelegation,
+        where: d.patch_id in ^open_patch_ids and is_nil(d.expires_at),
+        preload: [:user, :patch]
+      )
+      |> Repo.all()
+
+    Enum.each(delegations, fn d ->
+      d
+      |> Ecto.Changeset.change(expires_at: expires_at)
+      |> Repo.update!()
+    end)
+
+    if delegations != [] do
+      conn_info = Project.installation_connection(project.repo_xref, Repo)
+
+      delegations
+      |> Enum.group_by(& &1.patch, & &1.user)
+      |> Enum.each(fn {patch, users} ->
+        logins = users |> Enum.map(& &1.login) |> Enum.uniq() |> Enum.join(", ")
+
+        msg =
+          ":hourglass: Existing delegations on this PR (#{logins}) will expire on " <>
+            "#{Command.format_expires_at(expires_at)} " <>
+            "(in #{Command.format_duration(duration)}) " <>
+            "following a project setting change."
+
+        try do
+          GitHub.post_comment!(conn_info, patch.pr_xref, msg)
+        rescue
+          e ->
+            Logger.warning(
+              "backfill_delegation_expiries: failed to comment on PR ##{patch.pr_xref}: " <>
+                Exception.message(e)
+            )
+        end
+      end)
     end
   end
 

@@ -9,6 +9,9 @@ defmodule BorsNG.Database.UserPatchDelegation do
   schema "user_patch_delegations" do
     belongs_to(:user, User)
     belongs_to(:patch, Patch)
+    field(:expires_at, :naive_datetime)
+    field(:delegated_at_commit, :string)
+    field(:warning_sent_at, :naive_datetime)
     timestamps()
   end
 
@@ -17,7 +20,13 @@ defmodule BorsNG.Database.UserPatchDelegation do
   """
   def changeset(struct, params \\ %{}) do
     struct
-    |> cast(params, [:user_id, :patch_id])
+    |> cast(params, [
+      :user_id,
+      :patch_id,
+      :expires_at,
+      :delegated_at_commit,
+      :warning_sent_at
+    ])
     |> validate_required([:user_id, :patch_id])
     |> unique_constraint(
       :user_id,

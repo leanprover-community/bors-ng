@@ -84,18 +84,37 @@ defmodule BorsNG.Database.Context.Permission do
   end
 
   defp patch_delegated_reviewer?(user_id, patch_id) do
+    now = NaiveDateTime.utc_now()
+
     UserPatchDelegation
-    |> where([d], d.user_id == ^user_id and d.patch_id == ^patch_id)
+    |> where(
+      [d],
+      d.user_id == ^user_id and d.patch_id == ^patch_id and
+        (is_nil(d.expires_at) or d.expires_at > ^now)
+    )
     |> Repo.all()
     |> Enum.empty?()
     |> Kernel.not()
   end
 
-  def delegate(user, patch) do
-    Repo.insert!(%UserPatchDelegation{
-      user: user,
-      patch: patch
-    })
+  def delegate(user, patch, opts \\ []) do
+    expires_at = Keyword.get(opts, :expires_at)
+    delegated_at_commit = Keyword.get(opts, :delegated_at_commit)
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+    Repo.insert!(
+      %UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: expires_at,
+        delegated_at_commit: delegated_at_commit,
+        warning_sent_at: nil,
+        inserted_at: now,
+        updated_at: now
+      },
+      on_conflict: {:replace, [:expires_at, :delegated_at_commit, :warning_sent_at, :updated_at]},
+      conflict_target: [:user_id, :patch_id]
+    )
   end
 
   def undelegate(user_id, patch_id) do

@@ -125,6 +125,17 @@
 
 <br>
 <br>
+<h2 class=header>Delegation expiry</h2>
+<p>Default lifetime (in seconds) applied to <code>bors delegate</code> commands that don't include an explicit <code>for=</code> argument. Leaving this empty means every delegation must specify <code>for=24h</code> (or similar) — bors will refuse otherwise. Maximum 7776000 seconds (90 days).</p>
+<p>When you first set a value here, existing forever-delegations on open PRs will be retroactively given this expiry, and affected PRs will receive a notification comment.</p>
+<%= form_for @update_delegation_settings, project_path(@conn, :update_delegation_settings, @project), [as: :project], fn f -> %>
+  <label for=delegation_default_expiry_sec>Default delegation lifetime (seconds)</label>
+  <%= number_input f, :delegation_default_expiry_sec, id: "delegation_default_expiry_sec", min: 1, max: 7776000 %>
+  <div class=toolbar><%= submit "Update", class: "toolbar-item" %></div>
+<% end %>
+
+<br>
+<br>
 <h2 class=header>Undelegate user from all PRs</h2>
 <p>Note that this is across all repos managed by this installation of bors, not just this one! </p>
 <%= form_for @conn, project_path(@conn, :undelegate_user, @project.id), [as: :user], fn f -> %>

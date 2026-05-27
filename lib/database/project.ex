@@ -46,6 +46,7 @@ defmodule BorsNG.Database.Project do
     field(:batch_timeout_sec, :integer, default: 60 * 60 * 2)
     field(:auto_reviewer_required_perm, ProjectPermission, default: nil)
     field(:auto_member_required_perm, ProjectPermission, default: nil)
+    field(:delegation_default_expiry_sec, :integer, default: nil)
 
     timestamps()
   end
@@ -118,6 +119,16 @@ defmodule BorsNG.Database.Project do
   def changeset_member_settings(struct, params \\ %{}) do
     struct
     |> cast(params, [:auto_member_required_perm])
+  end
+
+  @spec changeset_delegation_settings(t | Ecto.Changeset.t(), map) :: Ecto.Changeset.t()
+  def changeset_delegation_settings(struct, params \\ %{}) do
+    struct
+    |> cast(params, [:delegation_default_expiry_sec])
+    |> validate_number(:delegation_default_expiry_sec,
+      greater_than: 0,
+      less_than_or_equal_to: 90 * 24 * 60 * 60
+    )
   end
 
   # Red flag queries

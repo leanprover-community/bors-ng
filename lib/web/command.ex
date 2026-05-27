@@ -125,10 +125,15 @@ defmodule BorsNG.Command do
           | :activate
           | :deactivate
           | :delegate
+          | {:delegate, pos_integer()}
           | {:delegate_to, binary}
+          | {:delegate_to, binary, pos_integer()}
           | {:autocorrect, binary}
           | :ping
           | :retry
+
+  @delegation_max_duration_sec 90 * 24 * 60 * 60
+  def delegation_max_duration_sec, do: @delegation_max_duration_sec
 
   @doc """
   Parse a comment for bors commands.
@@ -173,14 +178,14 @@ defmodule BorsNG.Command do
   def parse_cmd("merge p=" <> rest), do: parse_priority(rest) ++ [:activate]
   def parse_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
   def parse_cmd("merge" <> _), do: [:activate]
-  def parse_cmd("delegate=" <> arguments), do: parse_delegation_args(arguments, :delegate_to)
-  def parse_cmd("delegate+=" <> arguments), do: parse_delegation_args(arguments, :delegate_to)
-  def parse_cmd("delegate+" <> _), do: [:delegate]
+  def parse_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  def parse_cmd("delegate+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  def parse_cmd("delegate+" <> rest), do: parse_delegate_self(rest)
   def parse_cmd("delegate-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
   def parse_cmd("delegate-" <> _), do: [:undelegate]
-  def parse_cmd("d=" <> arguments), do: parse_delegation_args(arguments, :delegate_to)
-  def parse_cmd("d+=" <> arguments), do: parse_delegation_args(arguments, :delegate_to)
-  def parse_cmd("d+" <> _), do: [:delegate]
+  def parse_cmd("d=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  def parse_cmd("d+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  def parse_cmd("d+" <> rest), do: parse_delegate_self(rest)
   def parse_cmd("d-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
   def parse_cmd("d-" <> _), do: [:undelegate]
   def parse_cmd("+r" <> _), do: [{:autocorrect, "r+"}]
@@ -341,6 +346,94 @@ defmodule BorsNG.Command do
       "" -> []
       nick -> [{action, nick}]
     end)
+  end
+
+  @doc ~S"""
+  Parse a `for=` duration argument like `24h`, `7d`, or `2w`.
+  Returns `{:ok, seconds}` or `:error`. Capped at 90 days.
+
+      iex> alias BorsNG.Command
+      iex> Command.parse_duration("24h")
+      {:ok, 86400}
+      iex> Command.parse_duration("7d")
+      {:ok, 604800}
+      iex> Command.parse_duration("2w")
+      {:ok, 1209600}
+      iex> Command.parse_duration("0h")
+      :error
+      iex> Command.parse_duration("100d")
+      :error
+      iex> Command.parse_duration("abc")
+      :error
+      iex> Command.parse_duration("")
+      :error
+  """
+  @spec parse_duration(binary) :: {:ok, pos_integer()} | :error
+  def parse_duration(str) when is_binary(str) do
+    case Regex.run(~r/^(\d+)(h|d|w)$/, str, capture: :all_but_first) do
+      [n_str, unit] ->
+        n = String.to_integer(n_str)
+
+        secs =
+          case unit do
+            "h" -> n * 60 * 60
+            "d" -> n * 24 * 60 * 60
+            "w" -> n * 7 * 24 * 60 * 60
+          end
+
+        if secs > 0 and secs <= @delegation_max_duration_sec do
+          {:ok, secs}
+        else
+          :error
+        end
+
+      nil ->
+        :error
+    end
+  end
+
+  # Splits a delegate argument tail into {names_part, duration_seconds_or_nil}.
+  # Recognises a trailing `for=<duration>` token.
+  defp extract_delegate_extras(s) do
+    trimmed = String.trim_trailing(s)
+
+    case Regex.run(~r/^(.*)\s+for=(\S+)$/, trimmed, capture: :all_but_first) do
+      [prefix, dur_str] ->
+        case parse_duration(dur_str) do
+          {:ok, secs} -> {prefix, secs}
+          :error -> {s, nil}
+        end
+
+      nil ->
+        case Regex.run(~r/^\s*for=(\S+)$/, trimmed, capture: :all_but_first) do
+          [dur_str] ->
+            case parse_duration(dur_str) do
+              {:ok, secs} -> {"", secs}
+              :error -> {s, nil}
+            end
+
+          nil ->
+            {s, nil}
+        end
+    end
+  end
+
+  defp parse_delegate_with(arguments, action) do
+    {names, duration} = extract_delegate_extras(arguments)
+
+    names
+    |> parse_delegation_args(action)
+    |> Enum.map(fn
+      {^action, login} when not is_nil(duration) -> {action, login, duration}
+      cmd -> cmd
+    end)
+  end
+
+  defp parse_delegate_self(rest) do
+    case extract_delegate_extras(rest) do
+      {_, nil} -> [:delegate]
+      {_, duration} -> [{:delegate, duration}]
+    end
   end
 
   def parse_priority(binary) do
@@ -546,14 +639,21 @@ defmodule BorsNG.Command do
   end
 
   def run(c, :delegate) do
+    run(c, {:delegate, nil})
+  end
+
+  def run(c, {:delegate, duration}) do
     patch = Repo.preload(c.patch, :author)
-    delegate_to(c, patch.author)
+    delegate_to(c, patch.author, duration)
   end
 
   def run(c, {:delegate_to, login}) do
-    delegatee = get_or_insert_user_by_login(c, login)
+    run(c, {:delegate_to, login, nil})
+  end
 
-    delegate_to(c, delegatee)
+  def run(c, {:delegate_to, login, duration}) do
+    delegatee = get_or_insert_user_by_login(c, login)
+    delegate_to(c, delegatee, duration)
   end
 
   def run(c, :undelegate) do
@@ -632,18 +732,58 @@ defmodule BorsNG.Command do
     end
   end
 
-  def delegate_to(c, delegatee) do
-    # Note that a user can be delegated multiple times
-    # TODO: fix at the database level?
-    Permission.delegate(delegatee, c.patch)
+  def delegate_to(c, delegatee, explicit_duration) do
+    case resolve_delegate_duration(c, explicit_duration) do
+      nil ->
+        c.project.repo_xref
+        |> Project.installation_connection(Repo)
+        |> GitHub.post_comment!(
+          c.pr_xref,
+          ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or have a reviewer set a default in this project's bors settings.}
+        )
 
-    Project.ping!(c.project.id)
+      duration ->
+        now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+        expires_at = NaiveDateTime.add(now, duration, :second)
 
-    c.project.repo_xref
-    |> Project.installation_connection(Repo)
-    |> GitHub.post_comment!(
-      c.pr_xref,
-      ~s{:v: #{delegatee.login} can now approve this pull request. To approve and merge a pull request, simply reply with `bors r+`. More detailed instructions are available [here](https://bors.tech/documentation/getting-started/#reviewing-pull-requests).}
-    )
+        Permission.delegate(delegatee, c.patch,
+          expires_at: expires_at,
+          delegated_at_commit: c.patch.commit
+        )
+
+        Project.ping!(c.project.id)
+
+        c.project.repo_xref
+        |> Project.installation_connection(Repo)
+        |> GitHub.post_comment!(
+          c.pr_xref,
+          ~s{:v: #{delegatee.login} can now approve this pull request until #{format_expires_at(expires_at)} (in #{format_duration(duration)}). To approve and merge, reply with `bors r+`. More detailed instructions are available [here](https://bors.tech/documentation/getting-started/#reviewing-pull-requests).}
+        )
+    end
+  end
+
+  defp resolve_delegate_duration(_c, duration) when is_integer(duration) and duration > 0,
+    do: duration
+
+  defp resolve_delegate_duration(c, nil) do
+    c.project.delegation_default_expiry_sec
+  end
+
+  @doc false
+  def format_expires_at(naive_dt) do
+    naive_dt
+    |> NaiveDateTime.truncate(:second)
+    |> NaiveDateTime.to_iso8601()
+    |> Kernel.<>(" UTC")
+  end
+
+  @doc false
+  def format_duration(seconds) when is_integer(seconds) do
+    cond do
+      seconds < 60 * 60 -> "#{div(seconds, 60)} minutes"
+      seconds < 24 * 60 * 60 -> "#{div(seconds, 60 * 60)} hours"
+      seconds < 7 * 24 * 60 * 60 -> "#{div(seconds, 24 * 60 * 60)} days"
+      true -> "#{div(seconds, 7 * 24 * 60 * 60)} weeks"
+    end
   end
 end
