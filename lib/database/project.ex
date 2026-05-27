@@ -127,7 +127,7 @@ defmodule BorsNG.Database.Project do
     |> cast(params, [:delegation_default_expiry_sec])
     |> validate_number(:delegation_default_expiry_sec,
       greater_than: 0,
-      less_than_or_equal_to: 90 * 24 * 60 * 60
+      less_than_or_equal_to: BorsNG.Command.delegation_max_duration_sec()
     )
   end
 
