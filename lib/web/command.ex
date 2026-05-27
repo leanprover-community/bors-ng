@@ -392,30 +392,28 @@ defmodule BorsNG.Command do
     end
   end
 
-  # Splits a delegate argument tail into {names_part, duration_seconds_or_nil}.
-  # Recognises a trailing `for=<duration>` token.
+  # Splits a delegate argument list into {names_part, duration_seconds_or_nil}.
+  # A `for=<duration>` token may appear anywhere among the comma/space-separated
+  # tokens; if multiple appear, the last valid one wins. The remaining tokens
+  # are rejoined with ", " for parse_delegation_args/2, which expects comma
+  # separation (a literal space terminates a name).
   defp extract_delegate_extras(s) do
-    trimmed = String.trim_trailing(s)
+    {for_tokens, name_tokens} =
+      s
+      |> String.split(~r/[\s,]+/, trim: true)
+      |> Enum.split_with(&String.starts_with?(&1, "for="))
 
-    case Regex.run(~r/^(.*)\s+for=(\S+)$/, trimmed, capture: :all_but_first) do
-      [prefix, dur_str] ->
-        case parse_duration(dur_str) do
-          {:ok, secs} -> {prefix, secs}
-          :error -> {s, nil}
+    duration =
+      for_tokens
+      |> Enum.reverse()
+      |> Enum.find_value(fn token ->
+        case parse_duration(String.replace_prefix(token, "for=", "")) do
+          {:ok, secs} -> secs
+          :error -> nil
         end
+      end)
 
-      nil ->
-        case Regex.run(~r/^\s*for=(\S+)$/, trimmed, capture: :all_but_first) do
-          [dur_str] ->
-            case parse_duration(dur_str) do
-              {:ok, secs} -> {"", secs}
-              :error -> {s, nil}
-            end
-
-          nil ->
-            {s, nil}
-        end
-    end
+    {Enum.join(name_tokens, ", "), duration}
   end
 
   defp parse_delegate_with(arguments, action) do
