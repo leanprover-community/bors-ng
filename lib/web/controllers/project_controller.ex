@@ -447,13 +447,12 @@ defmodule BorsNG.ProjectController do
       )
       |> Repo.all()
 
-    Enum.each(delegations, fn d ->
-      d
-      |> Ecto.Changeset.change(expires_at: expires_at)
-      |> Repo.update!()
-    end)
-
     if delegations != [] do
+      ids = Enum.map(delegations, & &1.id)
+
+      from(d in UserPatchDelegation, where: d.id in ^ids)
+      |> Repo.update_all(set: [expires_at: expires_at, updated_at: now])
+
       Task.Supervisor.start_child(Syncer.Supervisor, fn ->
         announce_backfilled_expiries(project, delegations, expires_at, duration)
       end)
