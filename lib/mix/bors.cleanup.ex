@@ -94,13 +94,19 @@ defmodule Mix.Tasks.Bors.Cleanup do
         )
       )
 
-    Enum.each(expired, fn d ->
-      BorsNG.Database.Repo.delete!(d)
+    if expired != [] do
+      ids = Enum.map(expired, & &1.id)
 
-      if d.patch && d.patch.open && d.patch.project do
+      BorsNG.Database.Repo.delete_all(from(d in UserPatchDelegation, where: d.id in ^ids))
+
+      expired
+      |> Enum.filter(&(&1.patch && &1.patch.open && &1.patch.project))
+      |> Enum.with_index()
+      |> Enum.each(fn {d, idx} ->
+        pace_comment(idx)
         post_expired_comment(d)
-      end
-    end)
+      end)
+    end
   end
 
   defp warn_delegations do
@@ -116,20 +122,28 @@ defmodule Mix.Tasks.Bors.Cleanup do
         )
       )
 
-    Enum.each(candidates, fn d ->
-      cond do
-        is_nil(d.patch) or not d.patch.open or is_nil(d.patch.project) ->
-          :skip
+    candidates
+    |> Enum.filter(&(&1.patch && &1.patch.open && &1.patch.project))
+    |> Enum.with_index()
+    |> Enum.each(fn {d, idx} ->
+      pace_comment(idx)
 
-        post_warning_comment(d) ->
-          d
-          |> Ecto.Changeset.change(warning_sent_at: now)
-          |> BorsNG.Database.Repo.update!()
-
-        true ->
-          :skip
+      if post_warning_comment(d) do
+        d
+        |> Ecto.Changeset.change(warning_sent_at: now)
+        |> BorsNG.Database.Repo.update!()
       end
     end)
+  end
+
+  # Sleep ~750ms (+jitter) between comments so a busy cron tick doesn't
+  # trip GitHub's secondary rate limit for content creation.
+  defp pace_comment(0), do: :ok
+
+  defp pace_comment(_idx) do
+    unless Application.get_env(:bors, :is_test, false) do
+      Process.sleep(750 + :rand.uniform(250))
+    end
   end
 
   defp post_expired_comment(d) do
