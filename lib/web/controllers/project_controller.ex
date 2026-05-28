@@ -120,7 +120,9 @@ defmodule BorsNG.ProjectController do
       |> Patch.all_for_project(:awaiting_review)
       |> Repo.all()
 
-    # Single query to get all patch-delegated user relationships for this project
+    # Single query to get all patch-delegated user relationships for this
+    # project, plus each delegation's expires_at so the UI can show remaining
+    # time alongside the delegated user.
     patch_users_map =
       from(p in Patch,
         where: p.project_id == ^project.id,
@@ -129,12 +131,12 @@ defmodule BorsNG.ProjectController do
         on: upd.patch_id == p.id,
         left_join: u in User,
         on: u.id == upd.user_id,
-        select: {p.id, u}
+        select: {p.id, u, upd.expires_at}
       )
       |> Repo.all()
       # Remove patches with no delegated users
-      |> Enum.reject(fn {_patch_id, user} -> is_nil(user) end)
-      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.reject(fn {_patch_id, user, _exp} -> is_nil(user) end)
+      |> Enum.group_by(&elem(&1, 0), fn {_pid, u, exp} -> %{user: u, expires_at: exp} end)
 
     {delegated_patches, undelegated_patches} =
       unbatched_patches

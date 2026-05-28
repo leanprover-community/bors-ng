@@ -57,9 +57,7 @@
         </a>
       </td>
       <td class=delegated-cell>
-        <%= Map.get(@patch_users_map, patch.id, [])
-          |> Enum.map(& &1.login)
-          |> Enum.join(", ") %>
+        <%= Map.get(@patch_users_map, patch.id, []) |> format_delegations() %>
       </td>
       <td class=priority-cell>
         <%= patch.priority %>
@@ -105,9 +103,7 @@
         </a>
       </td>
       <td class=delegated-cell>
-        <%= Map.get(@patch_users_map, patch.id, [])
-          |> Enum.map(& &1.login)
-          |> Enum.join(", ") %>
+        <%= Map.get(@patch_users_map, patch.id, []) |> format_delegations() %>
       </td>
       <td class=priority-cell>
         <%= patch.priority %>
@@ -154,9 +150,7 @@
         </a>
       </td>
       <td class=delegated-cell>
-        <%= Map.get(@patch_users_map, patch.id, [])
-          |> Enum.map(& &1.login)
-          |> Enum.join(", ") %>
+        <%= Map.get(@patch_users_map, patch.id, []) |> format_delegations() %>
       </td>
       <td class=priority-cell>
         <%= patch.priority %>
@@ -203,9 +197,7 @@
         </a>
       </td>
       <td class=delegated-cell>
-        <%= Map.get(@patch_users_map, patch.id, [])
-          |> Enum.map(& &1.login)
-          |> Enum.join(", ") %>
+        <%= Map.get(@patch_users_map, patch.id, []) |> format_delegations() %>
       </td>
       <td class=priority-cell>
         <%= patch.priority %>

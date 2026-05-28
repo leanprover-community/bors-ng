@@ -39,4 +39,24 @@ defmodule BorsNG.ProjectView do
   def empty?(list) when is_list(list) do
     false
   end
+
+  def format_delegations(entries) do
+    entries
+    |> Enum.map(fn %{user: u, expires_at: exp} ->
+      case format_remaining(exp) do
+        nil -> u.login
+        s -> "#{u.login} (#{s})"
+      end
+    end)
+    |> Enum.join(", ")
+  end
+
+  defp format_remaining(nil), do: nil
+
+  defp format_remaining(expires_at) do
+    case NaiveDateTime.diff(expires_at, NaiveDateTime.utc_now()) do
+      secs when secs <= 0 -> "expired"
+      secs -> "#{BorsNG.Command.format_duration(secs)} left"
+    end
+  end
 end
