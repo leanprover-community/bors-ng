@@ -609,6 +609,11 @@ defmodule BorsNG.Command do
 
   def run(c, {:try, arguments}) do
     c = fetch_patch(c)
+
+    Task.Supervisor.start_child(BorsNG.Worker.Syncer.Supervisor, fn ->
+      BorsNG.Worker.DelegationInvalidator.lint_for_patch(c.patch.id)
+    end)
+
     attemptor = Attemptor.Registry.get(c.project.id)
     Attemptor.tried(attemptor, c.patch.id, arguments)
   end

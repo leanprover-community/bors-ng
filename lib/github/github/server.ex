@@ -446,6 +446,26 @@ defmodule BorsNG.GitHub.Server do
     do_handle_call(:get_reviews, repo_conn, {issue_xref, nil})
   end
 
+  def do_handle_call(:get_repo_tree, repo_conn, {branch}) do
+    with {:branch, %{body: branch_raw, status: 200}} <-
+           {:branch, get!(repo_conn, "branches/#{branch}")},
+         tree_sha <- Jason.decode!(branch_raw)["commit"]["commit"]["tree"]["sha"],
+         {:tree, %{body: tree_raw, status: 200}} <-
+           {:tree, get!(repo_conn, "git/trees/#{tree_sha}?recursive=1")} do
+      paths =
+        tree_raw
+        |> Jason.decode!()
+        |> Map.get("tree", [])
+        |> Enum.filter(&(&1["type"] == "blob"))
+        |> Enum.map(& &1["path"])
+
+      {:ok, paths}
+    else
+      {:branch, %{status: status, body: body}} -> {:error, :get_repo_tree, status, body}
+      {:tree, %{status: status, body: body}} -> {:error, :get_repo_tree, status, body}
+    end
+  end
+
   def do_handle_call(:get_file, repo_conn, {branch, path}) do
     resp =
       get!(

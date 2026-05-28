@@ -643,6 +643,16 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:get_repo_tree, repo_conn, {branch}, state) do
+    with {:ok, repo} <- Map.fetch(state, repo_conn),
+         {:ok, files} <- Map.fetch(repo, :files),
+         branch_files when is_map(branch_files) <- Map.get(files, branch) do
+      {{:ok, Map.keys(branch_files)}, state}
+    else
+      _ -> {{:error, :get_repo_tree}, state}
+    end
+  end
+
   def do_handle_call(:post_comment, repo_conn, params, %{post_comment_error: 0} = state) do
     do_handle_call(:post_comment, repo_conn, params, %{state | :post_comment_error => nil})
   end

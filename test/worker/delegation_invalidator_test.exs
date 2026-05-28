@@ -217,4 +217,87 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
       refute DelegationInvalidator.matches_any?("README.md", patterns)
     end
   end
+
+  describe "unmatched_paths/2" do
+    test "returns patterns matching zero tree entries" do
+      tree = ["Cargo.toml", "src/main.rs", ".github/workflows/ci.yml"]
+
+      assert DelegationInvalidator.unmatched_paths(
+               ["Cargo.toml", "Gemfile", ".github/**"],
+               tree
+             ) == ["Gemfile"]
+    end
+
+    test "returns [] when all patterns match" do
+      tree = ["Cargo.toml", ".github/workflows/ci.yml"]
+      assert DelegationInvalidator.unmatched_paths(["Cargo.toml", ".github/**"], tree) == []
+    end
+
+    test "returns all patterns when tree is empty" do
+      assert DelegationInvalidator.unmatched_paths(["Cargo.toml", "Gemfile"], []) ==
+               ["Cargo.toml", "Gemfile"]
+    end
+  end
+
+  describe "lint_for_patch/1" do
+    @lint_toml ~s"""
+    status = ["ci"]
+    [delegation]
+    invalidate_on_paths = ["Cargo.toml", "Gemfile"]
+    """
+
+    defp put_lint_mock(extra_files, comments \\ []) do
+      GitHub.ServerMock.put_state(%{
+        {{:installation, 93}, 23} => %{
+          branches: %{"main" => "base_tip"},
+          comments: %{9 => comments},
+          statuses: %{},
+          files: %{"main" => Map.merge(%{"bors.toml" => @lint_toml}, extra_files)}
+        }
+      })
+    end
+
+    test "posts a warning when a pattern matches no files", %{patch: patch} do
+      # Tree has Cargo.toml but no Gemfile, so Gemfile is unmatched
+      put_lint_mock(%{"Cargo.toml" => "_"})
+
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert Enum.any?(comments, &String.contains?(&1, "match no files"))
+      assert Enum.any?(comments, &String.contains?(&1, "`Gemfile`"))
+      refute Enum.any?(comments, &String.contains?(&1, "`Cargo.toml`"))
+    end
+
+    test "stays silent when every pattern matches", %{patch: patch} do
+      put_lint_mock(%{"Cargo.toml" => "_", "Gemfile" => "_"})
+
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert comments == []
+    end
+
+    test "stays silent when invalidate_on_paths is empty", %{patch: patch} do
+      GitHub.ServerMock.put_state(%{
+        {{:installation, 93}, 23} => %{
+          branches: %{"main" => "base_tip"},
+          comments: %{9 => []},
+          statuses: %{},
+          files: %{"main" => %{"bors.toml" => ~s(status = ["ci"])}}
+        }
+      })
+
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert comments == []
+    end
+  end
 end

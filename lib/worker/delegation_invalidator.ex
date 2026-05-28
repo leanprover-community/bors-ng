@@ -164,6 +164,71 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     Enum.any?(patterns, fn pattern -> path == pattern or :glob.matches(path, pattern) end)
   end
 
+  @doc """
+  Returns the subset of `patterns` that match zero entries in `tree`.
+
+  Used by the bors-try lint to flag typos in `[delegation] invalidate_on_paths`
+  before they silently fail to protect anything.
+  """
+  @spec unmatched_paths([binary], [binary]) :: [binary]
+  def unmatched_paths(patterns, tree) do
+    Enum.reject(patterns, fn pattern ->
+      Enum.any?(tree, &matches_any?(&1, [pattern]))
+    end)
+  end
+
+  @doc """
+  Fire-and-forget lint of a patch's base-branch bors.toml. If any pattern in
+  `[delegation] invalidate_on_paths` matches zero files in the base branch's
+  HEAD tree, posts a single warning comment on the PR.
+  """
+  @spec lint_for_patch(Patch.id()) :: :ok
+  def lint_for_patch(patch_id) do
+    case Repo.one(from(p in Patch, where: p.id == ^patch_id, preload: :project)) do
+      nil ->
+        :ok
+
+      patch ->
+        try do
+          lint(patch)
+        rescue
+          e ->
+            Logger.warning(
+              "DelegationInvalidator.lint: crashed for patch #{patch_id}: #{Exception.message(e)}"
+            )
+
+            :ok
+        end
+    end
+  end
+
+  defp lint(patch) do
+    conn = Project.installation_connection(patch.project.repo_xref, Repo)
+
+    with {:ok, toml} <- GetBorsToml.get(conn, patch.into_branch),
+         [_ | _] = patterns <- toml.delegation_invalidate_on_paths,
+         {:ok, tree} <- GitHub.get_repo_tree(conn, patch.into_branch) do
+      case unmatched_paths(patterns, tree) do
+        [] -> :ok
+        bad -> post_lint_comment(conn, patch.pr_xref, bad)
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp post_lint_comment(conn, pr_xref, bad) do
+    rendered = bad |> Enum.map(&"`#{&1}`") |> Enum.join(", ")
+
+    msg =
+      ":warning: These patterns in `[delegation] invalidate_on_paths` match no files " <>
+        "in the base branch's HEAD: " <>
+        rendered <>
+        ". Check for typos — they may not protect what you intended."
+
+    safe_post(conn, pr_xref, msg)
+  end
+
   defp post_revoke_comment(conn, patch, [{delegation, matched_path}]) do
     msg =
       ":no_entry_sign: Delegation for @#{delegation.user.login} revoked: " <>
