@@ -734,48 +734,43 @@ defmodule BorsNG.Command do
   end
 
   def delegate_to(c, delegatee, explicit_duration) do
-    case resolve_delegate_duration(c, explicit_duration) do
-      nil ->
-        c.project.repo_xref
-        |> Project.installation_connection(Repo)
-        |> GitHub.post_comment!(
-          c.pr_xref,
-          ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or set `default_expiry_sec` under `[delegation]` in `bors.toml`.}
-        )
+    toml = fetch_bors_toml(c)
+    duration = explicit_duration || toml_default_expiry(toml)
+    conn = Project.installation_connection(c.project.repo_xref, Repo)
 
-      duration ->
-        now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-        expires_at = NaiveDateTime.add(now, duration, :second)
+    Delegation.reconcile_default_expiry(c.patch, toml_default_expiry(toml))
 
-        Permission.delegate(delegatee, c.patch,
-          expires_at: expires_at,
-          delegated_at_commit: c.patch.commit
-        )
+    if is_integer(duration) and duration > 0 do
+      now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+      expires_at = NaiveDateTime.add(now, duration, :second)
 
-        Project.ping!(c.project.id)
+      Permission.delegate(delegatee, c.patch,
+        expires_at: expires_at,
+        delegated_at_commit: c.patch.commit
+      )
 
-        c.project.repo_xref
-        |> Project.installation_connection(Repo)
-        |> GitHub.post_comment!(
-          c.pr_xref,
-          ~s{:v: #{delegatee.login} can now approve this pull request until #{format_expires_at(expires_at)} (in #{format_duration(duration)}). To approve and merge, reply with `bors r+`. More detailed instructions are available [here](https://bors.tech/documentation/getting-started/#reviewing-pull-requests).}
-        )
+      Project.ping!(c.project.id)
+
+      msg =
+        ~s{:v: #{delegatee.login} can now approve this pull request until #{format_expires_at(expires_at)} (in #{format_duration(duration)}). To approve and merge, reply with `bors r+`. More detailed instructions are available [here](https://bors.tech/documentation/getting-started/#reviewing-pull-requests).} <>
+          invalidate_on_paths_note(toml)
+
+      GitHub.post_comment!(conn, c.pr_xref, msg)
+    else
+      GitHub.post_comment!(
+        conn,
+        c.pr_xref,
+        ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or have a reviewer set `default_expiry_sec` under `[delegation]` in `bors.toml`.}
+      )
     end
   end
 
-  defp resolve_delegate_duration(_c, duration) when is_integer(duration) and duration > 0,
-    do: duration
-
-  defp resolve_delegate_duration(c, nil) do
+  defp fetch_bors_toml(c) do
     conn = Project.installation_connection(c.project.repo_xref, Repo)
 
     case Batcher.GetBorsToml.get(conn, c.patch.into_branch) do
-      {:ok, toml} ->
-        Delegation.reconcile_default_expiry(c.patch, toml.delegation_default_expiry_sec)
-        toml.delegation_default_expiry_sec
-
-      {:error, _} ->
-        nil
+      {:ok, toml} -> toml
+      {:error, _} -> nil
     end
   end
 
@@ -783,6 +778,19 @@ defmodule BorsNG.Command do
   @hour 60 * @minute
   @day 24 * @hour
   @week 7 * @day
+
+  defp toml_default_expiry(nil), do: nil
+  defp toml_default_expiry(toml), do: toml.delegation_default_expiry_sec
+
+  defp invalidate_on_paths_note(nil), do: ""
+  defp invalidate_on_paths_note(%{delegation_invalidate_on_paths: []}), do: ""
+
+  defp invalidate_on_paths_note(%{delegation_invalidate_on_paths: paths}) do
+    rendered = paths |> Enum.map(&"`#{&1}`") |> Enum.join(", ")
+
+    "\n\n:warning: A new author commit touching any of these paths will revoke this delegation: " <>
+      rendered <> "."
+  end
 
   @doc """
   Render a delegation expiry timestamp for a comment, e.g.

@@ -1148,6 +1148,117 @@ defmodule BorsNG.CommandTest do
     assert d.delegated_at_commit == "00000001"
   end
 
+  test "delegate+ echoes invalidate_on_paths in the success comment", %{proj: proj} do
+    pr = %BorsNG.GitHub.Pr{
+      number: 1,
+      title: "Test",
+      body: "Mess",
+      state: :open,
+      base_ref: "master",
+      head_sha: "00000001",
+      head_ref: "update",
+      base_repo_id: 13,
+      head_repo_id: 13,
+      user: %{id: 2, login: "pr_author"}
+    }
+
+    toml = ~s"""
+    status = ["ci"]
+    [delegation]
+    default_expiry_sec = #{24 * 60 * 60}
+    invalidate_on_paths = ["Cargo.toml", ".github/**"]
+    """
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => ["bors delegate+"]},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => toml}},
+        pulls: %{1 => pr}
+      }
+    })
+
+    {:ok, user} =
+      Repo.insert(%BorsNG.Database.User{user_xref: 1, is_admin: true, login: "owner"})
+
+    {:ok, _} =
+      Repo.insert(%BorsNG.Database.Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "headsha123",
+        into_branch: "master"
+      })
+
+    Repo.insert(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors delegate+",
+      pr_xref: 1
+    })
+
+    state = GitHub.ServerMock.get_state()
+    comments = get_in(state, [{{:installation, 91}, 14}, :comments, 1])
+
+    assert Enum.any?(comments, fn c ->
+             String.contains?(c, "revoke this delegation") and
+               String.contains?(c, "`Cargo.toml`") and
+               String.contains?(c, "`.github/**`")
+           end)
+  end
+
+  test "delegate+ omits the paths note when invalidate_on_paths is empty", %{proj: proj} do
+    pr = %BorsNG.GitHub.Pr{
+      number: 1,
+      title: "Test",
+      body: "Mess",
+      state: :open,
+      base_ref: "master",
+      head_sha: "00000001",
+      head_ref: "update",
+      base_repo_id: 13,
+      head_repo_id: 13,
+      user: %{id: 2, login: "pr_author"}
+    }
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => ["bors delegate+"]},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => delegation_toml()}},
+        pulls: %{1 => pr}
+      }
+    })
+
+    {:ok, user} =
+      Repo.insert(%BorsNG.Database.User{user_xref: 1, is_admin: true, login: "owner"})
+
+    {:ok, _} =
+      Repo.insert(%BorsNG.Database.Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "headsha123",
+        into_branch: "master"
+      })
+
+    Repo.insert(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors delegate+",
+      pr_xref: 1
+    })
+
+    state = GitHub.ServerMock.get_state()
+    comments = get_in(state, [{{:installation, 91}, 14}, :comments, 1])
+
+    refute Enum.any?(comments, &String.contains?(&1, "revoke this delegation"))
+  end
+
   test "re-delegating the same user replaces expires_at", %{proj: proj} do
     pr = %BorsNG.GitHub.Pr{
       number: 1,
