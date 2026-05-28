@@ -9,10 +9,6 @@ defmodule BorsNG.Database.Repo.Migrations.AddDelegationExpiry do
       add(:warning_sent_at, :naive_datetime)
     end
 
-    alter table(:projects) do
-      add(:delegation_default_expiry_sec, :integer)
-    end
-
     flush()
 
     dedupe_existing_delegations()
@@ -34,10 +30,6 @@ defmodule BorsNG.Database.Repo.Migrations.AddDelegationExpiry do
     )
 
     drop_if_exists(index(:user_patch_delegations, [:expires_at]))
-
-    alter table(:projects) do
-      remove(:delegation_default_expiry_sec)
-    end
 
     alter table(:user_patch_delegations) do
       remove(:warning_sent_at)

@@ -739,7 +739,7 @@ defmodule BorsNG.Command do
         |> Project.installation_connection(Repo)
         |> GitHub.post_comment!(
           c.pr_xref,
-          ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or have a reviewer set a default in this project's bors settings.}
+          ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or have a reviewer set `default_expiry_sec` under `[delegation]` in `bors.toml`.}
         )
 
       duration ->
@@ -766,7 +766,12 @@ defmodule BorsNG.Command do
     do: duration
 
   defp resolve_delegate_duration(c, nil) do
-    c.project.delegation_default_expiry_sec
+    conn = Project.installation_connection(c.project.repo_xref, Repo)
+
+    case Batcher.GetBorsToml.get(conn, c.patch.into_branch) do
+      {:ok, toml} -> toml.delegation_default_expiry_sec
+      {:error, _} -> nil
+    end
   end
 
   @doc false

@@ -23,12 +23,18 @@ defmodule BorsNG.CommandTest do
       %Project{
         installation_id: inst.id,
         repo_xref: 14,
-        staging_branch: "staging",
-        delegation_default_expiry_sec: 24 * 60 * 60
+        staging_branch: "staging"
       }
       |> Repo.insert!()
 
     {:ok, inst: inst, proj: proj}
+  end
+
+  # bors.toml fixture with a delegation default. Tests that exercise the
+  # no-`for=` path inject this into the ServerMock's `files` map so the
+  # delegate command can read the default from the PR's base branch.
+  defp delegation_toml(seconds \\ 24 * 60 * 60) do
+    ~s(status = ["ci"]\n[delegation]\ndefault_expiry_sec = #{seconds}\n)
   end
 
   test "reject the empty string" do
@@ -288,6 +294,7 @@ defmodule BorsNG.CommandTest do
         branches: %{},
         comments: %{1 => ["bors #{delegate_command}"]},
         statuses: %{},
+        files: %{"master" => %{"bors.toml" => delegation_toml()}},
         pulls: %{
           1 => pr
         }
@@ -355,6 +362,7 @@ defmodule BorsNG.CommandTest do
         branches: %{},
         comments: %{1 => ["bors #{delegate_command}pr_author,reviewer"]},
         statuses: %{},
+        files: %{"master" => %{"bors.toml" => delegation_toml()}},
         pulls: %{
           1 => pr
         }
@@ -437,6 +445,7 @@ defmodule BorsNG.CommandTest do
           3 => ["bors #{undelegate_command}"]
         },
         statuses: %{},
+        files: %{"master" => %{"bors.toml" => delegation_toml()}},
         pulls: %{
           1 => pr
         }
@@ -539,6 +548,7 @@ defmodule BorsNG.CommandTest do
                            3 => ["bors #{undelegate_command}"]
                          },
                          statuses: %{},
+                         files: %{"master" => %{"bors.toml" => delegation_toml()}},
                          pulls: %{
                            1 => pr
                          }
@@ -1023,13 +1033,12 @@ defmodule BorsNG.CommandTest do
     end
   end
 
-  test "delegate+ refuses when no for= and no project default", %{inst: inst} do
+  test "delegate+ refuses when no for= and no bors.toml default", %{inst: inst} do
     proj_no_default =
       %Project{
         installation_id: inst.id,
         repo_xref: 15,
-        staging_branch: "staging",
-        delegation_default_expiry_sec: nil
+        staging_branch: "staging"
       }
       |> Repo.insert!()
 
@@ -1087,7 +1096,7 @@ defmodule BorsNG.CommandTest do
            )
   end
 
-  test "delegate+ uses project default when no for= given", %{proj: proj} do
+  test "delegate+ uses bors.toml default when no for= given", %{proj: proj} do
     pr = %BorsNG.GitHub.Pr{
       number: 1,
       title: "Test",
@@ -1106,6 +1115,7 @@ defmodule BorsNG.CommandTest do
         branches: %{},
         comments: %{1 => ["bors delegate+"]},
         statuses: %{},
+        files: %{"master" => %{"bors.toml" => delegation_toml()}},
         pulls: %{1 => pr}
       }
     })

@@ -106,4 +106,40 @@ defmodule BatcherBorsTomlTest do
     {:ok, toml} = BorsToml.new(~s/status = ["exl"]\nup_to_date_approvals = true/)
     assert toml.up_to_date_approvals == true
   end
+
+  test "defaults delegation_default_expiry_sec to nil" do
+    {:ok, toml} = BorsToml.new(~s/status = ["exl"]/)
+    assert is_nil(toml.delegation_default_expiry_sec)
+  end
+
+  test "parses [delegation] default_expiry_sec" do
+    {:ok, toml} =
+      BorsToml.new(~s/status = ["exl"]\n[delegation]\ndefault_expiry_sec = 86400/)
+
+    assert toml.delegation_default_expiry_sec == 86_400
+  end
+
+  test "rejects non-integer [delegation] default_expiry_sec" do
+    r = BorsToml.new(~s/status = ["exl"]\n[delegation]\ndefault_expiry_sec = "24h"/)
+    assert r == {:error, :delegation_default_expiry_sec}
+  end
+
+  test "rejects non-positive [delegation] default_expiry_sec" do
+    r = BorsToml.new(~s/status = ["exl"]\n[delegation]\ndefault_expiry_sec = 0/)
+    assert r == {:error, :delegation_default_expiry_sec}
+  end
+
+  test "rejects [delegation] default_expiry_sec above the 90-day cap" do
+    too_big = BorsNG.Command.delegation_max_duration_sec() + 1
+
+    r =
+      BorsToml.new(~s/status = ["exl"]\n[delegation]\ndefault_expiry_sec = #{too_big}/)
+
+    assert r == {:error, :delegation_default_expiry_sec}
+  end
+
+  test "rejects a non-table [delegation] value" do
+    r = BorsToml.new(~s/status = ["exl"]\ndelegation = "nope"/)
+    assert r == {:error, :delegation_default_expiry_sec}
+  end
 end

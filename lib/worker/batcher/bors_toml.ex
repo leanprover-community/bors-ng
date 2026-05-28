@@ -31,7 +31,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             committer: nil,
             commit_title: "Merge ${PR_REFS}",
             update_base_for_deletes: false,
-            max_batch_size: nil
+            max_batch_size: nil,
+            delegation_default_expiry_sec: nil
 
   @type tcommitter :: %{
           name: binary,
@@ -53,7 +54,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           committer: tcommitter,
           commit_title: binary,
           update_base_for_deletes: boolean,
-          max_batch_size: integer | nil
+          max_batch_size: integer | nil,
+          delegation_default_expiry_sec: pos_integer() | nil
         }
 
   @type err ::
@@ -67,6 +69,7 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           | :committer_details
           | :commit_title
           | :max_batch_size
+          | :delegation_default_expiry_sec
           | :empty_config
           | :parse_failed
 
@@ -81,6 +84,13 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
     case Toml.decode(str) do
       {:ok, toml} ->
         toml = to_map(toml)
+
+        delegation_default_expiry_sec =
+          case Map.get(toml, "delegation", nil) do
+            nil -> nil
+            d when is_map(d) -> Map.get(to_map(d), "default_expiry_sec", nil)
+            _ -> :invalid
+          end
 
         committer = Map.get(toml, "committer", nil)
 
@@ -128,7 +138,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           committer: committer,
           commit_title: Map.get(toml, "commit_title", "Merge ${PR_REFS}"),
           update_base_for_deletes: Map.get(toml, "update_base_for_deletes", false),
-          max_batch_size: Map.get(toml, "max_batch_size", nil)
+          max_batch_size: Map.get(toml, "max_batch_size", nil),
+          delegation_default_expiry_sec: delegation_default_expiry_sec
         }
 
         case toml do
@@ -167,6 +178,11 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           when not is_nil(max_batch_size) and not is_integer(max_batch_size) ->
             {:error, :max_batch_size}
 
+          %{delegation_default_expiry_sec: secs}
+          when secs == :invalid or
+                 (not is_nil(secs) and (not is_integer(secs) or secs <= 0)) ->
+            {:error, :delegation_default_expiry_sec}
+
           toml ->
             status =
               toml.status
@@ -184,6 +200,11 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
               Enum.count(pr_status) != Enum.count(toml.pr_status) ->
                 {:error, :pr_status}
+
+              is_integer(toml.delegation_default_expiry_sec) and
+                  toml.delegation_default_expiry_sec >
+                    BorsNG.Command.delegation_max_duration_sec() ->
+                {:error, :delegation_default_expiry_sec}
 
               true ->
                 {:ok, %{toml | status: status, pr_status: pr_status}}

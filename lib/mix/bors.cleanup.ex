@@ -6,9 +6,11 @@ defmodule Mix.Tasks.Bors.Cleanup do
   require Logger
 
   alias BorsNG.Command
+  alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.UserPatchDelegation
   alias BorsNG.GitHub
+  alias BorsNG.Worker.Batcher
 
   @requirements ["app.start"]
 
@@ -81,6 +83,87 @@ defmodule Mix.Tasks.Bors.Cleanup do
   defp run_delegation_pass do
     expire_delegations()
     warn_delegations()
+    backfill_delegations()
+  end
+
+  # Forever-delegations on open PRs get retroactively stamped with the
+  # project's bors.toml default once that key appears. Groups candidates
+  # by {project, into_branch} so we fetch bors.toml once per group. Each
+  # affected PR gets one comment, paced to stay under GitHub's secondary
+  # rate limit.
+  defp backfill_delegations do
+    candidates =
+      BorsNG.Database.Repo.all(
+        from(d in UserPatchDelegation,
+          join: p in Patch,
+          on: p.id == d.patch_id,
+          where: is_nil(d.expires_at) and p.open,
+          preload: [:user, patch: :project]
+        )
+      )
+      |> Enum.filter(&(&1.patch && &1.patch.project))
+
+    candidates
+    |> Enum.group_by(&{&1.patch.project.id, &1.patch.into_branch})
+    |> Enum.flat_map(fn {_key, group} ->
+      project = hd(group).patch.project
+      branch = hd(group).patch.into_branch
+
+      case fetch_default_expiry(project, branch) do
+        nil -> []
+        duration when is_integer(duration) -> [{group, duration}]
+      end
+    end)
+    |> apply_backfill()
+  end
+
+  defp fetch_default_expiry(project, branch) do
+    conn = Project.installation_connection(project.repo_xref, BorsNG.Database.Repo)
+
+    case Batcher.GetBorsToml.get(conn, branch) do
+      {:ok, toml} -> toml.delegation_default_expiry_sec
+      {:error, _} -> nil
+    end
+  end
+
+  defp apply_backfill(groups) do
+    now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
+
+    groups
+    |> Enum.flat_map(fn {delegations, duration} ->
+      expires_at = NaiveDateTime.add(now, duration, :second)
+      ids = Enum.map(delegations, & &1.id)
+
+      BorsNG.Database.Repo.update_all(
+        from(d in UserPatchDelegation, where: d.id in ^ids),
+        set: [expires_at: expires_at, updated_at: now]
+      )
+
+      delegations
+      |> Enum.group_by(& &1.patch, & &1.user)
+      |> Enum.map(fn {patch, users} -> {patch, users, expires_at, duration} end)
+    end)
+    |> Enum.with_index()
+    |> Enum.each(fn {entry, idx} ->
+      pace_comment(idx)
+      post_backfill_comment(entry)
+    end)
+  end
+
+  defp post_backfill_comment({patch, users, expires_at, duration}) do
+    logins =
+      users
+      |> Enum.map(&"@#{&1.login}")
+      |> Enum.uniq()
+      |> Enum.join(", ")
+
+    msg =
+      ":hourglass: Existing delegations on this PR (#{logins}) will expire on " <>
+        "#{Command.format_expires_at(expires_at)} " <>
+        "(in #{Command.format_duration(duration)}) " <>
+        "following a `default_expiry_sec` setting in `bors.toml`."
+
+    safe_post_comment(patch.project, patch.pr_xref, msg)
   end
 
   defp expire_delegations do

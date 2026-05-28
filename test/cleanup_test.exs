@@ -172,4 +172,85 @@ defmodule BorsNG.CleanupTest do
     assert is_nil(reloaded.warning_sent_at)
     assert reloaded.expires_at == future
   end
+
+  describe "backfill pass" do
+    defp put_toml(default_expiry_sec) do
+      body =
+        ~s(status = ["ci"]\n[delegation]\ndefault_expiry_sec = #{default_expiry_sec}\n)
+
+      GitHub.ServerMock.put_state(%{
+        {{:installation, 92}, 21} => %{
+          branches: %{},
+          comments: %{7 => []},
+          statuses: %{},
+          files: %{"master" => %{"bors.toml" => body}}
+        }
+      })
+    end
+
+    test "backfills expires_at on open patches when bors.toml has default_expiry_sec",
+         %{user: user, patch: patch} do
+      put_toml(3600)
+
+      d =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: user.id,
+          patch_id: patch.id,
+          expires_at: nil
+        })
+
+      Mix.Tasks.Bors.Cleanup.run([])
+
+      reloaded = Repo.get!(UserPatchDelegation, d.id)
+      refute is_nil(reloaded.expires_at)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
+
+      assert Enum.any?(comments, &String.contains?(&1, "@alice"))
+      assert Enum.any?(comments, &String.contains?(&1, "bors.toml"))
+    end
+
+    test "leaves nil-expiry delegations alone when bors.toml lacks default_expiry_sec",
+         %{user: user, patch: patch} do
+      d =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: user.id,
+          patch_id: patch.id,
+          expires_at: nil
+        })
+
+      Mix.Tasks.Bors.Cleanup.run([])
+
+      reloaded = Repo.get!(UserPatchDelegation, d.id)
+      assert is_nil(reloaded.expires_at)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
+
+      assert comments == []
+    end
+
+    test "does not backfill delegations on closed patches",
+         %{user: user, patch: patch} do
+      put_toml(3600)
+
+      {:ok, _} =
+        patch
+        |> Patch.changeset(%{open: false})
+        |> Repo.update()
+
+      d =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: user.id,
+          patch_id: patch.id,
+          expires_at: nil
+        })
+
+      Mix.Tasks.Bors.Cleanup.run([])
+
+      reloaded = Repo.get!(UserPatchDelegation, d.id)
+      assert is_nil(reloaded.expires_at)
+    end
+  end
 end
