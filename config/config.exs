@@ -26,7 +26,8 @@ config :bors,
   html_github_root: {:system, :string, "GITHUB_URL_ROOT_HTML", "https://github.com"},
   api_github_timeout: {:system, :integer, "GITHUB_API_TIMEOUT", 100_000},
   log_outgoing: {:system, "BORS_LOG_OUTGOING", false},
-  poll_period: {:system, :integer, "BORS_POLL_PERIOD", 1_800_000}
+  poll_period: {:system, :integer, "BORS_POLL_PERIOD", 1_800_000},
+  delegation_sweep_period: {:system, :integer, "BORS_DELEGATION_SWEEP_PERIOD", 600_000}
 
 config :bors,
   zulip_api_url: {:system, "ZULIP_API_URL", ""},

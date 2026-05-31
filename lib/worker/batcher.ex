@@ -23,6 +23,7 @@ defmodule BorsNG.Worker.Batcher do
   """
 
   use GenServer
+  alias BorsNG.Database.Context.Delegation
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.Batcher.Divider
   alias BorsNG.Worker.Zulip
@@ -1155,6 +1156,8 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp patch_preflight(repo_conn, patch, {:ok, toml}) do
+    Delegation.reconcile_default_expiry(patch, toml.delegation_default_expiry_sec)
+
     with {:ok, labels} <- GitHub.get_labels(repo_conn, patch.pr_xref),
          {:ok, github_commit_statuses} <- GitHub.get_commit_status(repo_conn, patch.commit),
          {:ok, reviews} <- GitHub.get_reviews(repo_conn, patch.pr_xref),

@@ -1,13 +1,11 @@
 defmodule BorsNG.CleanupTest do
   use ExUnit.Case
+  import Ecto.Query
 
   alias BorsNG.Database.Installation
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
-  alias BorsNG.Database.User
-  alias BorsNG.Database.UserPatchDelegation
-  alias BorsNG.GitHub
 
   setup do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
@@ -26,231 +24,46 @@ defmodule BorsNG.CleanupTest do
       }
       |> Repo.insert!()
 
-    user =
-      %User{user_xref: 41, login: "alice"}
-      |> Repo.insert!()
+    {:ok, proj: proj}
+  end
 
+  defp insert_patch(proj, open, age_months) do
     patch =
       %Patch{
         project_id: proj.id,
-        pr_xref: 7,
+        pr_xref: :rand.uniform(1_000_000),
         commit: "abc",
         into_branch: "master",
-        open: true
+        open: open
       }
       |> Repo.insert!()
 
-    GitHub.ServerMock.put_state(%{
-      {{:installation, 92}, 21} => %{
-        branches: %{},
-        comments: %{7 => []},
-        statuses: %{}
-      }
-    })
-
-    {:ok, proj: proj, user: user, patch: patch}
-  end
-
-  test "deletes expired delegations and posts a notification", %{
-    proj: _proj,
-    user: user,
-    patch: patch
-  } do
-    past =
+    old =
       NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(-3600, :second)
+      |> NaiveDateTime.add(-age_months * 31 * 86_400, :second)
       |> NaiveDateTime.truncate(:second)
 
-    Repo.insert!(%UserPatchDelegation{
-      user_id: user.id,
-      patch_id: patch.id,
-      expires_at: past,
-      delegated_at_commit: "abc"
-    })
+    Repo.update_all(from(p in Patch, where: p.id == ^patch.id), set: [updated_at: old])
+    patch
+  end
+
+  test "prunes old closed patches when --months is given", %{proj: proj} do
+    old_closed = insert_patch(proj, false, 12)
+    recent_closed = insert_patch(proj, false, 1)
+    old_open = insert_patch(proj, true, 12)
+
+    Mix.Tasks.Bors.Cleanup.run(["--months", "6"])
+
+    refute Repo.get(Patch, old_closed.id)
+    assert Repo.get(Patch, recent_closed.id)
+    assert Repo.get(Patch, old_open.id)
+  end
+
+  test "does nothing without --months", %{proj: proj} do
+    old_closed = insert_patch(proj, false, 12)
 
     Mix.Tasks.Bors.Cleanup.run([])
 
-    assert [] == Repo.all(UserPatchDelegation)
-    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
-    assert Enum.any?(comments, &String.contains?(&1, "Delegation for @alice"))
-    assert Enum.any?(comments, &String.contains?(&1, "expired"))
-  end
-
-  test "does not post expired comment when patch is closed", %{
-    user: user,
-    patch: patch
-  } do
-    {:ok, _} =
-      patch
-      |> Patch.changeset(%{open: false})
-      |> Repo.update()
-
-    past =
-      NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(-3600, :second)
-      |> NaiveDateTime.truncate(:second)
-
-    Repo.insert!(%UserPatchDelegation{
-      user_id: user.id,
-      patch_id: patch.id,
-      expires_at: past
-    })
-
-    Mix.Tasks.Bors.Cleanup.run([])
-
-    assert [] == Repo.all(UserPatchDelegation)
-    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
-    assert comments == []
-  end
-
-  test "sends a warning comment when expiry is within 24h", %{
-    user: user,
-    patch: patch
-  } do
-    soon =
-      NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(3600, :second)
-      |> NaiveDateTime.truncate(:second)
-
-    d =
-      Repo.insert!(%UserPatchDelegation{
-        user_id: user.id,
-        patch_id: patch.id,
-        expires_at: soon
-      })
-
-    Mix.Tasks.Bors.Cleanup.run([])
-
-    reloaded = Repo.get!(UserPatchDelegation, d.id)
-    refute is_nil(reloaded.warning_sent_at)
-
-    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
-    assert Enum.any?(comments, &String.contains?(&1, "expires"))
-    assert Enum.any?(comments, &String.contains?(&1, "@alice"))
-  end
-
-  test "does not warn twice on the same delegation", %{user: user, patch: patch} do
-    soon =
-      NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(3600, :second)
-      |> NaiveDateTime.truncate(:second)
-
-    already =
-      NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(-60, :second)
-      |> NaiveDateTime.truncate(:second)
-
-    Repo.insert!(%UserPatchDelegation{
-      user_id: user.id,
-      patch_id: patch.id,
-      expires_at: soon,
-      warning_sent_at: already
-    })
-
-    Mix.Tasks.Bors.Cleanup.run([])
-
-    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
-    assert comments == []
-  end
-
-  test "leaves future-expiring delegations alone", %{user: user, patch: patch} do
-    future =
-      NaiveDateTime.utc_now()
-      |> NaiveDateTime.add(7 * 86_400, :second)
-      |> NaiveDateTime.truncate(:second)
-
-    d =
-      Repo.insert!(%UserPatchDelegation{
-        user_id: user.id,
-        patch_id: patch.id,
-        expires_at: future
-      })
-
-    Mix.Tasks.Bors.Cleanup.run([])
-
-    reloaded = Repo.get!(UserPatchDelegation, d.id)
-    assert is_nil(reloaded.warning_sent_at)
-    assert reloaded.expires_at == future
-  end
-
-  describe "backfill pass" do
-    defp put_toml(default_expiry_sec) do
-      body =
-        ~s(status = ["ci"]\n[delegation]\ndefault_expiry_sec = #{default_expiry_sec}\n)
-
-      GitHub.ServerMock.put_state(%{
-        {{:installation, 92}, 21} => %{
-          branches: %{},
-          comments: %{7 => []},
-          statuses: %{},
-          files: %{"master" => %{"bors.toml" => body}}
-        }
-      })
-    end
-
-    test "backfills expires_at on open patches when bors.toml has default_expiry_sec",
-         %{user: user, patch: patch} do
-      put_toml(3600)
-
-      d =
-        Repo.insert!(%UserPatchDelegation{
-          user_id: user.id,
-          patch_id: patch.id,
-          expires_at: nil
-        })
-
-      Mix.Tasks.Bors.Cleanup.run([])
-
-      reloaded = Repo.get!(UserPatchDelegation, d.id)
-      refute is_nil(reloaded.expires_at)
-
-      comments =
-        GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
-
-      assert Enum.any?(comments, &String.contains?(&1, "@alice"))
-      assert Enum.any?(comments, &String.contains?(&1, "bors.toml"))
-    end
-
-    test "leaves nil-expiry delegations alone when bors.toml lacks default_expiry_sec",
-         %{user: user, patch: patch} do
-      d =
-        Repo.insert!(%UserPatchDelegation{
-          user_id: user.id,
-          patch_id: patch.id,
-          expires_at: nil
-        })
-
-      Mix.Tasks.Bors.Cleanup.run([])
-
-      reloaded = Repo.get!(UserPatchDelegation, d.id)
-      assert is_nil(reloaded.expires_at)
-
-      comments =
-        GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
-
-      assert comments == []
-    end
-
-    test "does not backfill delegations on closed patches",
-         %{user: user, patch: patch} do
-      put_toml(3600)
-
-      {:ok, _} =
-        patch
-        |> Patch.changeset(%{open: false})
-        |> Repo.update()
-
-      d =
-        Repo.insert!(%UserPatchDelegation{
-          user_id: user.id,
-          patch_id: patch.id,
-          expires_at: nil
-        })
-
-      Mix.Tasks.Bors.Cleanup.run([])
-
-      reloaded = Repo.get!(UserPatchDelegation, d.id)
-      assert is_nil(reloaded.expires_at)
-    end
+    assert Repo.get(Patch, old_closed.id)
   end
 end

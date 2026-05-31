@@ -104,6 +104,15 @@ defmodule BorsNG.Application do
         id: BorsNG.Worker.BranchDeleter
       },
       %{
+        type: :worker,
+        start: {
+          BorsNG.Worker.DelegationTimer,
+          :start_link,
+          []
+        },
+        id: BorsNG.Worker.DelegationTimer
+      },
+      %{
         type: :supervisor,
         start: {
           BorsNG.Endpoint,

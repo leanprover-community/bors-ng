@@ -20,6 +20,7 @@ defmodule BorsNG.Command do
   alias BorsNG.Worker.Attemptor
   alias BorsNG.Worker.Batcher
   alias BorsNG.Command
+  alias BorsNG.Database.Context.Delegation
   alias BorsNG.Database.Context.Logging
   alias BorsNG.Database.Context.Permission
   alias BorsNG.Database.Installation
@@ -769,8 +770,12 @@ defmodule BorsNG.Command do
     conn = Project.installation_connection(c.project.repo_xref, Repo)
 
     case Batcher.GetBorsToml.get(conn, c.patch.into_branch) do
-      {:ok, toml} -> toml.delegation_default_expiry_sec
-      {:error, _} -> nil
+      {:ok, toml} ->
+        Delegation.reconcile_default_expiry(c.patch, toml.delegation_default_expiry_sec)
+        toml.delegation_default_expiry_sec
+
+      {:error, _} ->
+        nil
     end
   end
 
