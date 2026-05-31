@@ -169,7 +169,7 @@ defmodule BorsNG.Database.Context.Delegation do
   defp post_warning_comment(d) do
     now = NaiveDateTime.utc_now()
     secs_remaining = NaiveDateTime.diff(d.expires_at, now)
-    duration_str = Command.format_duration(max(secs_remaining, 60))
+    duration_str = Command.format_duration(secs_remaining)
 
     msg =
       ":hourglass_flowing_sand: @#{d.user.login}, your delegation on this PR expires " <>

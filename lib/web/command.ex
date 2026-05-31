@@ -779,25 +779,66 @@ defmodule BorsNG.Command do
     end
   end
 
-  @doc false
+  @minute 60
+  @hour 60 * @minute
+  @day 24 * @hour
+  @week 7 * @day
+
+  @doc """
+  Render a delegation expiry timestamp for a comment, e.g.
+  `"2026-06-07 12:34 UTC"`. Delegations are always stored in UTC, so the
+  zone is spelled out rather than abbreviated to `Z`. Seconds are dropped:
+  they're noise for an expiry deadline.
+
+  ## Examples
+
+      iex> Command.format_expires_at(~N[2026-06-07 12:34:56])
+      "2026-06-07 12:34 UTC"
+  """
   def format_expires_at(naive_dt) do
-    naive_dt
-    |> NaiveDateTime.truncate(:second)
-    |> NaiveDateTime.to_iso8601()
-    |> Kernel.<>("Z")
+    Calendar.strftime(naive_dt, "%Y-%m-%d %H:%M UTC")
   end
 
-  @doc false
+  @doc """
+  Render `seconds` as a human-friendly duration using up to the two most
+  significant non-zero units, e.g. `"1 week, 5 days"` or `"2 days, 3 hours"`.
+
+  Always **rounds down** (truncates). This is shown as the time left before a
+  delegation expires, so overstating it would be worse than ugly: a user told
+  they have "1 week" when only 6d 23h 59m remains could find they can no
+  longer merge. Rounding down means the displayed figure is a floor — there is
+  always at least this much time left. The cost is the occasional unlovely
+  value like `"6 days, 23 hours"`, which is the right trade here.
+
+  ## Examples
+
+      iex> Command.format_duration(12 * 24 * 60 * 60)
+      "1 week, 5 days"
+      iex> Command.format_duration(51 * 60 * 60)
+      "2 days, 3 hours"
+      iex> Command.format_duration(7 * 24 * 60 * 60)
+      "1 week"
+      iex> Command.format_duration(6 * 86400 + 23 * 3600 + 59 * 60 + 57)
+      "6 days, 23 hours"
+      iex> Command.format_duration(45)
+      "less than a minute"
+  """
   def format_duration(seconds) when is_integer(seconds) do
-    {n, unit} =
-      cond do
-        seconds < 60 * 60 -> {div(seconds, 60), "minute"}
-        seconds < 24 * 60 * 60 -> {div(seconds, 60 * 60), "hour"}
-        seconds < 7 * 24 * 60 * 60 -> {div(seconds, 24 * 60 * 60), "day"}
-        true -> {div(seconds, 7 * 24 * 60 * 60), "week"}
-      end
+    parts =
+      [{@week, "week"}, {@day, "day"}, {@hour, "hour"}, {@minute, "minute"}]
+      |> Enum.map_reduce(max(seconds, 0), fn {size, label}, remaining ->
+        {{div(remaining, size), label}, rem(remaining, size)}
+      end)
+      |> elem(0)
+      |> Enum.filter(fn {n, _label} -> n > 0 end)
+      |> Enum.take(2)
 
-    suffix = if n == 1, do: "", else: "s"
-    "#{n} #{unit}#{suffix}"
+    case parts do
+      [] -> "less than a minute"
+      parts -> Enum.map_join(parts, ", ", fn {n, label} -> pluralize(n, label) end)
+    end
   end
+
+  defp pluralize(1, label), do: "1 #{label}"
+  defp pluralize(n, label), do: "#{n} #{label}s"
 end
