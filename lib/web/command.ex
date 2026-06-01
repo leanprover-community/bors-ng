@@ -740,7 +740,7 @@ defmodule BorsNG.Command do
         |> Project.installation_connection(Repo)
         |> GitHub.post_comment!(
           c.pr_xref,
-          ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or have a reviewer set `default_expiry_sec` under `[delegation]` in `bors.toml`.}
+          ~s{:lock: Delegation requires an explicit expiration. Pass `for=24h`, `for=7d`, or `for=2w`, or set `default_expiry_sec` under `[delegation]` in `bors.toml`.}
         )
 
       duration ->
