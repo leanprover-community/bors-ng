@@ -739,9 +739,9 @@ defmodule BorsNG.Command do
   end
 
   def delegate_to(c, delegatee, explicit_duration) do
-    toml = fetch_bors_toml(c)
-    duration = explicit_duration || toml_default_expiry(toml)
     conn = Project.installation_connection(c.project.repo_xref, Repo)
+    toml = fetch_bors_toml(conn, c)
+    duration = explicit_duration || toml_default_expiry(toml)
 
     Delegation.reconcile_default_expiry(c.patch, toml_default_expiry(toml))
 
@@ -770,9 +770,7 @@ defmodule BorsNG.Command do
     end
   end
 
-  defp fetch_bors_toml(c) do
-    conn = Project.installation_connection(c.project.repo_xref, Repo)
-
+  defp fetch_bors_toml(conn, c) do
     case Batcher.GetBorsToml.get(conn, c.patch.into_branch) do
       {:ok, toml} -> toml
       {:error, _} -> nil
