@@ -653,6 +653,16 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:get_pr_comments, repo_conn, {number}, state) do
+    with {:ok, repo} <- Map.fetch(state, repo_conn),
+         {:ok, comments} <- Map.fetch(repo, :comments),
+         {:ok, c} <- Map.fetch(comments, number) do
+      {{:ok, c}, state}
+    else
+      _ -> {{:ok, []}, state}
+    end
+  end
+
   def do_handle_call(:post_comment, repo_conn, params, %{post_comment_error: 0} = state) do
     do_handle_call(:post_comment, repo_conn, params, %{state | :post_comment_error => nil})
   end

@@ -44,6 +44,12 @@ defmodule BorsNG.Worker.DelegationInvalidator do
   A delegation is invalidated when any path in `relevant` matches any
   configured glob.
 
+  If the PR is rebased or force-pushed, `delegated_at_commit` may no longer
+  be an ancestor of the current head. The three-dot compare then anchors at
+  an earlier merge-base, widening `delta`. This errs toward over-revoking
+  (the safe direction for a security control): the worst case is a delegation
+  that must be re-issued, never one that silently survives a sensitive change.
+
   ## bors.toml provenance
 
   The `bors.toml` config is read from the PR's BASE branch, **not** from the
@@ -127,9 +133,12 @@ defmodule BorsNG.Worker.DelegationInvalidator do
           post_revoke_comment(conn, patch, revoked)
         end
 
-      {:error, reason} ->
+      # The GitHub client returns error tuples of several arities
+      # ({:error, action, status, params}, {:error, reason, action}, ...),
+      # never a bare {:error, reason}, so match anything that isn't {:ok, _}.
+      other ->
         Logger.warning(
-          "DelegationInvalidator: compare(base, head) failed for patch #{patch.id}: #{inspect(reason)}"
+          "DelegationInvalidator: compare(base, head) failed for patch #{patch.id}: #{inspect(other)}"
         )
 
         :ok
@@ -150,9 +159,11 @@ defmodule BorsNG.Worker.DelegationInvalidator do
           path -> [{delegation, path}]
         end
 
-      {:error, reason} ->
+      # See note in do_invalidate/4: the client never returns a bare
+      # {:error, reason}; match any non-{:ok, _} shape.
+      other ->
         Logger.warning(
-          "DelegationInvalidator: compare(delegation #{delegation.id}, head) failed: #{inspect(reason)}"
+          "DelegationInvalidator: compare(delegation #{delegation.id}, head) failed: #{inspect(other)}"
         )
 
         []
@@ -226,7 +237,14 @@ defmodule BorsNG.Worker.DelegationInvalidator do
         rendered <>
         ". Check for typos — they may not protect what you intended."
 
-    safe_post(conn, pr_xref, msg)
+    # The lint fires on every `bors try`, so dedup before posting. Match on the
+    # exact body: if the set of unmatched patterns changes, the message changes
+    # and we warn afresh. If reading comments fails, fall back to posting — a
+    # possible duplicate beats silently dropping the warning.
+    case GitHub.get_pr_comments(conn, pr_xref) do
+      {:ok, comments} -> unless msg in comments, do: safe_post(conn, pr_xref, msg)
+      _ -> safe_post(conn, pr_xref, msg)
+    end
   end
 
   defp post_revoke_comment(conn, patch, [{delegation, matched_path}]) do

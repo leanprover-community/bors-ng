@@ -451,10 +451,15 @@ defmodule BorsNG.GitHub.Server do
            {:branch, get!(repo_conn, "branches/#{branch}")},
          tree_sha <- Jason.decode!(branch_raw)["commit"]["commit"]["tree"]["sha"],
          {:tree, %{body: tree_raw, status: 200}} <-
-           {:tree, get!(repo_conn, "git/trees/#{tree_sha}?recursive=1")} do
+           {:tree, get!(repo_conn, "git/trees/#{tree_sha}?recursive=1")},
+         decoded <- Jason.decode!(tree_raw),
+         # GitHub caps recursive trees (~100k entries / 7MB). A truncated tree
+         # is missing paths, so reporting it as complete would make the lint
+         # emit false "matches no files" warnings. Treat truncation as an error
+         # so callers skip rather than mislead.
+         {:truncated, false} <- {:truncated, decoded["truncated"] == true} do
       paths =
-        tree_raw
-        |> Jason.decode!()
+        decoded
         |> Map.get("tree", [])
         |> Enum.filter(&(&1["type"] == "blob"))
         |> Enum.map(& &1["path"])
@@ -463,6 +468,7 @@ defmodule BorsNG.GitHub.Server do
     else
       {:branch, %{status: status, body: body}} -> {:error, :get_repo_tree, status, body}
       {:tree, %{status: status, body: body}} -> {:error, :get_repo_tree, status, body}
+      {:truncated, true} -> {:error, :get_repo_tree, :truncated, branch}
     end
   end
 
@@ -499,6 +505,22 @@ defmodule BorsNG.GitHub.Server do
 
       %{status: status, body: raw} ->
         {:error, :post_comment, status, raw}
+    end
+  end
+
+  def do_handle_call(:get_pr_comments, repo_conn, {number}) do
+    case get!(repo_conn, "issues/#{number}/comments?per_page=100") do
+      %{body: raw, status: 200} ->
+        bodies =
+          raw
+          |> Jason.decode!()
+          |> Enum.map(&Map.get(&1, "body"))
+          |> Enum.reject(&is_nil/1)
+
+        {:ok, bodies}
+
+      e ->
+        {:error, :get_pr_comments, e.status, number}
     end
   end
 

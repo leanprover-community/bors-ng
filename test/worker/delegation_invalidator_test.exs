@@ -271,6 +271,43 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
       refute Enum.any?(comments, &String.contains?(&1, "`Cargo.toml`"))
     end
 
+    test "does not repeat the same warning across tries", %{patch: patch} do
+      put_lint_mock(%{"Cargo.toml" => "_"})
+
+      DelegationInvalidator.lint_for_patch(patch.id)
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert Enum.count(comments, &String.contains?(&1, "match no files")) == 1
+    end
+
+    test "warns afresh when the set of unmatched patterns changes", %{patch: patch} do
+      # First try: Cargo.toml exists, so only Gemfile is unmatched.
+      put_lint_mock(%{"Cargo.toml" => "_"})
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      carried =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      # Second try: Cargo.toml has since been deleted, so the unmatched set is
+      # now {Cargo.toml, Gemfile} — a different message. Carry the first
+      # warning forward to prove dedup keys on the exact body, not on substring.
+      put_lint_mock(%{}, carried)
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert Enum.count(comments, &String.contains?(&1, "match no files")) == 2
+
+      assert Enum.any?(
+               comments,
+               &(String.contains?(&1, "`Cargo.toml`") and String.contains?(&1, "`Gemfile`"))
+             )
+    end
+
     test "stays silent when every pattern matches", %{patch: patch} do
       put_lint_mock(%{"Cargo.toml" => "_", "Gemfile" => "_"})
 

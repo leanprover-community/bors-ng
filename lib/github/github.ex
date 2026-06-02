@@ -314,6 +314,11 @@ defmodule BorsNG.GitHub do
     :ok
   end
 
+  @spec get_pr_comments(tconn, number) :: {:ok, [binary]} | {:error, term}
+  def get_pr_comments(repo_conn, number) do
+    call_with_retry(:get_pr_comments, repo_conn, {number}, 500, 4_000)
+  end
+
   @spec post_commit_status(tconn, {binary, tstatus, binary, binary}) :: :ok | {:error, term}
   def post_commit_status(repo_conn, {sha, status, msg, url}) do
     call_with_retry(:post_commit_status, repo_conn, {sha, status, msg, url}, 500, 4_000)
