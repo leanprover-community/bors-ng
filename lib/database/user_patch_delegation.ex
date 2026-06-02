@@ -12,6 +12,7 @@ defmodule BorsNG.Database.UserPatchDelegation do
     field(:expires_at, :naive_datetime)
     field(:delegated_at_commit, :string)
     field(:warning_sent_at, :naive_datetime)
+    field(:week_warning_sent_at, :naive_datetime)
     timestamps()
   end
 
@@ -25,7 +26,8 @@ defmodule BorsNG.Database.UserPatchDelegation do
       :patch_id,
       :expires_at,
       :delegated_at_commit,
-      :warning_sent_at
+      :warning_sent_at,
+      :week_warning_sent_at
     ])
     |> validate_required([:user_id, :patch_id])
     |> unique_constraint(

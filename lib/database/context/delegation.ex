@@ -5,12 +5,12 @@ defmodule BorsNG.Database.Context.Delegation do
   Two kinds of work live here:
 
     * `sweep/0` — the time-driven pass. It deletes delegations that have
-      passed their `expires_at` (posting an "expired" notice), posts a
-      24-hour warning for delegations about to expire, and backfills
-      `default_expiry_sec` onto any lingering forever-delegations. There is
-      no GitHub event for "a delegation just expired" or "expires in 24h", so
-      this has to be polled; `BorsNG.Worker.DelegationTimer` runs it on an
-      interval.
+      passed their `expires_at` (posting an "expired" notice), posts warnings
+      as a delegation approaches expiry (a week out, then a day out), and
+      backfills `default_expiry_sec` onto any lingering forever-delegations.
+      There is no GitHub event for "a delegation just expired" or "expires
+      soon", so this has to be polled; `BorsNG.Worker.DelegationTimer` runs it
+      on an interval.
 
     * `reconcile_default_expiry/2` — the config-driven part. When bors reads a
       `bors.toml` that sets `default_expiry_sec`, any forever-delegations on
@@ -34,13 +34,27 @@ defmodule BorsNG.Database.Context.Delegation do
 
   require Logger
 
+  # Warning tiers, ordered from earliest to latest. Each fires once when a
+  # delegation enters its window, recording the time in its own column so it
+  # isn't repeated. The windows are disjoint — each is bounded below by the
+  # next tier's threshold — so a single sweep posts at most one warning per
+  # delegation, while a long-lived delegation still gets each warning in turn
+  # (a week out, then a day out).
+  @day_sec 24 * 60 * 60
+  @week_sec 7 * @day_sec
+  @warning_tiers [
+    {:week_warning_sent_at, @day_sec, @week_sec, "a week"},
+    {:warning_sent_at, 0, @day_sec, "24 hours"}
+  ]
+
   @doc """
   Run the time-driven delegation pass: expire past-due delegations, warn about
-  delegations expiring within 24 hours, and backfill `default_expiry_sec` onto
-  forever-delegations whose PR hasn't been touched since the default was set.
+  delegations approaching expiry (a week out, then a day out), and backfill
+  `default_expiry_sec` onto forever-delegations whose PR hasn't been touched
+  since the default was set.
 
   Backfill runs last so that a short default doesn't produce both a backfill
-  comment and a 24-hour warning in the same tick; the warning, if any, lands on
+  comment and an expiry warning in the same tick; the warning, if any, lands on
   the following sweep.
   """
   def sweep do
@@ -133,14 +147,19 @@ defmodule BorsNG.Database.Context.Delegation do
   end
 
   defp warn_delegations do
+    Enum.each(@warning_tiers, &warn_tier/1)
+  end
+
+  defp warn_tier({column, lower_sec, upper_sec, label}) do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-    warn_until = NaiveDateTime.add(now, 24 * 60 * 60, :second)
+    lower = NaiveDateTime.add(now, lower_sec, :second)
+    upper = NaiveDateTime.add(now, upper_sec, :second)
 
     candidates =
       Repo.all(
         from(d in UserPatchDelegation,
-          where: not is_nil(d.expires_at) and is_nil(d.warning_sent_at),
-          where: d.expires_at > ^now and d.expires_at <= ^warn_until,
+          where: not is_nil(d.expires_at) and is_nil(field(d, ^column)),
+          where: d.expires_at > ^lower and d.expires_at <= ^upper,
           preload: [:user, patch: :project]
         )
       )
@@ -151,9 +170,9 @@ defmodule BorsNG.Database.Context.Delegation do
     |> Enum.each(fn {d, idx} ->
       pace_comment(idx)
 
-      if post_warning_comment(d) do
+      if post_warning_comment(d, label) do
         d
-        |> Ecto.Changeset.change(warning_sent_at: now)
+        |> Ecto.Changeset.change(%{column => now})
         |> Repo.update!()
       end
     end)
@@ -221,15 +240,15 @@ defmodule BorsNG.Database.Context.Delegation do
     safe_post_comment(d.patch.project, d.patch.pr_xref, msg)
   end
 
-  defp post_warning_comment(d) do
+  defp post_warning_comment(d, label) do
     now = NaiveDateTime.utc_now()
     secs_remaining = NaiveDateTime.diff(d.expires_at, now)
     duration_str = Command.format_duration(secs_remaining)
 
     msg =
       ":hourglass_flowing_sand: @#{d.user.login}, your delegation on this PR expires " <>
-        "in approximately #{duration_str} " <>
-        "(at #{Command.format_expires_at(d.expires_at)})."
+        "in less than #{label} " <>
+        "(approximately #{duration_str}, at #{Command.format_expires_at(d.expires_at)})."
 
     safe_post_comment(d.patch.project, d.patch.pr_xref, msg)
   end

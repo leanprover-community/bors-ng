@@ -158,10 +158,63 @@ defmodule BorsNG.Database.Context.DelegationTest do
       assert comments() == []
     end
 
-    test "leaves future-expiring delegations alone", %{user: user, patch: patch} do
+    test "sends a week warning when expiry is within a week but beyond a day", %{
+      user: user,
+      patch: patch
+    } do
+      soon =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(3 * 86_400, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      d =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: user.id,
+          patch_id: patch.id,
+          expires_at: soon
+        })
+
+      Delegation.sweep()
+
+      reloaded = Repo.get!(UserPatchDelegation, d.id)
+      refute is_nil(reloaded.week_warning_sent_at)
+      # The 24h warning still hasn't fired — that lands on a later sweep.
+      assert is_nil(reloaded.warning_sent_at)
+
+      assert Enum.any?(comments(), &String.contains?(&1, "expires"))
+      assert Enum.any?(comments(), &String.contains?(&1, "@alice"))
+    end
+
+    test "does not send the 24h warning when the week warning already fired", %{
+      user: user,
+      patch: patch
+    } do
+      soon =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(3 * 86_400, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      already =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-60, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: soon,
+        week_warning_sent_at: already
+      })
+
+      Delegation.sweep()
+
+      assert comments() == []
+    end
+
+    test "leaves far-future delegations alone", %{user: user, patch: patch} do
       future =
         NaiveDateTime.utc_now()
-        |> NaiveDateTime.add(7 * 86_400, :second)
+        |> NaiveDateTime.add(30 * 86_400, :second)
         |> NaiveDateTime.truncate(:second)
 
       d =
@@ -175,6 +228,7 @@ defmodule BorsNG.Database.Context.DelegationTest do
 
       reloaded = Repo.get!(UserPatchDelegation, d.id)
       assert is_nil(reloaded.warning_sent_at)
+      assert is_nil(reloaded.week_warning_sent_at)
       assert reloaded.expires_at == future
     end
 
