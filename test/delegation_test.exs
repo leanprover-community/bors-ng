@@ -56,6 +56,19 @@ defmodule BorsNG.Database.Context.DelegationTest do
     GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :comments, 7])
   end
 
+  # Seed a bors.toml on the patch's into_branch ("master") so the sweep's
+  # backfill pass can read a `default_expiry_sec` for it.
+  defp put_state_with_bors_toml(contents) do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 92}, 21} => %{
+        branches: %{},
+        comments: %{7 => []},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => contents}}
+      }
+    })
+  end
+
   describe "sweep/0" do
     test "deletes expired delegations and posts a notification", %{user: user, patch: patch} do
       past =
@@ -163,6 +176,43 @@ defmodule BorsNG.Database.Context.DelegationTest do
       reloaded = Repo.get!(UserPatchDelegation, d.id)
       assert is_nil(reloaded.warning_sent_at)
       assert reloaded.expires_at == future
+    end
+
+    test "backfills forever-delegations from bors.toml on an open patch", %{
+      user: user,
+      patch: patch
+    } do
+      put_state_with_bors_toml(~s/status = ["ci"]\n[delegation]\ndefault_expiry_sec = 3600\n/)
+
+      d =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: user.id,
+          patch_id: patch.id,
+          expires_at: nil
+        })
+
+      Delegation.sweep()
+
+      reloaded = Repo.get!(UserPatchDelegation, d.id)
+      refute is_nil(reloaded.expires_at)
+      assert Enum.any?(comments(), &String.contains?(&1, "bors.toml"))
+    end
+
+    test "does not backfill when bors.toml has no default expiry", %{user: user, patch: patch} do
+      put_state_with_bors_toml(~s/status = ["ci"]\n/)
+
+      d =
+        Repo.insert!(%UserPatchDelegation{
+          user_id: user.id,
+          patch_id: patch.id,
+          expires_at: nil
+        })
+
+      Delegation.sweep()
+
+      reloaded = Repo.get!(UserPatchDelegation, d.id)
+      assert is_nil(reloaded.expires_at)
+      assert comments() == []
     end
   end
 

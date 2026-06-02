@@ -5,15 +5,20 @@ defmodule BorsNG.Database.Context.Delegation do
   Two kinds of work live here:
 
     * `sweep/0` — the time-driven pass. It deletes delegations that have
-      passed their `expires_at` (posting an "expired" notice) and posts a
-      24-hour warning for delegations about to expire. There is no GitHub
-      event for "a delegation just expired" or "expires in 24h", so this has
-      to be polled; `BorsNG.Worker.DelegationTimer` runs it on an interval.
+      passed their `expires_at` (posting an "expired" notice), posts a
+      24-hour warning for delegations about to expire, and backfills
+      `default_expiry_sec` onto any lingering forever-delegations. There is
+      no GitHub event for "a delegation just expired" or "expires in 24h", so
+      this has to be polled; `BorsNG.Worker.DelegationTimer` runs it on an
+      interval.
 
     * `reconcile_default_expiry/2` — the config-driven part. When bors reads a
       `bors.toml` that sets `default_expiry_sec`, any forever-delegations on
-      that PR get retroactively stamped with the default. This is invoked at
-      the point bors observes the `bors.toml`, not on a timer.
+      that PR get retroactively stamped with the default. This is invoked
+      eagerly at the point bors observes the `bors.toml` (a `bors delegate`
+      command or a patch preflight), and is also called from the `sweep/0`
+      backfill pass so it eventually catches PRs that aren't otherwise
+      touched after the default is first configured.
 
   Note that expiry is *enforced* lazily in
   `BorsNG.Database.Context.Permission.patch_delegated_reviewer?/2`, which
@@ -25,16 +30,23 @@ defmodule BorsNG.Database.Context.Delegation do
 
   alias BorsNG.Command
   alias BorsNG.GitHub
+  alias BorsNG.Worker.Batcher.GetBorsToml
 
   require Logger
 
   @doc """
-  Run the time-driven delegation pass: expire past-due delegations and warn
-  about delegations expiring within 24 hours.
+  Run the time-driven delegation pass: expire past-due delegations, warn about
+  delegations expiring within 24 hours, and backfill `default_expiry_sec` onto
+  forever-delegations whose PR hasn't been touched since the default was set.
+
+  Backfill runs last so that a short default doesn't produce both a backfill
+  comment and a 24-hour warning in the same tick; the warning, if any, lands on
+  the following sweep.
   """
   def sweep do
     expire_delegations()
     warn_delegations()
+    backfill_default_expiry()
   end
 
   @doc """
@@ -145,6 +157,49 @@ defmodule BorsNG.Database.Context.Delegation do
         |> Repo.update!()
       end
     end)
+  end
+
+  # Find open patches that still carry forever-delegations and re-read each
+  # one's `bors.toml`, so a `default_expiry_sec` configured after the fact gets
+  # applied without waiting for the next command or batch on that PR. The
+  # per-patch stamping and notification is handled by `reconcile_default_expiry/2`.
+  defp backfill_default_expiry do
+    patch_ids =
+      Repo.all(
+        from(d in UserPatchDelegation,
+          where: is_nil(d.expires_at),
+          distinct: true,
+          select: d.patch_id
+        )
+      )
+
+    patches = Repo.all(from(p in Patch, where: p.id in ^patch_ids and p.open == true))
+
+    Enum.reduce(patches, 0, fn patch, posted ->
+      pace_comment(posted)
+
+      case backfill_patch(patch) do
+        [] -> posted
+        _ -> posted + 1
+      end
+    end)
+  end
+
+  defp backfill_patch(patch) do
+    project = Repo.get!(Project, patch.project_id)
+    conn = Project.installation_connection(project.repo_xref, Repo)
+
+    case GetBorsToml.get(conn, patch.into_branch) do
+      {:ok, toml} -> reconcile_default_expiry(patch, toml.delegation_default_expiry_sec)
+      {:error, _} -> []
+    end
+  rescue
+    e ->
+      Logger.warning(
+        "delegation: backfill failed for patch ##{patch.id}: #{Exception.message(e)}"
+      )
+
+      []
   end
 
   # Sleep ~750ms (+jitter) between comments so a busy tick doesn't trip

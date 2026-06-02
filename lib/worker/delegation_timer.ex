@@ -2,13 +2,16 @@ defmodule BorsNG.Worker.DelegationTimer do
   @moduledoc """
   Periodically runs the time-driven delegation pass
   (`BorsNG.Database.Context.Delegation.sweep/0`): expiring past-due
-  delegations and warning about ones expiring within 24 hours.
+  delegations, warning about ones expiring within 24 hours, and backfilling a
+  `default_expiry_sec` onto forever-delegations whose PR hasn't been touched
+  since the default was configured.
 
-  These two actions are notifications keyed to the passage of time — there is
-  no GitHub event that fires "this delegation expired" or "expires in 24h" —
-  so something has to poll. Like the rest of bors's workers, this assumes a
-  single instance (see `BorsNG.Worker.Batcher.Registry`); running multiple
-  nodes would double up the comments.
+  These actions are keyed to the passage of time — there is no GitHub event
+  that fires "this delegation expired", "expires in 24h", or "this PR's
+  bors.toml gained a default expiry" — so something has to poll. Like the rest
+  of bors's workers, this assumes a single instance (see
+  `BorsNG.Worker.Batcher.Registry`); running multiple nodes would double up the
+  comments.
 
   In the test environment the timer starts but does not schedule itself, so
   tests drive `Delegation.sweep/0` directly.
