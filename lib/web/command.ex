@@ -29,6 +29,7 @@ defmodule BorsNG.Command do
   alias BorsNG.Database.Project
   alias BorsNG.Database.User
   alias BorsNG.GitHub
+  alias BorsNG.Worker.DelegationInvalidator
   alias BorsNG.Worker.Syncer
 
   import BorsNG.Router.Helpers
@@ -477,13 +478,21 @@ defmodule BorsNG.Command do
 
           :ok
         else
-          required_permission
-          |> Permission.permission?(c.commenter, c.patch)
-          |> if do
-            Enum.each(cmd_list, &run(c, &1))
-            Enum.each(cmd_list, &log(c, &1))
-          else
-            permission_denied(c)
+          cond do
+            # Merge-time gate: a reviewer-level command relying on a delegation
+            # is re-checked against the current head and fails closed. If the
+            # gate denies, it has already revoked + commented (or explained an
+            # unverifiable check), so don't also post the generic denial.
+            required_permission == :reviewer and
+                DelegationInvalidator.verify_for_merge(c.patch, c.commenter) == :deny ->
+              :ok
+
+            Permission.permission?(required_permission, c.commenter, c.patch) ->
+              Enum.each(cmd_list, &run(c, &1))
+              Enum.each(cmd_list, &log(c, &1))
+
+            true ->
+              permission_denied(c)
           end
         end
       end
@@ -611,7 +620,7 @@ defmodule BorsNG.Command do
     c = fetch_patch(c)
 
     Task.Supervisor.start_child(BorsNG.Worker.Syncer.Supervisor, fn ->
-      BorsNG.Worker.DelegationInvalidator.lint_for_patch(c.patch.id)
+      DelegationInvalidator.lint_for_patch(c.patch.id)
     end)
 
     attemptor = Attemptor.Registry.get(c.project.id)

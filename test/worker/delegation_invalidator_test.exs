@@ -3,6 +3,7 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
 
   alias BorsNG.Database.Context.Permission
   alias BorsNG.Database.Installation
+  alias BorsNG.Database.LinkUserProject
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
@@ -304,6 +305,63 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     DelegationInvalidator.invalidate_for_patch(patch.id)
 
     assert [_] = Repo.all(UserPatchDelegation)
+  end
+
+  describe "verify_for_merge/2" do
+    test "denies and revokes when a sensitive path changed since delegation", %{
+      user: user,
+      patch: patch
+    } do
+      put_mock(
+        pr_files: ["Cargo.toml", "src/lib.rs"],
+        delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml"]}
+      )
+
+      delegate!(user, patch, "old_head")
+
+      assert :deny == DelegationInvalidator.verify_for_merge(patch, user)
+      assert [] == Repo.all(UserPatchDelegation)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert Enum.any?(comments, &String.contains?(&1, "revoked"))
+      assert Enum.any?(comments, &String.contains?(&1, "Cargo.toml"))
+    end
+
+    test "allows when nothing sensitive changed since delegation", %{user: user, patch: patch} do
+      put_mock(
+        pr_files: ["src/lib.rs"],
+        delta: %{{"old_head", "new_head_sha"} => ["src/lib.rs"]}
+      )
+
+      delegate!(user, patch, "old_head")
+
+      assert :ok == DelegationInvalidator.verify_for_merge(patch, user)
+      assert [_] = Repo.all(UserPatchDelegation)
+    end
+
+    test "does not block or revoke a project reviewer", %{user: user, patch: patch, proj: proj} do
+      put_mock(
+        pr_files: ["Cargo.toml"],
+        delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml"]}
+      )
+
+      Repo.insert!(%LinkUserProject{user_id: user.id, project_id: proj.id})
+      delegate!(user, patch, "old_head")
+
+      assert :ok == DelegationInvalidator.verify_for_merge(patch, user)
+      assert [_] = Repo.all(UserPatchDelegation)
+    end
+
+    test "allows when the user has no active delegation", %{user: user, patch: patch} do
+      put_mock(
+        pr_files: ["Cargo.toml"],
+        delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml"]}
+      )
+
+      assert :ok == DelegationInvalidator.verify_for_merge(patch, user)
+    end
   end
 
   describe "matches_any?/2" do
