@@ -219,18 +219,26 @@ defmodule BorsNG.GitHub.ServerMock do
     {{:error, :get_pr_files, 502, pr_xref}, %{state | :get_pr_files_error => n - 1}}
   end
 
-  def do_handle_call(:get_pr_files, repo_conn, {_pr_xref}, state) do
-    with {:ok, repo} <- Map.fetch(state, repo_conn),
-         {:ok, files} <- Map.fetch(repo, :files),
-         {:ok, z_files} <- Map.fetch(files, "Z") do
-      files =
-        Enum.map(z_files, fn {k, _} ->
-          %BorsNG.GitHub.File{filename: k}
-        end)
+  def do_handle_call(:get_pr_files, repo_conn, {pr_xref}, state) do
+    case get_in(state, [repo_conn, :pr_files, pr_xref]) do
+      # Explicit per-PR file list (a plain list of filenames).
+      filenames when is_list(filenames) ->
+        {{:ok, Enum.map(filenames, &%BorsNG.GitHub.File{filename: &1})}, state}
 
-      {{:ok, files}, state}
-    else
-      _ -> {{:error, :get_pr_files}, state}
+      # Legacy CODEOWNERS shape: :files keyed by the staging commit "Z".
+      _ ->
+        with {:ok, repo} <- Map.fetch(state, repo_conn),
+             {:ok, files} <- Map.fetch(repo, :files),
+             {:ok, z_files} <- Map.fetch(files, "Z") do
+          files =
+            Enum.map(z_files, fn {k, _} ->
+              %BorsNG.GitHub.File{filename: k}
+            end)
+
+          {{:ok, files}, state}
+        else
+          _ -> {{:error, :get_pr_files}, state}
+        end
     end
   end
 

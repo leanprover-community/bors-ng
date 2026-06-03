@@ -39,25 +39,27 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     {:ok, proj: proj, user: user, patch: patch}
   end
 
-  defp put_mock(compare_map, comments \\ []) do
+  @default_toml ~s"""
+  status = ["ci"]
+  [delegation]
+  invalidate_on_paths = ["Cargo.toml", ".github/**"]
+  """
+
+  # opts:
+  #   :pr_files — the PR's net file list (pr_diff, fetched via get_pr_files)
+  #   :delta    — compare map, {delegated_at_commit, head} => [filenames]
+  #   :comments — pre-existing PR comments
+  #   :toml     — bors.toml body (defaults to a deny-list of Cargo.toml/.github)
+  defp put_mock(opts) do
     GitHub.ServerMock.put_state(%{
       {{:installation, 93}, 23} => %{
-        branches: %{
-          # bors.toml stored under the "main" base ref
-          "main" => "base_tip"
-        },
-        comments: %{9 => comments},
+        # bors.toml stored under the "main" base ref
+        branches: %{"main" => "base_tip"},
+        comments: %{9 => Keyword.get(opts, :comments, [])},
         statuses: %{},
-        files: %{
-          "main" => %{
-            "bors.toml" => ~s"""
-            status = ["ci"]
-            [delegation]
-            invalidate_on_paths = ["Cargo.toml", ".github/**"]
-            """
-          }
-        },
-        compare: compare_map
+        files: %{"main" => %{"bors.toml" => Keyword.get(opts, :toml, @default_toml)}},
+        pr_files: %{9 => Keyword.get(opts, :pr_files, [])},
+        compare: Keyword.get(opts, :delta, %{})
       }
     })
   end
@@ -73,12 +75,12 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
   end
 
   test "invalidates when a sensitive path is newly touched", %{user: user, patch: patch} do
-    put_mock(%{
-      # 3-dot diff: PR's author content vs base = ["Cargo.toml", "src/lib.rs"]
-      {"main", "new_head_sha"} => ["Cargo.toml", "src/lib.rs"],
+    put_mock(
+      # PR's author content vs base = ["Cargo.toml", "src/lib.rs"]
+      pr_files: ["Cargo.toml", "src/lib.rs"],
       # changes between delegation and new head also touch Cargo.toml
-      {"old_head", "new_head_sha"} => ["Cargo.toml"]
-    })
+      delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml"]}
+    )
 
     delegate!(user, patch, "old_head")
 
@@ -94,12 +96,12 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     user: user,
     patch: patch
   } do
-    put_mock(%{
+    put_mock(
       # Author's PR content doesn't include Cargo.toml
-      {"main", "new_head_sha"} => ["src/lib.rs"],
+      pr_files: ["src/lib.rs"],
       # delta DOES include Cargo.toml because base-merge brought it in
-      {"old_head", "new_head_sha"} => ["Cargo.toml", "src/lib.rs"]
-    })
+      delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml", "src/lib.rs"]}
+    )
 
     delegate!(user, patch, "old_head")
 
@@ -115,10 +117,10 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     user: user,
     patch: patch
   } do
-    put_mock(%{
-      {"main", "new_head_sha"} => ["Cargo.toml"],
-      {"old_head", "new_head_sha"} => ["Cargo.toml"]
-    })
+    put_mock(
+      pr_files: ["Cargo.toml"],
+      delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml"]}
+    )
 
     # bypass Permission.delegate to insert a row without delegated_at_commit
     Repo.insert!(%UserPatchDelegation{user_id: user.id, patch_id: patch.id, expires_at: nil})
@@ -129,10 +131,10 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
   end
 
   test "leaves delegations alone when no path matches", %{user: user, patch: patch} do
-    put_mock(%{
-      {"main", "new_head_sha"} => ["src/lib.rs", "README.md"],
-      {"old_head", "new_head_sha"} => ["src/lib.rs"]
-    })
+    put_mock(
+      pr_files: ["src/lib.rs", "README.md"],
+      delta: %{{"old_head", "new_head_sha"} => ["src/lib.rs"]}
+    )
 
     delegate!(user, patch, "old_head")
 
@@ -142,10 +144,10 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
   end
 
   test "matches glob patterns under a directory", %{user: user, patch: patch} do
-    put_mock(%{
-      {"main", "new_head_sha"} => [".github/workflows/ci.yml"],
-      {"old_head", "new_head_sha"} => [".github/workflows/ci.yml"]
-    })
+    put_mock(
+      pr_files: [".github/workflows/ci.yml"],
+      delta: %{{"old_head", "new_head_sha"} => [".github/workflows/ci.yml"]}
+    )
 
     delegate!(user, patch, "old_head")
 
@@ -156,11 +158,13 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
 
   test "combines revocations into a single comment when multiple delegations match",
        %{user: user, patch: patch} do
-    put_mock(%{
-      {"main", "new_head_sha"} => ["Cargo.toml", ".github/workflows/ci.yml"],
-      {"old_head_a", "new_head_sha"} => ["Cargo.toml"],
-      {"old_head_b", "new_head_sha"} => [".github/workflows/ci.yml"]
-    })
+    put_mock(
+      pr_files: ["Cargo.toml", ".github/workflows/ci.yml"],
+      delta: %{
+        {"old_head_a", "new_head_sha"} => ["Cargo.toml"],
+        {"old_head_b", "new_head_sha"} => [".github/workflows/ci.yml"]
+      }
+    )
 
     bob = Repo.insert!(%User{user_xref: 52, login: "bob"})
 
@@ -181,17 +185,121 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
   end
 
   test "no-op when bors.toml has no delegation paths configured", %{user: user, patch: patch} do
-    GitHub.ServerMock.put_state(%{
-      {{:installation, 93}, 23} => %{
-        branches: %{"main" => "base_tip"},
-        comments: %{9 => []},
-        statuses: %{},
-        files: %{"main" => %{"bors.toml" => ~s/status = ["ci"]/}},
-        compare: %{}
-      }
-    })
+    put_mock(toml: ~s/status = ["ci"]/)
 
     delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [_] = Repo.all(UserPatchDelegation)
+  end
+
+  @restrict_toml ~s"""
+  status = ["ci"]
+  [delegation]
+  restrict_to_paths = ["src/**"]
+  """
+
+  test "revokes when an authored path is outside restrict_to_paths", %{user: user, patch: patch} do
+    put_mock(
+      toml: @restrict_toml,
+      pr_files: ["src/lib.rs", "docs/readme.md"],
+      delta: %{{"old_head", "new_head_sha"} => ["docs/readme.md"]}
+    )
+
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [] == Repo.all(UserPatchDelegation)
+    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+    assert Enum.any?(comments, &String.contains?(&1, "outside the paths this delegation covers"))
+    assert Enum.any?(comments, &String.contains?(&1, "docs/readme.md"))
+  end
+
+  test "leaves delegation alone when authored paths stay within restrict_to_paths", %{
+    user: user,
+    patch: patch
+  } do
+    put_mock(
+      toml: @restrict_toml,
+      pr_files: ["src/lib.rs", "src/util.rs"],
+      delta: %{{"old_head", "new_head_sha"} => ["src/util.rs"]}
+    )
+
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [_] = Repo.all(UserPatchDelegation)
+  end
+
+  test "deny-list overrides allow-list for a path inside the scope", %{user: user, patch: patch} do
+    put_mock(
+      toml: ~s"""
+      status = ["ci"]
+      [delegation]
+      restrict_to_paths = ["src/**"]
+      invalidate_on_paths = ["src/crypto.rs"]
+      """,
+      pr_files: ["src/crypto.rs"],
+      delta: %{{"old_head", "new_head_sha"} => ["src/crypto.rs"]}
+    )
+
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [] == Repo.all(UserPatchDelegation)
+    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+    assert Enum.any?(comments, &String.contains?(&1, "invalidate_on_paths"))
+    assert Enum.any?(comments, &String.contains?(&1, "src/crypto.rs"))
+  end
+
+  test "revokes (too large) when the delta exceeds the compare cap", %{user: user, patch: patch} do
+    put_mock(
+      pr_files: ["src/lib.rs"],
+      delta: %{{"old_head", "new_head_sha"} => Enum.map(1..300, &"f#{&1}.rs")}
+    )
+
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [] == Repo.all(UserPatchDelegation)
+    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+    assert Enum.any?(comments, &String.contains?(&1, "too many files"))
+  end
+
+  test "falls back to delta-only when pr_diff is truncated, over-revoking", %{
+    user: user,
+    patch: patch
+  } do
+    # Cargo.toml is in the delta but NOT in pr_files; with a complete filter it
+    # would be treated as base-merge noise and ignored (see the base-merge
+    # test). Truncating pr_files (>= 3000 files) drops the filter, so the
+    # delta-only fallback flags it instead.
+    put_mock(
+      pr_files: Enum.map(1..3000, &"f#{&1}.rs"),
+      delta: %{{"old_head", "new_head_sha"} => ["Cargo.toml"]}
+    )
+
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [] == Repo.all(UserPatchDelegation)
+  end
+
+  test "leaves delegation alone when nothing changed since delegation", %{
+    user: user,
+    patch: patch
+  } do
+    # delegated_at_commit == current head, so the delta compares a commit to
+    # itself; the mock has no entry for it and returns an empty list.
+    put_mock(pr_files: ["Cargo.toml"])
+
+    delegate!(user, patch, "new_head_sha")
 
     DelegationInvalidator.invalidate_for_patch(patch.id)
 

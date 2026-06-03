@@ -68,6 +68,13 @@ defmodule BorsNG.Worker.DelegationInvalidator do
 
   require Logger
 
+  # GitHub's per-endpoint changed-file ceilings. Reaching either means the file
+  # list may be incomplete, which we treat as truncation. See
+  # DELEGATION_INVALIDATION.md, "GitHub API file ceilings": compare(base...head)
+  # caps at 300 with no file pagination; pulls/{n}/files caps at 3000.
+  @compare_file_cap 300
+  @pr_files_cap 3000
+
   @doc """
   Fire-and-forget entry point. Safe to call from a supervised task. Loads
   the patch (with its project) fresh from the DB to avoid stale state.
@@ -101,8 +108,10 @@ defmodule BorsNG.Worker.DelegationInvalidator do
       conn = Project.installation_connection(patch.project.repo_xref, Repo)
 
       with {:ok, toml} <- GetBorsToml.get(conn, patch.into_branch),
-           [_ | _] = patterns <- toml.delegation_invalidate_on_paths do
-        do_invalidate(conn, patch, patterns, delegations)
+           restrict = toml.delegation_restrict_to_paths,
+           deny = toml.delegation_invalidate_on_paths,
+           true <- restrict != [] or deny != [] do
+        do_invalidate(conn, patch, restrict, deny, delegations)
       else
         _ -> :ok
       end
@@ -117,56 +126,107 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     |> Repo.all()
   end
 
-  defp do_invalidate(conn, patch, patterns, delegations) do
-    case GitHub.get_pr_compare(conn, patch.into_branch, patch.commit) do
-      {:ok, pr_diff_files} ->
-        pr_diff_set = MapSet.new(pr_diff_files, & &1.filename)
+  defp do_invalidate(conn, patch, restrict, deny, delegations) do
+    # pr_diff is the same base...head diff for every delegation; fetch it once.
+    # On synchronize a push always happened, so a delta worth filtering exists.
+    filter = pr_diff_filter(conn, patch)
 
-        revoked =
-          Enum.flat_map(delegations, fn d ->
-            matching_path(conn, patch, patterns, pr_diff_set, d)
-          end)
+    revoked =
+      Enum.flat_map(delegations, fn d ->
+        case classify_delegation(conn, patch, restrict, deny, filter, d) do
+          {:revoke, reason} -> [{d, reason}]
+          # :ok and :unverifiable both leave the delegation in place here:
+          # the push path fails open and relies on the next push (or the
+          # merge-time gate) to catch anything this run could not verify.
+          _ -> []
+        end
+      end)
 
-        if revoked != [] do
-          ids = Enum.map(revoked, fn {d, _path} -> d.id end)
-          Repo.delete_all(from(d in UserPatchDelegation, where: d.id in ^ids))
-          post_revoke_comment(conn, patch, revoked)
+    if revoked != [] do
+      ids = Enum.map(revoked, fn {d, _reason} -> d.id end)
+      Repo.delete_all(from(d in UserPatchDelegation, where: d.id in ^ids))
+      post_revoke_comment(conn, patch, revoked)
+    end
+
+    :ok
+  end
+
+  # Classify a single delegation against the current head.
+  #
+  #   :ok               delegation is still valid
+  #   {:revoke, reason} revoke it; reason drives the comment
+  #   :unverifiable     the delta compare failed; the caller decides (the push
+  #                     path skips/fails-open, the merge-time gate fails-closed)
+  #
+  # reason :: {:sensitive, path} | {:out_of_scope, path} | :too_large
+  @doc false
+  def classify_delegation(conn, patch, restrict, deny, filter, delegation) do
+    case GitHub.get_pr_compare(conn, delegation.delegated_at_commit, patch.commit) do
+      # Empty delta: nothing changed since delegation, so nothing to check.
+      {:ok, []} ->
+        :ok
+
+      # Hit the compare cap: we cannot enumerate the post-delegation changes,
+      # so a sensitive/out-of-scope path may be hidden. Fail safe.
+      {:ok, files} when length(files) >= @compare_file_cap ->
+        {:revoke, :too_large}
+
+      {:ok, files} ->
+        files
+        |> Enum.map(& &1.filename)
+        |> apply_filter(filter)
+        |> Enum.find_value(&classify_path(&1, restrict, deny))
+        |> case do
+          nil -> :ok
+          reason -> {:revoke, reason}
         end
 
-      # The GitHub client returns error tuples of several arities
-      # ({:error, action, status, params}, {:error, reason, action}, ...),
-      # never a bare {:error, reason}, so match anything that isn't {:ok, _}.
+      # The GitHub client returns error tuples of several arities, never a bare
+      # {:error, reason}, so match anything that isn't an {:ok, _} we handle.
       other ->
         Logger.warning(
-          "DelegationInvalidator: compare(base, head) failed for patch #{patch.id}: #{inspect(other)}"
+          "DelegationInvalidator: delta compare failed for delegation #{delegation.id}: #{inspect(other)}"
         )
 
-        :ok
+        :unverifiable
     end
   end
 
-  defp matching_path(conn, patch, patterns, pr_diff_set, delegation) do
-    case GitHub.get_pr_compare(conn, delegation.delegated_at_commit, patch.commit) do
-      {:ok, delta_files} ->
-        matched =
-          delta_files
-          |> Enum.map(& &1.filename)
-          |> Enum.filter(&MapSet.member?(pr_diff_set, &1))
-          |> Enum.find(&matches_any?(&1, patterns))
+  # The PR's own file list, used to filter base-merge noise out of a delta.
+  # {:filter, set} when fully known; :no_filter when truncated or unavailable,
+  # in which case the delta is evaluated directly (delta-only fallback, which
+  # can only over-revoke). See DELEGATION_INVALIDATION.md, "Truncation policy".
+  @doc false
+  def pr_diff_filter(conn, patch) do
+    case GitHub.get_pr_files(conn, patch.pr_xref) do
+      {:ok, files} when length(files) < @pr_files_cap ->
+        {:filter, MapSet.new(files, & &1.filename)}
 
-        case matched do
-          nil -> []
-          path -> [{delegation, path}]
-        end
+      {:ok, _capped} ->
+        :no_filter
 
-      # See note in do_invalidate/4: the client never returns a bare
-      # {:error, reason}; match any non-{:ok, _} shape.
       other ->
         Logger.warning(
-          "DelegationInvalidator: compare(delegation #{delegation.id}, head) failed: #{inspect(other)}"
+          "DelegationInvalidator: pr_diff (get_pr_files) failed for patch #{patch.id}: #{inspect(other)}"
         )
 
-        []
+        :no_filter
+    end
+  end
+
+  defp apply_filter(filenames, :no_filter), do: filenames
+
+  defp apply_filter(filenames, {:filter, set}),
+    do: Enum.filter(filenames, &MapSet.member?(set, &1))
+
+  # Deny-list overrides allow-list; an unset allow-list imposes no scope. See
+  # DELEGATION_INVALIDATION.md, "Deciding what's acceptable". Returns nil when
+  # the path is acceptable.
+  defp classify_path(path, restrict, deny) do
+    cond do
+      matches_any?(path, deny) -> {:sensitive, path}
+      restrict != [] and not matches_any?(path, restrict) -> {:out_of_scope, path}
+      true -> nil
     end
   end
 
@@ -247,12 +307,11 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     end
   end
 
-  defp post_revoke_comment(conn, patch, [{delegation, matched_path}]) do
+  defp post_revoke_comment(conn, patch, [{delegation, reason}]) do
     msg =
-      ":no_entry_sign: Delegation for @#{delegation.user.login} revoked: " <>
-        "the latest push touched `#{matched_path}`, which is listed in " <>
-        "`[delegation] invalidate_on_paths` in bors.toml. " <>
-        "Re-issue with `bors d=#{delegation.user.login} for=...` if appropriate."
+      ":no_entry_sign: Delegation for @#{delegation.user.login} revoked: the latest push " <>
+        reason_clause(reason) <>
+        ". Re-issue with `bors d=#{delegation.user.login} for=...` if appropriate."
 
     safe_post(conn, patch.pr_xref, msg)
   end
@@ -260,17 +319,29 @@ defmodule BorsNG.Worker.DelegationInvalidator do
   defp post_revoke_comment(conn, patch, revoked) do
     bullets =
       revoked
-      |> Enum.map(fn {d, path} -> "- @#{d.user.login} — touched `#{path}`" end)
+      |> Enum.map(fn {d, reason} -> "- @#{d.user.login} — #{reason_clause(reason)}" end)
       |> Enum.join("\n")
 
     msg =
-      ":no_entry_sign: Delegations revoked because the latest push touched paths " <>
-        "listed in `[delegation] invalidate_on_paths` in bors.toml:\n\n" <>
+      ":no_entry_sign: Delegations revoked because the latest push changed paths they " <>
+        "no longer cover:\n\n" <>
         bullets <>
         "\n\nRe-issue with `bors d=...` if appropriate."
 
     safe_post(conn, patch.pr_xref, msg)
   end
+
+  # Renders the reason half of a revoke comment, following "the latest push ".
+  defp reason_clause({:sensitive, path}),
+    do: "touched `#{path}`, which is listed in `[delegation] invalidate_on_paths` in bors.toml"
+
+  defp reason_clause({:out_of_scope, path}),
+    do:
+      "touched `#{path}`, which is outside the paths this delegation covers " <>
+        "(`[delegation] restrict_to_paths` in bors.toml)"
+
+  defp reason_clause(:too_large),
+    do: "changed too many files for bors to check the full list against the configured paths"
 
   defp safe_post(conn, pr_xref, msg) do
     GitHub.post_comment!(conn, pr_xref, msg)
