@@ -1,0 +1,288 @@
+# Delegation Path Invalidation
+
+When a reviewer delegates approval rights on a pull request (`bors d=...`),
+they are trusting another user to approve *that PR as it stands*. If the PR
+later grows to touch sensitive files, that trust may no longer be warranted.
+
+The `[delegation]` section in `bors.toml` lets a project bound what a delegation
+covers, revoking it automatically when new author work strays outside that
+boundary. Two complementary keys control it (`delegate_only_paths` is a
+provisional name):
+
+- **`delegate_only_paths`** (allow-list / whitelist): the delegation covers
+  **only** changes within these paths; touching anything else revokes it.
+  Unset means "no scope restriction" — never "nothing is delegable."
+- **`invalidate_on_paths`** (deny-list / blacklist): these paths are sensitive
+  and always revoke, **even when they fall inside** `delegate_only_paths`.
+
+```toml
+[delegation]
+delegate_only_paths = ["src/**", "tests/**"]
+invalidate_on_paths = ["src/crypto.rs", ".github/**"]
+```
+
+This document explains how that mechanism decides what changed, the GitHub API
+limits that complicate it, the fail-safe policy chosen at those limits, and the
+reasoning behind the user-facing messages. The implementation lives in
+`lib/worker/delegation_invalidator.ex`, with supporting GitHub calls in
+`lib/github/github/server.ex` and the merge-time gate in `lib/web/command.ex`.
+
+## Status
+
+This doc is the design spec. Landed and pending pieces:
+
+- **Implemented:** the `synchronize`-path invalidator, the `bors try` lint of
+  `invalidate_on_paths` against the base tree, the delegate-success note
+  echoing the configured paths, and the `get_repo_tree` truncation guard.
+- **Pending:** the `delegate_only_paths` allow-list (today only the
+  `invalidate_on_paths` deny-list exists), `get_pr_files` pagination, sourcing
+  `pr_diff` from the PR-files endpoint, `get_pr_compare` truncation detection,
+  the `delta`/`pr_diff` truncation policy below, the merge-time gate, and the
+  revised comment copy.
+
+## Goal and security direction
+
+The control exists to stop a sensitive change from merging under stale trust.
+Its guiding rule is therefore asymmetric:
+
+> **Prefer over-revoking to under-revoking.** A wrongly revoked delegation
+> costs a re-issue (`bors d=...` again). A wrongly *retained* delegation can
+> let a sensitive change merge unreviewed. The first is annoying; the second
+> defeats the feature.
+
+Every ambiguous case below is resolved in the over-revoke direction.
+
+## The two comparisons
+
+bors must isolate **new author work since the delegation was issued** — and
+*only* that. It does so by intersecting two GitHub compares (both use the
+three-dot `base...head` form, which is relative to the merge base):
+
+```
+delta    = files in compare(delegated_at_commit, current_head)
+pr_diff  = files in compare(base_branch,        current_head)
+relevant = delta ∩ pr_diff
+```
+
+- **`delta`** is everything that changed since the delegation commit. This is
+  the security signal — but it is too broad on its own, because clicking
+  GitHub's **"Update branch"** button merges the base branch into the PR and
+  also fires the `synchronize` webhook. Those base-merge files land in `delta`
+  even though the author did not write them.
+
+- **`pr_diff`** is the author's net contribution to the PR (three-dot, so
+  base-only content is excluded). Its sole job is to be a **noise filter**: a
+  file that entered `delta` purely via a base-merge will *not* appear in
+  `pr_diff`, so the intersection drops it.
+
+`relevant` is thus "changed since delegation **and** genuinely authored in this
+PR." A delegation is invalidated when any path in `relevant` is **unacceptable**
+under the rule in [Deciding what's acceptable](#deciding-whats-acceptable).
+
+Worked example with `invalidate_on_paths = ["Cargo.lock"]`:
+
+| Scenario | `delta` | `pr_diff` | `relevant` | Revoke? |
+|----------|---------|-----------|------------|---------|
+| Author clicks "Update branch", pulling master's `Cargo.lock` | `{Cargo.lock}` | `{src/foo.rs}` (Cargo.lock now matches master) | `{}` | No ✅ |
+| Author edits `Cargo.lock` after delegation | `{Cargo.lock}` | `{src/foo.rs, Cargo.lock}` | `{Cargo.lock}` | Yes ✅ |
+
+Because `pr_diff` is *only* a filter, losing it (e.g. to truncation) can only
+cause us to keep noise we should have dropped — it never hides a real authored
+change. That asymmetry drives the truncation policy below.
+
+### bors.toml provenance
+
+`bors.toml` is read from the PR's **base** branch, never the head. A PR cannot
+disable invalidation by editing its own copy of the config.
+
+## Deciding what's acceptable
+
+Each path in `relevant` is classified against the two configured lists. The
+allow-list scopes what the delegation covers; the deny-list carves sensitive
+exceptions *out* of that scope. Precedence is **blacklist > whitelist >
+default**:
+
+> A path is **acceptable** iff
+> `(delegate_only_paths unset OR path ∈ delegate_only_paths) AND path ∉ invalidate_on_paths`.
+
+A delegation is revoked when any path in `relevant` is unacceptable. With
+`delegate_only_paths = ["src/**"]` and `invalidate_on_paths = ["src/crypto.rs"]`:
+
+| Changed file | In allow-list? | In deny-list? | Verdict |
+|--------------|----------------|---------------|---------|
+| `src/foo.rs` | ✅ | ❌ | acceptable |
+| `src/crypto.rs` | ✅ | ✅ | **revoke** — deny-list overrides |
+| `docs/readme.md` | ❌ | — | **revoke** — outside the delegated scope |
+
+The two lists only interact *inside* the allow-list, where the deny-list is the
+tiebreaker; everywhere else they agree. A deny-list entry that already lies
+outside the allow-list is harmless but redundant (a candidate for the bors-try
+lint to flag). An empty or unset allow-list imposes no scope restriction, so a
+deny-list-only config behaves exactly as it does today.
+
+## When invalidation runs
+
+### On push — `synchronize` webhook (fail-open, self-healing)
+
+The invalidator runs fire-and-forget from the `synchronize` handler in
+`lib/web/controllers/webhook_controller.ex`, after `patch.commit` is updated to
+the new head. Each run re-derives `delta` from the *fixed* `delegated_at_commit`
+to the *current* head, so it is stateless across pushes:
+
+- **Self-healing.** A dropped or failed `synchronize` (webhook delivery
+  failure, node restart, transient API error) is recovered by the next push,
+  which re-scans the entire range from the delegation point.
+- **Fail-open.** A push cannot be blocked, so an API error here is logged and
+  skipped rather than treated as a revocation trigger. Recovery relies on a
+  later push or the merge-time gate.
+
+### On approval — merge-time gate (fail-closed backstop)
+
+The `synchronize` path can fail open at the worst moment: an unverified push
+immediately followed by `bors r+`. The merge-time gate closes this. At the
+`r+` authorization point in `lib/web/command.ex`, a **synchronous** check runs
+before the delegation permission is honored.
+
+It only ever needs to validate `patch.commit`, because the batcher refuses to
+merge anything else: at staging (`lib/worker/batcher.ex`) it fetches the live
+PR and treats `pr.head_sha != patch.commit` as a `:race`, dropping the patch
+rather than merging a moved head. So if the head advances after approval, the
+race guard blocks that batch and the new head goes through its own
+`synchronize`.
+
+Unlike the push path, the merge gate **fails closed**: if it cannot verify the
+change is clean, it denies the approval (see the policy below).
+
+## GitHub API file ceilings
+
+The two compares hit two different GitHub endpoints with two different,
+silently-enforced ceilings. These were verified empirically against
+`leanprover-community/mathlib4` (PR #31786 / its 7905-file commits).
+
+### `compare(base...head)` — 300 files, first page only
+
+- Returns **at most 300 changed files**, and only on the **first page**. There
+  is no file pagination: page 2 returns zero files, and the page-1 `Link`
+  header carries no `rel="next"` for files (it paginates *commits* only).
+- **Truncation signal:** `length(files) == 300`. We cannot retrieve files
+  301+, so hitting 300 means "there may be more we can't see."
+- Docs: [Compare two commits](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
+  — *"The list of changed files is only shown on the first page of results, and
+  it includes up to 300 changed files for the entire comparison."*
+
+### `pulls/{n}/files` — 3000 files, via real pagination
+
+- Returns up to a **3000-file** hard ceiling, paginated (default 30/page, max
+  `per_page=100`). The cap is enforced **silently by returning empty `[]`
+  pages** past 3000 — and the `Link` header *lies*: for PR #31786 it advertised
+  `rel="last"` at the diff's true size (~7210 files) even though data stops at
+  3000.
+- **Pagination must stop on the first short/empty page** (`length < per_page`),
+  *not* on the absence of `rel="next"` — otherwise a 7000-file PR triggers
+  dozens of wasted requests fetching empty pages.
+- **Truncation signal:** the PR object's `changed_files` field (from
+  `GET /pulls/{n}`) exceeds what we retrieved, or we simply hit 3000.
+- Docs: [List pull requests files](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests-files)
+  — *"Responses include a maximum of 3000 files."* (`per_page` "max 100" is the
+  page size, not a page count.)
+
+### Why `pr_diff` uses the PR-files endpoint
+
+`compare(into_branch, head)` is, three-dot, identical to the PR's own file list
+(`into_branch` is the PR base, `head` is `patch.commit`). Sourcing `pr_diff`
+from `pulls/{n}/files` raises its ceiling from 300 to 3000 — a real correctness
+win, since an incomplete filter causes under-revoke. `delta` has no PR-files
+equivalent (it is an arbitrary commit range) and is stuck at 300.
+
+## Truncation policy
+
+The two truncation cases are **not** equally severe, and treating them the same
+creates a bad failure mode (see "un-actionable delegations" below). They are
+handled separately:
+
+| Case | Meaning | Handling |
+|------|---------|----------|
+| **`delta` truncated** (>300 files changed *after* delegation) | Cannot enumerate the delegate's new work; an unacceptable path might be hidden in the overflow | **Fail safe.** Over-revoke on `synchronize`; deny on `r+`. |
+| **`pr_diff` truncated** (>3000 files in the whole PR) | Only the *noise filter* is incomplete; `delta` is still fully known | **Delta-only fallback.** Evaluate `delta` without the intersection. Can only over-revoke (a base-merge file may count as authored), never under-revoke. |
+| **`delta` empty** (no changes since delegation) | Nothing to check | **Short-circuit.** Do not even fetch `pr_diff`; the delegation stands. |
+
+The allow-list makes the truncated-`delta` case fall out naturally rather than
+needing a bolted-on rule. Its normal rule is already "revoke unless every
+authored path is known-acceptable"; overflow paths we cannot see are not
+known-acceptable, so they revoke by the same logic. A deny-list alone needs the
+explicit special case "if truncated, revoke even though no *visible* path
+matched," because a sensitive path could be hiding in the overflow. The
+fail-safe *direction* — uncertainty revokes — is identical for both.
+
+### Why the split, and "un-actionable delegations"
+
+Failing closed on *any* truncation would make a large PR **un-actionable from
+the moment it is delegated**: the delegate could never `bors r+`, even after
+touching nothing, purely because the PR was big when they were handed the keys.
+
+The split avoids this. The decisive test case:
+
+| >3000-file PR, **no changes** after delegation | Split policy | Block-on-any-truncation |
+|---|---|---|
+| `bors r+` | empty `delta` → nothing to check → **approves** ✅ | `pr_diff` truncated → **denied** ❌ |
+
+Under the split policy, a delegation becomes un-actionable **only if the
+delegate's own post-delegation changes exceed ~300 files** — which is within
+their control and arguably *should* demand a fresh human review. A large but
+finished PR stays fully delegatable.
+
+## User-facing messages
+
+The entire feature reduces, for users, to one rule stated without any API
+detail:
+
+> If a change is too big for bors to check the full list of changed files, it
+> assumes a protected path *might* have been touched and plays it safe.
+
+The recurring phrase **"too many files for bors to check the full list"** is
+deliberately honest (it implies the remedy — a smaller change) and never leaks
+that the real cause is an API ceiling. The three places it surfaces:
+
+1. **Standing note at delegation** (always, when either list is set): states
+   the delegated scope (`delegate_only_paths`, if set) and the always-sensitive
+   paths (`invalidate_on_paths`), and adds that bors also revokes "if a later
+   push changes too many files for it to check the full list — even if it stays
+   within scope."
+
+2. **Revoke comment on push** (the truncation branch): "the latest push changed
+   too many files for bors to check against the paths listed in
+   `[delegation] invalidate_on_paths`, so it was revoked as a precaution."
+
+3. **Approval denied at `bors r+`** (the fail-closed gate): "this pull request
+   changes too many files for bors to check against the paths listed in
+   `[delegation] invalidate_on_paths`. A reviewer needs to approve directly, or
+   re-delegate after the change is split up."
+
+In the ordinary (non-truncation) case, the revoke comment names the offending
+path and *why* it was unacceptable — either "touched `path`, which is outside
+the paths this delegation covers" (allow-list) or "touched `path`, which is
+listed in `[delegation] invalidate_on_paths`" (deny-list) — so the author knows
+whether to narrow their change or seek a fresh review.
+
+A *proactive* large-PR heads-up at delegation time was considered and dropped:
+under the split policy a large PR alone is no longer noteworthy (only a large
+*post-delegation* push is), and that cannot be predicted when the delegation is
+issued.
+
+## Known limitations
+
+- **Missed-push window.** A `synchronize` lost *and* immediately followed by a
+  merge is the gap the merge-time gate exists to close. Outside that window,
+  the next push self-heals. The residual TOCTOU between `r+` approval and
+  staging is bounded by the batcher's `:race` guard, which refuses to merge a
+  head that has moved past `patch.commit`.
+- **`pr_diff` delta-only fallback over-revokes.** For a >3000-file PR whose
+  `delta` includes base-merge content, the missing noise filter may revoke a
+  delegation that a complete filter would have spared. This is the accepted
+  safe direction.
+- **`delta` is hard-capped at 300 by GitHub** with no pagination escape. A
+  genuinely huge post-delegation push is therefore un-mergeable by a delegate
+  by design.
+
+See also [bors-ng/rfcs](https://github.com/bors-ng/rfcs) for broader design
+documentation.
