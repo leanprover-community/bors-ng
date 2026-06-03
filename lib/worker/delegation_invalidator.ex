@@ -1,60 +1,26 @@
 defmodule BorsNG.Worker.DelegationInvalidator do
   @moduledoc """
-  Invalidates PR delegations when new author commits touch paths configured
-  in bors.toml's `[delegation] invalidate_on_paths = [...]` list.
+  Invalidates PR delegations when new author work touches paths a project has
+  restricted, and re-checks delegations at merge time.
 
-  ## bors.toml syntax
+  Configured under `[delegation]` in `bors.toml` (read from the PR's BASE
+  branch, so a PR cannot disable it by editing its own copy):
 
       [delegation]
-      invalidate_on_paths = [
-        "Cargo.toml",
-        "Cargo.lock",
-        ".github/**",
-        "deps/**",
-      ]
+      restrict_to_paths   = ["src/**"]         # allow-list: delegation covers only these
+      invalidate_on_paths = ["src/crypto.rs"]  # deny-list: always revoke (overrides the allow-list)
 
-  Each entry is a glob pattern matched against repository-relative paths
-  (forward slashes, no leading `./`). Matching uses Erlang's `:glob` module,
-  which differs from gitignore in two important ways:
+  Each entry is a glob matched against repository-relative paths via Erlang's
+  `:glob`, which differs from gitignore: `*` matches across `/` (so
+  `.github/*` and `.github/**` are equivalent, and `?` matches a single
+  character), and patterns are anchored — `Cargo.toml` matches only the
+  top-level file; use `**/Cargo.toml` to match anywhere in the tree.
 
-    * `*` matches any sequence of characters **including `/`**, so
-      `.github/*` and `.github/**` are equivalent. There is no need to write
-      `**` to recurse into subdirectories.
-    * `?` matches a single character (not directory-aware).
-
-  Patterns are anchored: `Cargo.toml` matches only the top-level file, not
-  `foo/Cargo.toml`. Use `**/Cargo.toml` to match anywhere in the tree.
-
-  ## Triggering and false-positive avoidance
-
-  Runs from the `synchronize` webhook. To avoid false positives from
-  GitHub's "Update branch" button (which also fires `synchronize`), we use
-  the intersection of two compares to isolate "new author work since the
-  delegation was issued":
-
-      delta    = files in `compare(delegated_at_commit, current_head)`
-      pr_diff  = files in `compare(base_branch, current_head)`   (three-dot)
-      relevant = delta ∩ pr_diff
-
-  `pr_diff` is a three-dot compare anchored at the base branch, so it
-  represents only content the author has added in the PR (base-only content
-  is naturally excluded). The intersection drops anything in `delta` that
-  came from a base-merge.
-
-  A delegation is invalidated when any path in `relevant` matches any
-  configured glob.
-
-  If the PR is rebased or force-pushed, `delegated_at_commit` may no longer
-  be an ancestor of the current head. The three-dot compare then anchors at
-  an earlier merge-base, widening `delta`. This errs toward over-revoking
-  (the safe direction for a security control): the worst case is a delegation
-  that must be re-issued, never one that silently survives a sensitive change.
-
-  ## bors.toml provenance
-
-  The `bors.toml` config is read from the PR's BASE branch, **not** from the
-  PR head. A PR therefore cannot disable invalidation by editing its own
-  copy of `bors.toml`.
+  The full design — the two-compare model and "Update branch" noise filter,
+  the allow-list/deny-list acceptability rule, GitHub's compare/PR-files
+  ceilings and the resulting truncation policy, the synchronize-time
+  (fail-open) versus merge-time (fail-closed) checks, and the user-facing
+  messages — lives in `DELEGATION_INVALIDATION.md` at the repo root.
   """
 
   import Ecto.Query

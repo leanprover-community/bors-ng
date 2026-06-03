@@ -767,7 +767,7 @@ defmodule BorsNG.Command do
 
       msg =
         ~s{:v: #{delegatee.login} can now approve this pull request until #{format_expires_at(expires_at)} (in #{format_duration(duration)}). To approve and merge, reply with `bors r+`. More detailed instructions are available [here](https://bors.tech/documentation/getting-started/#reviewing-pull-requests).} <>
-          invalidate_on_paths_note(toml)
+          delegation_paths_note(toml)
 
       GitHub.post_comment!(conn, c.pr_xref, msg)
     else
@@ -794,14 +794,41 @@ defmodule BorsNG.Command do
   defp toml_default_expiry(nil), do: nil
   defp toml_default_expiry(toml), do: toml.delegation_default_expiry_sec
 
-  defp invalidate_on_paths_note(nil), do: ""
-  defp invalidate_on_paths_note(%{delegation_invalidate_on_paths: []}), do: ""
+  # Standing note appended to the delegate-success comment, describing what
+  # will revoke the delegation. See DELEGATION_INVALIDATION.md, "User-facing
+  # messages".
+  defp delegation_paths_note(nil), do: ""
 
-  defp invalidate_on_paths_note(%{delegation_invalidate_on_paths: paths}) do
+  defp delegation_paths_note(toml) do
+    sentences =
+      []
+      |> add_paths_sentence(toml.delegation_restrict_to_paths, fn rendered ->
+        "This delegation only covers changes within #{rendered}; an author commit " <>
+          "touching anything else will revoke it."
+      end)
+      |> add_paths_sentence(toml.delegation_invalidate_on_paths, fn rendered ->
+        "A new author commit touching any of these paths will revoke this delegation: " <>
+          rendered <> "."
+      end)
+
+    case sentences do
+      [] ->
+        ""
+
+      _ ->
+        caveat =
+          "Bors also revokes it if a later push changes too many files for it to check " <>
+            "the full list — even if it stays within scope."
+
+        "\n\n:warning: " <> Enum.join(sentences ++ [caveat], " ")
+    end
+  end
+
+  defp add_paths_sentence(acc, [], _fun), do: acc
+
+  defp add_paths_sentence(acc, paths, fun) do
     rendered = paths |> Enum.map(&"`#{&1}`") |> Enum.join(", ")
-
-    "\n\n:warning: A new author commit touching any of these paths will revoke this delegation: " <>
-      rendered <> "."
+    acc ++ [fun.(rendered)]
   end
 
   @doc """

@@ -1259,6 +1259,67 @@ defmodule BorsNG.CommandTest do
     refute Enum.any?(comments, &String.contains?(&1, "revoke this delegation"))
   end
 
+  test "delegate+ describes the delegated scope and the too-many-files caveat", %{proj: proj} do
+    pr = %BorsNG.GitHub.Pr{
+      number: 1,
+      title: "Test",
+      body: "Mess",
+      state: :open,
+      base_ref: "master",
+      head_sha: "00000001",
+      head_ref: "update",
+      base_repo_id: 13,
+      head_repo_id: 13,
+      user: %{id: 2, login: "pr_author"}
+    }
+
+    toml = ~s"""
+    status = ["ci"]
+    [delegation]
+    default_expiry_sec = #{24 * 60 * 60}
+    restrict_to_paths = ["src/**"]
+    """
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => ["bors delegate+"]},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => toml}},
+        pulls: %{1 => pr}
+      }
+    })
+
+    {:ok, user} =
+      Repo.insert(%BorsNG.Database.User{user_xref: 1, is_admin: true, login: "owner"})
+
+    {:ok, _} =
+      Repo.insert(%BorsNG.Database.Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "headsha123",
+        into_branch: "master"
+      })
+
+    Repo.insert(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors delegate+",
+      pr_xref: 1
+    })
+
+    state = GitHub.ServerMock.get_state()
+    comments = get_in(state, [{{:installation, 91}, 14}, :comments, 1])
+
+    assert Enum.any?(comments, fn c ->
+             String.contains?(c, "only covers changes within") and String.contains?(c, "`src/**`")
+           end)
+
+    assert Enum.any?(comments, &String.contains?(&1, "too many files"))
+  end
+
   test "re-delegating the same user replaces expires_at", %{proj: proj} do
     pr = %BorsNG.GitHub.Pr{
       number: 1,

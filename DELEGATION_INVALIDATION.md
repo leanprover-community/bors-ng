@@ -28,16 +28,10 @@ reasoning behind the user-facing messages. The implementation lives in
 
 ## Status
 
-This doc is the design spec. Landed and pending pieces:
-
-- **Implemented:** the `synchronize`-path invalidator, the `bors try` lint of
-  `invalidate_on_paths` against the base tree, the delegate-success note
-  echoing the configured paths, and the `get_repo_tree` truncation guard.
-- **Pending:** the `restrict_to_paths` allow-list (today only the
-  `invalidate_on_paths` deny-list exists), `get_pr_files` pagination, sourcing
-  `pr_diff` from the PR-files endpoint, `get_pr_compare` truncation detection,
-  the `delta`/`pr_diff` truncation policy below, the merge-time gate, and the
-  revised comment copy.
+All of the behavior described below is implemented, with one deliberate
+omission: the proactive large-PR heads-up at delegation time was dropped (see
+"User-facing messages"). Truncation is detected in the invalidator against the
+documented file caps rather than via a dedicated GitHub-client signal.
 
 ## Goal and security direction
 
