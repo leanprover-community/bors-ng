@@ -6,18 +6,17 @@ later grows to touch sensitive files, that trust may no longer be warranted.
 
 The `[delegation]` section in `bors.toml` lets a project bound what a delegation
 covers, revoking it automatically when new author work strays outside that
-boundary. Two complementary keys control it (`delegate_only_paths` is a
-provisional name):
+boundary. Two complementary keys control it:
 
-- **`delegate_only_paths`** (allow-list / whitelist): the delegation covers
+- **`restrict_to_paths`** (allow-list / whitelist): the delegation covers
   **only** changes within these paths; touching anything else revokes it.
   Unset means "no scope restriction" — never "nothing is delegable."
 - **`invalidate_on_paths`** (deny-list / blacklist): these paths are sensitive
-  and always revoke, **even when they fall inside** `delegate_only_paths`.
+  and always revoke, **even when they fall inside** `restrict_to_paths`.
 
 ```toml
 [delegation]
-delegate_only_paths = ["src/**", "tests/**"]
+restrict_to_paths = ["src/**", "tests/**"]
 invalidate_on_paths = ["src/crypto.rs", ".github/**"]
 ```
 
@@ -34,7 +33,7 @@ This doc is the design spec. Landed and pending pieces:
 - **Implemented:** the `synchronize`-path invalidator, the `bors try` lint of
   `invalidate_on_paths` against the base tree, the delegate-success note
   echoing the configured paths, and the `get_repo_tree` truncation guard.
-- **Pending:** the `delegate_only_paths` allow-list (today only the
+- **Pending:** the `restrict_to_paths` allow-list (today only the
   `invalidate_on_paths` deny-list exists), `get_pr_files` pagination, sourcing
   `pr_diff` from the PR-files endpoint, `get_pr_compare` truncation detection,
   the `delta`/`pr_diff` truncation policy below, the merge-time gate, and the
@@ -103,10 +102,10 @@ exceptions *out* of that scope. Precedence is **blacklist > whitelist >
 default**:
 
 > A path is **acceptable** iff
-> `(delegate_only_paths unset OR path ∈ delegate_only_paths) AND path ∉ invalidate_on_paths`.
+> `(restrict_to_paths unset OR path ∈ restrict_to_paths) AND path ∉ invalidate_on_paths`.
 
 A delegation is revoked when any path in `relevant` is unacceptable. With
-`delegate_only_paths = ["src/**"]` and `invalidate_on_paths = ["src/crypto.rs"]`:
+`restrict_to_paths = ["src/**"]` and `invalidate_on_paths = ["src/crypto.rs"]`:
 
 | Changed file | In allow-list? | In deny-list? | Verdict |
 |--------------|----------------|---------------|---------|
@@ -244,7 +243,7 @@ deliberately honest (it implies the remedy — a smaller change) and never leaks
 that the real cause is an API ceiling. The three places it surfaces:
 
 1. **Standing note at delegation** (always, when either list is set): states
-   the delegated scope (`delegate_only_paths`, if set) and the always-sensitive
+   the delegated scope (`restrict_to_paths`, if set) and the always-sensitive
    paths (`invalidate_on_paths`), and adds that bors also revokes "if a later
    push changes too many files for it to check the full list — even if it stays
    within scope."

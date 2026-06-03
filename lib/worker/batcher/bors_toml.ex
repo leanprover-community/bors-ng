@@ -33,7 +33,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             update_base_for_deletes: false,
             max_batch_size: nil,
             delegation_default_expiry_sec: nil,
-            delegation_invalidate_on_paths: []
+            delegation_invalidate_on_paths: [],
+            delegation_restrict_to_paths: []
 
   @type tcommitter :: %{
           name: binary,
@@ -57,7 +58,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           update_base_for_deletes: boolean,
           max_batch_size: integer | nil,
           delegation_default_expiry_sec: pos_integer() | nil,
-          delegation_invalidate_on_paths: [binary]
+          delegation_invalidate_on_paths: [binary],
+          delegation_restrict_to_paths: [binary]
         }
 
   @type err ::
@@ -73,6 +75,7 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           | :max_batch_size
           | :delegation_default_expiry_sec
           | :delegation_invalidate_on_paths
+          | :delegation_restrict_to_paths
           | :empty_config
           | :parse_failed
 
@@ -95,10 +98,15 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             _ -> :invalid
           end
 
-        {delegation_default_expiry_sec, delegation_invalidate_on_paths} =
+        {delegation_default_expiry_sec, delegation_invalidate_on_paths,
+         delegation_restrict_to_paths} =
           case delegation_table do
-            :invalid -> {:invalid, :invalid}
-            m -> {Map.get(m, "default_expiry_sec", nil), Map.get(m, "invalidate_on_paths", [])}
+            :invalid ->
+              {:invalid, :invalid, :invalid}
+
+            m ->
+              {Map.get(m, "default_expiry_sec", nil), Map.get(m, "invalidate_on_paths", []),
+               Map.get(m, "restrict_to_paths", [])}
           end
 
         committer = Map.get(toml, "committer", nil)
@@ -149,7 +157,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           update_base_for_deletes: Map.get(toml, "update_base_for_deletes", false),
           max_batch_size: Map.get(toml, "max_batch_size", nil),
           delegation_default_expiry_sec: delegation_default_expiry_sec,
-          delegation_invalidate_on_paths: delegation_invalidate_on_paths
+          delegation_invalidate_on_paths: delegation_invalidate_on_paths,
+          delegation_restrict_to_paths: delegation_restrict_to_paths
         }
 
         case toml do
@@ -196,6 +205,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           %{delegation_invalidate_on_paths: paths} when not is_list(paths) ->
             {:error, :delegation_invalidate_on_paths}
 
+          %{delegation_restrict_to_paths: paths} when not is_list(paths) ->
+            {:error, :delegation_restrict_to_paths}
+
           toml ->
             status =
               toml.status
@@ -221,6 +233,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
               not Enum.all?(toml.delegation_invalidate_on_paths, &is_binary/1) ->
                 {:error, :delegation_invalidate_on_paths}
+
+              not Enum.all?(toml.delegation_restrict_to_paths, &is_binary/1) ->
+                {:error, :delegation_restrict_to_paths}
 
               true ->
                 {:ok, %{toml | status: status, pr_status: pr_status}}
