@@ -18,6 +18,11 @@ defmodule BorsNG.GitHub.Server do
   @content_type_raw "application/vnd.github.v3.raw"
   @content_type "application/vnd.github.v3+json"
 
+  # Page size for `pulls/{n}/files`. GitHub caps this endpoint at 100 per page
+  # and 3000 files total; see DELEGATION_INVALIDATION.md, "GitHub API file
+  # ceilings".
+  @pr_files_per_page 100
+
   @type tconn :: GitHub.tconn()
   @type ttoken :: GitHub.ttoken()
   @type trepo :: GitHub.trepo()
@@ -91,19 +96,12 @@ defmodule BorsNG.GitHub.Server do
     {:reply, {:ok, list}, state}
   end
 
-  def do_handle_call(:get_pr_files, repo_conn, {pr_xref}) do
-    case get!(repo_conn, "pulls/#{pr_xref}/files") do
-      %{body: raw, status: 200} ->
-        pr =
-          raw
-          |> Jason.decode!()
-          |> Enum.map(&GitHub.File.from_json!/1)
-
-        {:ok, pr}
-
-      e ->
-        {:error, :get_pr_files, e.status, pr_xref}
-    end
+  def do_handle_call(:get_pr_files, {{:raw, token}, repo_xref}, {pr_xref}) do
+    get_pr_files_(
+      token,
+      "#{site()}/repositories/#{repo_xref}/pulls/#{pr_xref}/files?per_page=#{@pr_files_per_page}",
+      []
+    )
   end
 
   def do_handle_call(:get_pr_compare, repo_conn, {base, head}) do
@@ -787,6 +785,37 @@ defmodule BorsNG.GitHub.Server do
     case next_headers do
       [] -> prs
       [next] -> get_open_prs_!(token, next.url, prs)
+    end
+  end
+
+  # Paginate `pulls/{n}/files`. GitHub enforces the 3000-file cap by returning
+  # empty pages past it while the Link header keeps advertising more, so we stop
+  # on the first short page (fewer than per_page) rather than when rel="next"
+  # disappears — otherwise a multi-thousand-file PR fetches dozens of empty
+  # pages. See DELEGATION_INVALIDATION.md, "GitHub API file ceilings".
+  defp get_pr_files_(token, url, acc) do
+    "token #{token}"
+    |> tesla_client(@content_type)
+    |> Tesla.get(url, query: get_url_params(url))
+    |> case do
+      {:ok, %{body: raw, status: 200, headers: headers}} ->
+        files = raw |> Jason.decode!() |> Enum.map(&GitHub.File.from_json!/1)
+        acc = acc ++ files
+
+        if length(files) < @pr_files_per_page do
+          {:ok, acc}
+        else
+          case get_next_headers(headers) do
+            [] -> {:ok, acc}
+            [next] -> get_pr_files_(token, next.url, acc)
+          end
+        end
+
+      {:ok, %{status: status}} ->
+        {:error, :get_pr_files, status, url}
+
+      _ ->
+        {:error, :get_pr_files}
     end
   end
 
