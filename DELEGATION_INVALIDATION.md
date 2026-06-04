@@ -146,6 +146,18 @@ race guard blocks that batch and the new head goes through its own
 Unlike the push path, the merge gate **fails closed**: if it cannot verify the
 change is clean, it denies the approval (see the policy below).
 
+Because it fails closed, a *transient* GitHub error is not free here: when the
+delta compare can't complete, `classify_delegation/6` returns `:unverifiable`
+and the gate denies the `r+`, forcing the approver to re-issue it. To keep a
+brief API blip from surfacing as a spurious denial, `:get_pr_compare` is on the
+**long retry budget** in `lib/github/github.ex` (`max_retry_elapsed_ms/1`,
+default 180s) rather than the 30s budget used for calls where giving up early is
+harmless. That budget axis is about *the cost of giving up*, not literally
+reads vs. writes — see the comment on `max_retry_elapsed_ms/1` for the full
+rationale. The advisory `invalidate_on_paths` lint deliberately stays on the
+short budget: its reads (`get_repo_tree`, `get_pr_comments`) only gate a
+cosmetic warning, so a failure just skips it.
+
 ## GitHub API file ceilings
 
 The two compares hit two different GitHub endpoints with two different,
