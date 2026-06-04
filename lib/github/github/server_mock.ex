@@ -244,14 +244,21 @@ defmodule BorsNG.GitHub.ServerMock do
 
   def do_handle_call(:get_pr_compare, repo_conn, {base, head}, state) do
     # Tests put a :compare map on the repo keyed by `{base, head}` whose value
-    # is a list of filenames changed between those two refs.
-    with {:ok, repo} <- Map.fetch(state, repo_conn),
-         {:ok, compare} <- Map.fetch(repo, :compare),
-         {:ok, filenames} <- Map.fetch(compare, {base, head}) do
-      files = Enum.map(filenames, &%BorsNG.GitHub.File{filename: &1})
-      {{:ok, files}, state}
+    # is a list of filenames changed between those two refs. Setting
+    # :compare_error makes the call fail, to exercise the :unverifiable paths.
+    repo = Map.get(state, repo_conn, %{})
+
+    if Map.get(repo, :compare_error, false) do
+      {{:error, :get_pr_compare, 502, {base, head}}, state}
     else
-      _ -> {{:ok, []}, state}
+      case repo |> Map.get(:compare, %{}) |> Map.fetch({base, head}) do
+        {:ok, filenames} ->
+          files = Enum.map(filenames, &%BorsNG.GitHub.File{filename: &1})
+          {{:ok, files}, state}
+
+        :error ->
+          {{:ok, []}, state}
+      end
     end
   end
 

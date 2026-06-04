@@ -60,7 +60,8 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
         statuses: %{},
         files: %{"main" => %{"bors.toml" => Keyword.get(opts, :toml, @default_toml)}},
         pr_files: %{9 => Keyword.get(opts, :pr_files, [])},
-        compare: Keyword.get(opts, :delta, %{})
+        compare: Keyword.get(opts, :delta, %{}),
+        compare_error: Keyword.get(opts, :compare_error, false)
       }
     })
   end
@@ -307,6 +308,24 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     assert [_] = Repo.all(UserPatchDelegation)
   end
 
+  test "push path keeps the delegation when the delta cannot be read (fails open)", %{
+    user: user,
+    patch: patch
+  } do
+    put_mock(compare_error: true)
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    # Unlike the merge-time gate, the push path fails open: it can't prove the
+    # change is bad, so it keeps the delegation and posts no revoke. The
+    # merge-time gate is the fail-closed backstop.
+    assert [_] = Repo.all(UserPatchDelegation)
+
+    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+    refute Enum.any?(comments, &String.contains?(&1, "revoked"))
+  end
+
   describe "verify_for_merge/2" do
     test "denies and revokes when a sensitive path changed since delegation", %{
       user: user,
@@ -361,6 +380,24 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
       )
 
       assert :ok == DelegationInvalidator.verify_for_merge(patch, user)
+    end
+
+    test "denies without revoking when the delta cannot be read (fails closed)", %{
+      user: user,
+      patch: patch
+    } do
+      put_mock(compare_error: true)
+      delegate!(user, patch, "old_head")
+
+      assert :deny == DelegationInvalidator.verify_for_merge(patch, user)
+      # Fail closed, but do NOT revoke: an unreadable delta isn't proof the
+      # change is bad. A later `bors r+` re-runs the gate.
+      assert [_] = Repo.all(UserPatchDelegation)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert Enum.any?(comments, &String.contains?(&1, "Couldn't approve via delegation"))
     end
   end
 
