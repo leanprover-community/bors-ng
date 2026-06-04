@@ -8,7 +8,9 @@ defmodule BorsNG.Worker.Batcher.GetBorsToml do
   alias BorsNG.GitHub
   alias BorsNG.Worker.Batcher.BorsToml
 
-  @type terror :: :fetch_failed | :parse_failed | :status | :timeout_sec
+  # Beyond :fetch_failed, get/2 delegates to BorsToml.new and passes through any
+  # of its validation errors, so the domain is BorsToml.err() | :fetch_failed.
+  @type terror :: BorsToml.err() | :fetch_failed
 
   @spec get(GitHub.tconn(), binary) :: {:ok, BorsToml.t()} | {:error, terror}
   def get(repo_conn, branch) do

@@ -3,6 +3,8 @@ defmodule BorsNG.Worker.Batcher.Message do
   User-readable strings that go in commit messages and comments.
   """
 
+  alias BorsNG.Worker.Batcher.BorsToml
+
   def generate_status(:waiting) do
     {"Waiting in queue", :running}
   end
@@ -299,6 +301,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     Regex.replace(~r/\B(@\S+)/, body, ~S/`\g{1}`/, global: true)
   end
 
+  # Must render every key BorsToml/GetBorsToml can emit. The catch-all below
+  # guarantees no crash; the message_test introspection guarantees every key in
+  # the spec domain has an explicit, friendly clause rather than the fallback.
+  @spec generate_bors_toml_error(BorsToml.err() | :fetch_failed) :: binary
   def generate_bors_toml_error(:parse_failed) do
     "bors.toml: syntax error"
   end
