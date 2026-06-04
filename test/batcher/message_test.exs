@@ -20,6 +20,42 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert expected_message == actual_message
   end
 
+  test "every bors.toml validation error key renders to a comment, not a crash" do
+    # These are every key BorsToml/GetBorsToml can emit. Each must produce a
+    # string; an unhandled key used to raise FunctionClauseError and crash the
+    # batcher instead of posting a "Configuration problem" comment.
+    keys = [
+      :status,
+      :block_labels,
+      :pr_status,
+      :timeout_sec,
+      :prerun_timeout_sec,
+      :required_approvals,
+      :cut_body_after,
+      :committer_details,
+      :commit_title,
+      :max_batch_size,
+      :delegation_default_expiry_sec,
+      :delegation_invalidate_on_paths,
+      :delegation_restrict_to_paths,
+      :empty_config,
+      :parse_failed,
+      :fetch_failed
+    ]
+
+    for key <- keys do
+      message = Message.generate_bors_toml_error(key)
+      assert is_binary(message)
+      assert String.contains?(message, "bors.toml")
+    end
+  end
+
+  test "unknown bors.toml error keys fall back to the catch-all renderer" do
+    message = Message.generate_bors_toml_error(:some_future_key)
+    assert is_binary(message)
+    assert String.contains?(message, "bors.toml")
+  end
+
   test "generate retry message" do
     expected_message = "Build failed (retrying...):\n  * stat"
     example_statuses = [%{url: nil, identifier: "stat"}]

@@ -85,6 +85,17 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
     |> Map.new()
   end
 
+  # A delegation path entry must be a string that compiles as a glob.
+  # `:glob.matches/2` raises `badarg` on an uncompilable pattern, and it runs in
+  # the synchronous merge-time gate, so we reject bad patterns at config-parse
+  # time (clean "Configuration problem" comment) rather than crash at match
+  # time. `:glob.compile/1` returns {:ok, _} | {:error, _} without raising.
+  defp valid_glob?(pattern) when is_binary(pattern) do
+    match?({:ok, _}, :glob.compile(pattern))
+  end
+
+  defp valid_glob?(_pattern), do: false
+
   @spec new(binary) :: {:ok, t} | {:error, err}
   def new(str) when is_binary(str) do
     case Toml.decode(str) do
@@ -231,10 +242,10 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
                     BorsNG.Command.delegation_max_duration_sec() ->
                 {:error, :delegation_default_expiry_sec}
 
-              not Enum.all?(toml.delegation_invalidate_on_paths, &is_binary/1) ->
+              not Enum.all?(toml.delegation_invalidate_on_paths, &valid_glob?/1) ->
                 {:error, :delegation_invalidate_on_paths}
 
-              not Enum.all?(toml.delegation_restrict_to_paths, &is_binary/1) ->
+              not Enum.all?(toml.delegation_restrict_to_paths, &valid_glob?/1) ->
                 {:error, :delegation_restrict_to_paths}
 
               true ->

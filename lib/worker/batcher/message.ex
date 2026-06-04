@@ -323,8 +323,53 @@ defmodule BorsNG.Worker.Batcher.Message do
     "bors.toml: expected status to be a list"
   end
 
-  def generate_bors_toml_error(:blocked_labels) do
-    "bors.toml: expected blocked_labels to be a list"
+  # NB: the validator emits :block_labels (see BorsToml), not :blocked_labels.
+  def generate_bors_toml_error(:block_labels) do
+    "bors.toml: expected block_labels to be a list"
+  end
+
+  def generate_bors_toml_error(:pr_status) do
+    "bors.toml: expected pr_status to be a list"
+  end
+
+  def generate_bors_toml_error(:prerun_timeout_sec) do
+    "bors.toml: expected prerun_timeout_sec to be an integer"
+  end
+
+  def generate_bors_toml_error(:cut_body_after) do
+    "bors.toml: expected cut_body_after to be a string"
+  end
+
+  def generate_bors_toml_error(:commit_title) do
+    "bors.toml: expected commit_title to be a string"
+  end
+
+  def generate_bors_toml_error(:committer_details) do
+    "bors.toml: committer must specify both name and email"
+  end
+
+  def generate_bors_toml_error(:max_batch_size) do
+    "bors.toml: expected max_batch_size to be an integer"
+  end
+
+  def generate_bors_toml_error(:delegation_default_expiry_sec) do
+    "bors.toml: expected [delegation] default_expiry_sec to be a positive integer " <>
+      "of at most 90 days (in seconds)"
+  end
+
+  def generate_bors_toml_error(:delegation_invalidate_on_paths) do
+    "bors.toml: expected [delegation] invalidate_on_paths to be a list of glob patterns"
+  end
+
+  def generate_bors_toml_error(:delegation_restrict_to_paths) do
+    "bors.toml: expected [delegation] restrict_to_paths to be a list of glob patterns"
+  end
+
+  # Catch-all so a future validation key can never crash the renderer (and the
+  # batcher with it) the way the unhandled keys above silently did. Prefer an
+  # explicit clause with friendly wording over relying on this.
+  def generate_bors_toml_error(key) do
+    "bors.toml: invalid configuration (#{key})"
   end
 
   def get_is_new_year do
