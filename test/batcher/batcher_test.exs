@@ -127,7 +127,7 @@ defmodule BorsNG.Worker.BatcherTest do
                commits: %{},
                comments: %{
                  1 => [
-                   "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+                   "Bors build canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
                  ],
                  2 => []
                },
@@ -178,7 +178,7 @@ defmodule BorsNG.Worker.BatcherTest do
                commits: %{},
                comments: %{
                  1 => [
-                   "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+                   "Bors build canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
                  ]
                },
                statuses: %{"N" => %{"bors" => :error}},
@@ -240,7 +240,7 @@ defmodule BorsNG.Worker.BatcherTest do
     }
     |> Repo.insert!()
 
-    Batcher.handle_cast({:cancel, patch.id}, proj.id)
+    Batcher.handle_cast({:cancel, patch.id, :push}, proj.id)
     state = GitHub.ServerMock.get_state()
 
     assert state == %{
@@ -249,7 +249,7 @@ defmodule BorsNG.Worker.BatcherTest do
                commits: %{},
                comments: %{
                  1 => [
-                   "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+                   "Bors build canceled because the PR branch was pushed to.\n\nThis cancels the in-progress bors run; if the push also touched a delegation-restricted path, any affected delegation is revoked in a separate comment. Address comments or fix if necessary, and then someone with permission can re-run `bors r+` once the PR is ready."
                  ],
                  2 => [
                    "This PR was included in a batch that was canceled, it will be automatically retried"
@@ -2983,7 +2983,11 @@ defmodule BorsNG.Worker.BatcherTest do
     assert batch.state == :error
 
     state = GitHub.ServerMock.get_state()[{{:installation, 91}, 14}]
-    assert "Synchronization error!" in state.comments[1]
+
+    assert "Synchronization error: the pull request's head commit changed after it was approved (most likely a new push), so the built batch no longer matches the current code and bors did not merge it. Re-run `bors r+` once the PR is ready." in state.comments[
+             1
+           ]
+
     # master never advanced and the PR was never merged — the moved head "O"
     # (which nothing verified) did not reach the target branch.
     assert state.branches["master"] == "ini"
@@ -7192,7 +7196,10 @@ defmodule BorsNG.Worker.BatcherTest do
 
     state = GitHub.ServerMock.get_state()
     comments = state[{{:installation, 91}, 14}].comments[1]
-    assert comments == ["Has [ci skip][skip ci][skip netlify], bors build will time out"]
+
+    assert comments == [
+             "This PR's title or body contains the CI-skip marker `[ci skip][skip ci][skip netlify]`, so CI won't run and the bors build would time out. Remove the marker before running bors."
+           ]
   end
 
   test "full desync detection", %{proj: proj} do
@@ -7285,7 +7292,9 @@ defmodule BorsNG.Worker.BatcherTest do
                  "ini" => %{commit_message: "[ci skip][skip ci][skip netlify]", parents: ["ini"]}
                },
                comments: %{
-                 1 => ["Synchronization error!"]
+                 1 => [
+                   "Synchronization error: the pull request's head commit changed after it was approved (most likely a new push), so the built batch no longer matches the current code and bors did not merge it. Re-run `bors r+` once the PR is ready."
+                 ]
                },
                statuses: %{
                  "N" => %{"bors" => :error}

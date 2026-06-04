@@ -405,7 +405,7 @@ defmodule BorsNG.Worker.Attemptor do
         &(&1.state == :error)
       )
 
-    send_message(repo_conn, patch, {:failed, erred})
+    send_message(repo_conn, patch, {:try_failed, erred})
   end
 
   defp maybe_complete_attempt(:running, _project, _patch, _statuses) do
@@ -429,7 +429,7 @@ defmodule BorsNG.Worker.Attemptor do
   defp timeout_attempt(attempt, project, patch) do
     project
     |> get_repo_conn()
-    |> send_message(patch, {:timeout, :failed})
+    |> send_message(patch, {:timeout, :try})
 
     attempt
     |> Attempt.changeset(%{state: :error})

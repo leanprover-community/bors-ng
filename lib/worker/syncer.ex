@@ -139,7 +139,7 @@ defmodule BorsNG.Worker.Syncer do
 
   def do_synchronize!(project_id, {:close, patch}) do
     batcher = Batcher.Registry.get(project_id)
-    Batcher.cancel(batcher, patch.id)
+    Batcher.cancel(batcher, patch.id, :closed)
     attemptor = Attemptor.Registry.get(project_id)
     Attemptor.cancel(attemptor, patch.id)
 

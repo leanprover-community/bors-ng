@@ -34,7 +34,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_status(:race) do
-    {"Synchronization error!", :error}
+    {"Synchronization error: PR head changed", :error}
   end
 
   def generate_status(:delayed) do
@@ -42,7 +42,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message(:race) do
-    "Synchronization error!"
+    "Synchronization error: the pull request's head commit changed after it was approved (most likely a new push), so the built batch no longer matches the current code and bors did not merge it. Re-run `bors r+` once the PR is ready."
   end
 
   def generate_message({:preflight, :waiting}) do
@@ -86,7 +86,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:preflight, :ci_skip}) do
-    "Has [ci skip][skip ci][skip netlify], bors build will time out"
+    "This PR's title or body contains the CI-skip marker `[ci skip][skip ci][skip netlify]`, so CI won't run and the bors build would time out. Remove the marker before running bors."
   end
 
   def generate_message(:already_running_review) do
@@ -113,8 +113,30 @@ defmodule BorsNG.Worker.Batcher.Message do
     "This PR was included in a batch that timed out, it will be automatically retried"
   end
 
-  def generate_message({:canceled, :failed}) do
-    "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+  # `bors try` is a trial build, not a merge attempt, so its failure/timeout
+  # messages must not suggest `bors r+` (which would queue a merge of code that
+  # just failed). The right next step is to fix and run `bors try` again.
+  def generate_message({:timeout, :try}) do
+    "Timed out.\n\nFix if necessary, and then run `bors try` again."
+  end
+
+  def generate_message({:canceled, :failed, :push}) do
+    "Bors build canceled because the PR branch was pushed to.\n\nThis cancels the in-progress bors run; if the push also touched a delegation-restricted path, any affected delegation is revoked in a separate comment. Address comments or fix if necessary, and then someone with permission can re-run `bors r+` once the PR is ready."
+  end
+
+  # A closed or draft PR has already been told what happened (the PR is closed,
+  # or the draft-mode notice lists what was cleaned up), so an extra "canceled"
+  # comment telling the author to run `bors r+` would be noise or contradictory.
+  def generate_message({:canceled, :failed, :closed}) do
+    nil
+  end
+
+  def generate_message({:canceled, :failed, :draft}) do
+    nil
+  end
+
+  def generate_message({:canceled, :failed, _reason}) do
+    "Bors build canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
   end
 
   def generate_message({:canceled, :retrying}) do
@@ -171,6 +193,9 @@ defmodule BorsNG.Worker.Batcher.Message do
         :failed ->
           "Build failed:"
 
+        :try_failed ->
+          "Build failed:"
+
         :retrying ->
           "Build failed (retrying...):"
       end
@@ -183,6 +208,9 @@ defmodule BorsNG.Worker.Batcher.Message do
       :failed ->
         body <>
           "\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
+
+      :try_failed ->
+        body <> "\n\nFix if necessary, and then run `bors try` again."
 
       _ ->
         body

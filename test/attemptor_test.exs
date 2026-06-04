@@ -994,7 +994,7 @@ defmodule BorsNG.Worker.AttemptorTest do
     comments = state[{{:installation, 91}, 14}].comments[1]
 
     assert comments == [
-             "## try\n\nHas [ci skip][skip ci][skip netlify], bors build will time out"
+             "## try\n\nThis PR's title or body contains the CI-skip marker `[ci skip][skip ci][skip netlify]`, so CI won't run and the bors build would time out. Remove the marker before running bors."
            ]
   end
 end

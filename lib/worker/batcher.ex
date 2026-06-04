@@ -69,8 +69,8 @@ defmodule BorsNG.Worker.Batcher do
     send(pid, {:poll, :once})
   end
 
-  def cancel(pid, patch_id) when is_integer(patch_id) do
-    GenServer.cast(pid, {:cancel, patch_id})
+  def cancel(pid, patch_id, reason \\ :requested) when is_integer(patch_id) do
+    GenServer.cast(pid, {:cancel, patch_id, reason})
   end
 
   def cancel_all(pid) do
@@ -194,11 +194,16 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  def do_handle_cast({:cancel, patch_id}, _project_id) do
+  def do_handle_cast({:cancel, patch_id, reason}, _project_id) do
     patch_id
     |> Batch.all_for_patch(:incomplete)
     |> Repo.one()
-    |> cancel_patch(patch_id)
+    |> cancel_patch(patch_id, reason)
+  end
+
+  # Backwards compatibility for any in-flight 2-tuple casts (e.g. across a deploy).
+  def do_handle_cast({:cancel, patch_id}, project_id) do
+    do_handle_cast({:cancel, patch_id, :requested}, project_id)
   end
 
   def do_handle_cast({:cancel_all}, project_id) do
@@ -1069,14 +1074,14 @@ defmodule BorsNG.Worker.Batcher do
     |> send_status(batch, :timeout)
   end
 
-  defp cancel_patch(nil, _), do: :ok
+  defp cancel_patch(nil, _, _), do: :ok
 
-  defp cancel_patch(batch, patch_id) do
-    cancel_patch(batch, patch_id, batch.state)
+  defp cancel_patch(batch, patch_id, reason) do
+    cancel_patch(batch, patch_id, batch.state, reason)
     Project.ping!(batch.project_id)
   end
 
-  defp cancel_patch(batch, patch_id, :running) do
+  defp cancel_patch(batch, patch_id, :running, reason) do
     project = batch.project
 
     patch_links =
@@ -1121,16 +1126,16 @@ defmodule BorsNG.Worker.Batcher do
           &(&1.id != patch_id)
         )
 
-      send_message(repo_conn, canceled_patches, {:canceled, :failed})
+      send_message(repo_conn, canceled_patches, {:canceled, :failed, reason})
       send_message(repo_conn, uncanceled_patches, {:canceled, :retrying})
     else
-      send_message(repo_conn, patches, {:canceled, :failed})
+      send_message(repo_conn, patches, {:canceled, :failed, reason})
     end
 
     send_status(repo_conn, batch, :canceled)
   end
 
-  defp cancel_patch(batch, patch_id, _state) do
+  defp cancel_patch(batch, patch_id, _state, reason) do
     project = batch.project
 
     LinkPatchBatch
@@ -1144,7 +1149,7 @@ defmodule BorsNG.Worker.Batcher do
     patch = Repo.get!(Patch, patch_id)
     repo_conn = get_repo_conn(project)
     send_status(repo_conn, batch.id, [patch], :canceled)
-    send_message(repo_conn, [patch], {:canceled, :failed})
+    send_message(repo_conn, [patch], {:canceled, :failed, reason})
   end
 
   defp patch_preflight(repo_conn, patch) do

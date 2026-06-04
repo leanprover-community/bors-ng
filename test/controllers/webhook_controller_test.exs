@@ -492,10 +492,11 @@ defmodule BorsNG.WebhookControllerTest do
     assert comments == []
   end
 
-  test "converting a running PR to draft posts canceled message and draft notice", %{
-    conn: conn,
-    project: proj
-  } do
+  test "converting a running PR to draft posts only the draft notice, not a separate canceled comment",
+       %{
+         conn: conn,
+         project: proj
+       } do
     GitHub.ServerMock.put_state(%{
       {{:installation, 31}, 13} => %{
         branches: %{},
@@ -559,11 +560,11 @@ defmodule BorsNG.WebhookControllerTest do
       |> Map.get(:comments)
       |> Map.get(1)
 
-    assert Enum.any?(
-             comments,
-             &(&1 ==
-                 "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`.")
-           )
+    # The draft-mode notice already explains the PR was removed from the merge
+    # queue, so bors must not also post a standalone "Bors build canceled"
+    # comment telling the author to run `bors r+` (which would contradict draft
+    # mode).
+    refute Enum.any?(comments, &String.contains?(&1, "Bors build canceled"))
 
     assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
   end

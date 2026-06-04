@@ -109,10 +109,23 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
   test "generate canceled message" do
     expected_message =
-      "Canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
+      "Bors build canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
 
-    actual_message = Message.generate_message({:canceled, :failed})
+    actual_message = Message.generate_message({:canceled, :failed, :requested})
     assert expected_message == actual_message
+  end
+
+  test "generate canceled message names the push as the reason and defers to the delegation comment" do
+    expected_message =
+      "Bors build canceled because the PR branch was pushed to.\n\nThis cancels the in-progress bors run; if the push also touched a delegation-restricted path, any affected delegation is revoked in a separate comment. Address comments or fix if necessary, and then someone with permission can re-run `bors r+` once the PR is ready."
+
+    actual_message = Message.generate_message({:canceled, :failed, :push})
+    assert expected_message == actual_message
+  end
+
+  test "generate canceled message is suppressed for closed and draft PRs" do
+    assert nil == Message.generate_message({:canceled, :failed, :closed})
+    assert nil == Message.generate_message({:canceled, :failed, :draft})
   end
 
   test "generate canceled/retry message" do
@@ -136,6 +149,22 @@ defmodule BorsNG.Worker.BatcherMessageTest do
       "This PR was included in a batch that timed out, it will be automatically retried"
 
     actual_message = Message.generate_message({:timeout, :retrying})
+    assert expected_message == actual_message
+  end
+
+  test "generate try timeout message suggests `bors try`, not `bors r+`" do
+    expected_message = "Timed out.\n\nFix if necessary, and then run `bors try` again."
+
+    actual_message = Message.generate_message({:timeout, :try})
+    assert expected_message == actual_message
+  end
+
+  test "generate try failure message suggests `bors try`, not `bors r+`" do
+    expected_message =
+      "Build failed:\n  * stat\n\nFix if necessary, and then run `bors try` again."
+
+    example_statuses = [%{url: nil, identifier: "stat"}]
+    actual_message = Message.generate_message({:try_failed, example_statuses})
     assert expected_message == actual_message
   end
 

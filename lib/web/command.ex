@@ -560,7 +560,7 @@ defmodule BorsNG.Command do
       """
       :lock: Permission denied
 
-      Existing reviewers: [click here to make #{login} a reviewer](#{url})
+      An existing reviewer can [click here to make #{login} a reviewer](#{url}).
       """
     )
   end

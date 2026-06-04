@@ -373,7 +373,7 @@ defmodule BorsNG.WebhookController do
 
     if had_incomplete_batch do
       batcher = Batcher.Registry.get(project.id)
-      Batcher.cancel(batcher, patch.id)
+      Batcher.cancel(batcher, patch.id, :draft)
     end
 
     if had_incomplete_attempt do
@@ -425,7 +425,7 @@ defmodule BorsNG.WebhookController do
     # Ensure a closed PR is removed from any waiting/running batches and try jobs
     batcher = Batcher.Registry.get(project.id)
     # Batcher.cancel is the same as running bors r-
-    Batcher.cancel(batcher, p.id)
+    Batcher.cancel(batcher, p.id, :closed)
     attemptor = Attemptor.Registry.get(project.id)
     Attemptor.cancel(attemptor, p.id)
     BranchDeleter.delete(p)
@@ -439,7 +439,7 @@ defmodule BorsNG.WebhookController do
 
   def do_webhook_pr(conn, %{action: "synchronize", project: pro, patch: p}) do
     batcher = Batcher.Registry.get(pro.id)
-    Batcher.cancel(batcher, p.id)
+    Batcher.cancel(batcher, p.id, :push)
     attemptor = Attemptor.Registry.get(pro.id)
     Attemptor.cancel(attemptor, p.id)
     commit = conn.body_params["pull_request"]["head"]["sha"]
