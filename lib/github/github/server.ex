@@ -453,8 +453,11 @@ defmodule BorsNG.GitHub.Server do
          decoded <- Jason.decode!(tree_raw),
          # GitHub caps recursive trees (~100k entries / 7MB). A truncated tree
          # is missing paths, so reporting it as complete would make the lint
-         # emit false "matches no files" warnings. Treat truncation as an error
-         # so callers skip rather than mislead.
+         # emit false "matches no files" warnings. Truncation is deterministic
+         # (a refetch truncates too), so return it as a terminal {:ok, ...} so
+         # call_with_retry stops immediately rather than burning the retry
+         # budget re-fetching a multi-MB tree that can never come back whole.
+         # Callers must skip on :truncated rather than treat it as complete.
          {:truncated, false} <- {:truncated, decoded["truncated"] == true} do
       paths =
         decoded
@@ -466,7 +469,7 @@ defmodule BorsNG.GitHub.Server do
     else
       {:branch, %{status: status, body: body}} -> {:error, :get_repo_tree, status, body}
       {:tree, %{status: status, body: body}} -> {:error, :get_repo_tree, status, body}
-      {:truncated, true} -> {:error, :get_repo_tree, :truncated, branch}
+      {:truncated, true} -> {:ok, {:truncated, branch}}
     end
   end
 

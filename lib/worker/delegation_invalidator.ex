@@ -334,7 +334,10 @@ defmodule BorsNG.Worker.DelegationInvalidator do
 
     with {:ok, toml} <- GetBorsToml.get(conn, patch.into_branch),
          [_ | _] = patterns <- toml.delegation_invalidate_on_paths,
-         {:ok, tree} <- GitHub.get_repo_tree(conn, patch.into_branch) do
+         # A truncated tree comes back as {:ok, {:truncated, _}}; match only a
+         # path list so truncation falls through to the catch-all and skips the
+         # lint rather than warning off an incomplete file set.
+         {:ok, tree} when is_list(tree) <- GitHub.get_repo_tree(conn, patch.into_branch) do
       case unmatched_paths(patterns, tree) do
         [] -> :ok
         bad -> post_lint_comment(conn, patch.pr_xref, bad)

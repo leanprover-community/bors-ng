@@ -207,7 +207,8 @@ defmodule BorsNG.GitHub do
     call_with_retry(:get_file, repo_conn, {branch, path}, 500, 4_000)
   end
 
-  @spec get_repo_tree(tconn, binary) :: {:ok, [binary]} | {:error, term}
+  @spec get_repo_tree(tconn, binary) ::
+          {:ok, [binary]} | {:ok, {:truncated, binary}} | {:error, term}
   def get_repo_tree(repo_conn, branch) do
     call_with_retry(:get_repo_tree, repo_conn, {branch}, 500, 4_000)
   end

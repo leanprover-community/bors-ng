@@ -655,7 +655,13 @@ defmodule BorsNG.GitHub.ServerMock do
     with {:ok, repo} <- Map.fetch(state, repo_conn),
          {:ok, files} <- Map.fetch(repo, :files),
          branch_files when is_map(branch_files) <- Map.get(files, branch) do
-      {{:ok, Map.keys(branch_files)}, state}
+      # A repo can list branches whose tree is truncated to mirror GitHub's
+      # recursive-tree cap; the real server returns this terminal tuple.
+      if branch in Map.get(repo, :truncated_trees, []) do
+        {{:ok, {:truncated, branch}}, state}
+      else
+        {{:ok, Map.keys(branch_files)}, state}
+      end
     else
       _ -> {{:error, :get_repo_tree}, state}
     end

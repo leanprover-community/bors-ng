@@ -485,6 +485,28 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
       assert comments == []
     end
 
+    test "stays silent when the base tree is truncated", %{patch: patch} do
+      # Cargo.toml is present and Gemfile is missing, which would normally warn
+      # about Gemfile. But the tree is truncated, so the file set is incomplete
+      # and the lint must skip rather than warn off a partial listing.
+      GitHub.ServerMock.put_state(%{
+        {{:installation, 93}, 23} => %{
+          branches: %{"main" => "base_tip"},
+          comments: %{9 => []},
+          statuses: %{},
+          truncated_trees: ["main"],
+          files: %{"main" => %{"bors.toml" => @lint_toml, "Cargo.toml" => "_"}}
+        }
+      })
+
+      DelegationInvalidator.lint_for_patch(patch.id)
+
+      comments =
+        GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+
+      assert comments == []
+    end
+
     test "stays silent when invalidate_on_paths is empty", %{patch: patch} do
       GitHub.ServerMock.put_state(%{
         {{:installation, 93}, 23} => %{
