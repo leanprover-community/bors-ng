@@ -436,6 +436,16 @@ defmodule BorsNG.Worker.Batcher do
           :race ->
             :race
 
+          # Integrity invariant: never merge a head that differs from the
+          # patch.commit everything upstream was authorized against. This live
+          # head-vs-stored check is also the backstop the delegation merge-time
+          # gate relies on: that gate verifies the *stored* patch.commit and
+          # does not re-fetch, so if a `synchronize` was never processed it can
+          # bless a stale-but-safe commit while the real head has moved on. This
+          # comparison is what refuses that head. Weakening it (e.g. merging
+          # without this live get_pr! check) would turn the gate's reliance on a
+          # possibly-stale patch.commit into a real bypass. See
+          # DELEGATION_INVALIDATION.md, "Known limitations — Missed-push window".
           _ when pr.head_sha != patch.commit ->
             :race
 

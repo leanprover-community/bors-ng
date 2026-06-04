@@ -276,11 +276,29 @@ issued.
 
 ## Known limitations
 
-- **Missed-push window.** A `synchronize` lost *and* immediately followed by a
-  merge is the gap the merge-time gate exists to close. Outside that window,
-  the next push self-heals. The residual TOCTOU between `r+` approval and
-  staging is bounded by the batcher's `:race` guard, which refuses to merge a
-  head that has moved past `patch.commit`.
+- **Missed-push window.** All checks compare against the stored `patch.commit`,
+  which the `synchronize` handler updates *synchronously* before spawning the
+  (fire-and-forget) push-path invalidator. Two distinct races sit behind this,
+  with different backstops — and crucially, **neither lets unverified content
+  merge; the residual cost is an availability stall, not an integrity bypass:**
+  - *Webhook delivered, async revocation not yet landed.* `patch.commit` is
+    already fresh, so the **synchronous merge-time gate** re-derives the verdict
+    from it at `r+` time regardless of whether the background invalidator has
+    finished. This is the race the gate exists to close.
+  - *Webhook never processed (dropped, or bors was down).* `patch.commit` stays
+    stale, so the gate — which trusts the stored commit and does not re-fetch —
+    cannot see the new head. The **batcher's `:race` guard** is the backstop
+    here: at staging it compares the *live* head against `patch.commit`
+    (`batcher.ex`) and refuses to merge a head that has moved, so the unverified
+    push is dropped rather than merged. A later push (or re-`r+`) then re-gates
+    against the new head and self-heals.
+
+  Because a merge requires the live head to equal the `patch.commit` the gate
+  blessed — and a push also cancels any in-flight batch (`Batcher.cancel` in the
+  `synchronize` handler) — there is no path that merges a head bors never
+  verified. The integrity guarantee in the second case rests entirely on the
+  batcher's live-head `:race` check; weakening or bypassing it would turn the
+  gate's reliance on a possibly-stale `patch.commit` into a real bypass.
 - **`pr_diff` delta-only fallback over-revokes.** For a >3000-file PR whose
   `delta` includes base-merge content, the missing noise filter may revoke a
   delegation that a complete filter would have spared. This is the accepted

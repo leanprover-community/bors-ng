@@ -2922,6 +2922,75 @@ defmodule BorsNG.Worker.BatcherTest do
            }
   end
 
+  test "refuses to merge a head that moved past patch.commit (race guard)", %{proj: proj} do
+    # Integrity backstop for the delegation merge-time gate: the patch was
+    # approved/gated against commit "N", but the live PR head has since advanced
+    # to "O" (e.g. a `synchronize` bors never processed). Staging must refuse to
+    # merge the unverified head rather than merge it. See batcher.ex's race
+    # guard and DELEGATION_INVALIDATION.md, "Missed-push window".
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "O",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [
+            %GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}
+          ]
+        }
+      }
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master"
+      }
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    # Force a poll so the batch leaves :waiting and attempts to stage.
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+
+    batch
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    # The race guard fires: the batch errors out via the :race path (not some
+    # other failure) instead of merging.
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    assert batch.state == :error
+
+    state = GitHub.ServerMock.get_state()[{{:installation, 91}, 14}]
+    assert "Synchronization error!" in state.comments[1]
+    # master never advanced and the PR was never merged — the moved head "O"
+    # (which nothing verified) did not reach the target branch.
+    assert state.branches["master"] == "ini"
+    refute state.pulls[1].merged
+    assert state.statuses["O"] == nil
+  end
+
   test "merge conflict with master", %{proj: proj} do
     # Projects are created with a "waiting" state
     GitHub.ServerMock.put_state(%{
