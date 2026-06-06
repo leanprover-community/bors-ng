@@ -213,8 +213,9 @@ defmodule BorsNG.Worker.DelegationInvalidator do
   # reason :: {:sensitive, path} | {:out_of_scope, path} | :too_large
   #
   # filter_fun is a thunk returning the pr_diff filter; it is forced only when a
-  # non-empty, non-truncated delta actually needs filtering, so an empty delta
-  # never triggers a pr_diff fetch (the merge-time short-circuit).
+  # non-empty delta actually needs filtering — including a truncated one, which
+  # must be filtered before we react to its size — so an empty delta never
+  # triggers a pr_diff fetch (the merge-time short-circuit).
   @doc false
   def classify_delegation(conn, patch, restrict, deny, filter_fun, delegation) do
     case GitHub.get_pr_compare(conn, delegation.delegated_at_commit, patch.commit) do
