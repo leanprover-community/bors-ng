@@ -258,9 +258,38 @@ defmodule BorsNG.Worker.DelegationInvalidatorTest do
     assert Enum.any?(comments, &String.contains?(&1, "src/crypto.rs"))
   end
 
-  test "revokes (too large) when the delta exceeds the compare cap", %{user: user, patch: patch} do
+  test "keeps the delegation when a huge base-merge delta is entirely in scope", %{
+    user: user,
+    patch: patch
+  } do
+    # Regression test for leanprover-community/mathlib4#39106. The author clicked
+    # "Update branch", so the delta from the delegation commit to the new head is
+    # dominated by the 300+ files master touched and blows past the compare cap.
+    # But the author's own net diff (pr_files) is a single in-scope file, so none
+    # of that base-merge churn is authored work — the delegation must survive,
+    # even though the raw delta is truncated.
     put_mock(
       pr_files: ["src/lib.rs"],
+      delta: %{{"old_head", "new_head_sha"} => Enum.map(1..300, &"f#{&1}.rs")}
+    )
+
+    delegate!(user, patch, "old_head")
+
+    DelegationInvalidator.invalidate_for_patch(patch.id)
+
+    assert [_] = Repo.all(UserPatchDelegation)
+    comments = GitHub.ServerMock.get_state() |> get_in([{{:installation, 93}, 23}, :comments, 9])
+    assert comments == []
+  end
+
+  test "revokes (too large) when truncation may hide the newness of an unacceptable authored path",
+       %{user: user, patch: patch} do
+    # Here the author's net diff DOES include a sensitive path (Cargo.toml), and
+    # the delta is truncated, so bors cannot confirm whether the latest push is
+    # what touched it (Cargo.toml isn't among the 300 files it could see). It
+    # fails safe and revokes.
+    put_mock(
+      pr_files: ["Cargo.toml", "src/lib.rs"],
       delta: %{{"old_head", "new_head_sha"} => Enum.map(1..300, &"f#{&1}.rs")}
     )
 

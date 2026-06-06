@@ -207,17 +207,44 @@ handled separately:
 
 | Case | Meaning | Handling |
 |------|---------|----------|
-| **`delta` truncated** (>300 files changed *after* delegation) | Cannot enumerate the delegate's new work; an unacceptable path might be hidden in the overflow | **Fail safe.** Over-revoke on `synchronize`; deny on `r+`. |
+| **`delta` truncated** (>300 files changed *after* delegation) | The delta may be incomplete, but it is dominated by base-merge noise that the `pr_diff` filter removes; an unacceptable path can only be hidden if it is also **authored** | **Filter first, then conditionally fail safe** (see below). |
 | **`pr_diff` truncated** (>3000 files in the whole PR) | Only the *noise filter* is incomplete; `delta` is still fully known | **Delta-only fallback.** Evaluate `delta` without the intersection. Can only over-revoke (a base-merge file may count as authored), never under-revoke. |
 | **`delta` empty** (no changes since delegation) | Nothing to check | **Short-circuit.** Do not even fetch `pr_diff`; the delegation stands. |
 
-The allow-list makes the truncated-`delta` case fall out naturally rather than
-needing a bolted-on rule. Its normal rule is already "revoke unless every
-authored path is known-acceptable"; overflow paths we cannot see are not
-known-acceptable, so they revoke by the same logic. A deny-list alone needs the
-explicit special case "if truncated, revoke even though no *visible* path
-matched," because a sensitive path could be hiding in the overflow. The
-fail-safe *direction* — uncertainty revokes — is identical for both.
+### The truncated-`delta` rule, refined
+
+A naive "any `delta` truncation → revoke" is wrong, and was the original bug
+(see "Why filtering must precede the truncation check"). The truncated overflow
+is overwhelmingly base-merge files — exactly the noise `pr_diff` strips — so by
+itself it proves nothing. `delta` truncation is only dangerous when it could
+hide the *newness* of an **authored** unacceptable path. So the check is
+filtered, not raw:
+
+1. Intersect the (possibly truncated) `delta` with `pr_diff` and classify the
+   result. Any unacceptable path here revokes with its **specific** reason
+   (sensitive / out-of-scope), truncation or not.
+2. If nothing visible is unacceptable **and** `delta` was truncated, fall back
+   to `:too_large` **only if some authored path (`pr_diff`) is unacceptable at
+   all** — i.e. the truncation could be masking whether that path is new. If
+   every authored path is in scope, the hidden overflow is all base-merge noise
+   and cannot hide an authored violation, so the delegation stands.
+
+When `pr_diff` itself is truncated (`:no_filter`), we cannot bound the authored
+set, so any `delta` truncation conservatively fails safe — the over-revoke
+direction, consistent with the delta-only fallback above.
+
+### Why filtering must precede the truncation check
+
+The decisive case is mathlib4 PR #39106: the author clicked "Update branch",
+pulling in hundreds of master files. The three-dot `delta`
+(`delegated_at_commit...head`) drags in every file master touched since the
+branch point, so it blows past the 300-file cap on a busy base branch *as a
+matter of course*. The original code returned `:too_large` on that raw size
+before ever filtering, revoking a delegation whose authored diff was a single
+in-scope file — defeating the feature in exactly the scenario the `pr_diff`
+filter was built for. The allow-list's normal rule ("revoke unless every
+authored path is known-acceptable") still drives the decision; we just no longer
+let unseen *base-merge* paths, which are never authored, trip it.
 
 ### Why the split, and "un-actionable delegations"
 
@@ -231,10 +258,14 @@ The split avoids this. The decisive test case:
 |---|---|---|
 | `bors r+` | empty `delta` → nothing to check → **approves** ✅ | `pr_diff` truncated → **denied** ❌ |
 
-Under the split policy, a delegation becomes un-actionable **only if the
-delegate's own post-delegation changes exceed ~300 files** — which is within
-their control and arguably *should* demand a fresh human review. A large but
-finished PR stays fully delegatable.
+Under the split policy, a delegation becomes un-actionable only if the
+delegate's own post-delegation changes exceed ~300 files **and** include an
+authored path outside the configured scope (per the refined truncated-`delta`
+rule above). Syncing the base branch — even a busy one that pushes the raw
+`delta` well past 300 — is *not* enough on its own; it is all base-merge noise.
+The remaining un-actionable case is within the delegate's control and arguably
+*should* demand a fresh human review. A large but finished PR stays fully
+delegatable.
 
 ## User-facing messages
 
@@ -303,9 +334,11 @@ issued.
   `delta` includes base-merge content, the missing noise filter may revoke a
   delegation that a complete filter would have spared. This is the accepted
   safe direction.
-- **`delta` is hard-capped at 300 by GitHub** with no pagination escape. A
-  genuinely huge post-delegation push is therefore un-mergeable by a delegate
-  by design.
+- **`delta` is hard-capped at 300 by GitHub** with no pagination escape. This
+  no longer revokes on its own (the filter runs first), but a post-delegation
+  push that both exceeds 300 changed files *and* touches an out-of-scope
+  authored path is un-mergeable by a delegate by design: the truncation hides
+  whether that path is new, so bors fails safe.
 
 See also [bors-ng/rfcs](https://github.com/bors-ng/rfcs) for broader design
 documentation.

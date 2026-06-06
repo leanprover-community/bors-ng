@@ -222,19 +222,41 @@ defmodule BorsNG.Worker.DelegationInvalidator do
       {:ok, []} ->
         :ok
 
-      # Hit the compare cap: we cannot enumerate the post-delegation changes,
-      # so a sensitive/out-of-scope path may be hidden. Fail safe.
-      {:ok, files} when length(files) >= @compare_file_cap ->
-        {:revoke, :too_large}
-
       {:ok, files} ->
+        # GitHub caps compare at 300 files with no file pagination, so hitting
+        # the cap means the delta may be incomplete. Crucially we must filter
+        # *before* reacting to that: the delta is dominated by base-merge noise
+        # — clicking "Update branch" drags in every file master touched since
+        # the branch point — and that noise is exactly what the pr_diff filter
+        # removes. Bailing to :too_large on the raw delta size (as we used to)
+        # revokes every delegation the moment the author syncs a busy base
+        # branch like mathlib4's master, which is the very case the filter
+        # exists to allow.
+        truncated? = length(files) >= @compare_file_cap
+        filter = filter_fun.()
+
         files
         |> Enum.map(& &1.filename)
-        |> apply_filter(filter_fun.())
+        |> apply_filter(filter)
         |> Enum.find_value(&classify_path(&1, restrict, deny))
         |> case do
-          nil -> :ok
-          reason -> {:revoke, reason}
+          # A visible authored+new path is unacceptable: revoke with its
+          # specific reason, regardless of truncation.
+          reason when not is_nil(reason) ->
+            {:revoke, reason}
+
+          # Nothing unacceptable among the files we could see. A truncated delta
+          # still leaves uncertainty, but only if some *authored* path is
+          # unacceptable to begin with — otherwise the hidden overflow is all
+          # base-merge noise and cannot mask an unacceptable authored change. So
+          # we fail safe only when truncation could actually be hiding the
+          # newness of an unacceptable authored path.
+          nil ->
+            if truncated? and filter_admits_unacceptable?(filter, restrict, deny) do
+              {:revoke, :too_large}
+            else
+              :ok
+            end
         end
 
       # The GitHub client returns error tuples of several arities, never a bare
@@ -246,6 +268,17 @@ defmodule BorsNG.Worker.DelegationInvalidator do
 
         :unverifiable
     end
+  end
+
+  # Can a truncated delta hide the newness of an unacceptable authored change?
+  # With a complete authored file list it can only do so if some authored path
+  # is unacceptable in the first place. With no filter (pr_diff truncated or
+  # unavailable) we can't bound the authored set, so any truncated delta must
+  # fail safe.
+  defp filter_admits_unacceptable?(:no_filter, _restrict, _deny), do: true
+
+  defp filter_admits_unacceptable?({:filter, set}, restrict, deny) do
+    Enum.any?(set, fn path -> classify_path(path, restrict, deny) != nil end)
   end
 
   # The PR's own file list, used to filter base-merge noise out of a delta.
