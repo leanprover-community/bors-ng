@@ -213,8 +213,7 @@ handled separately:
 
 ### The truncated-`delta` rule, refined
 
-A naive "any `delta` truncation → revoke" is wrong, and was the original bug
-(see "Why filtering must precede the truncation check"). The truncated overflow
+A naive "any `delta` truncation → revoke" is wrong. The truncated overflow
 is overwhelmingly base-merge files — exactly the noise `pr_diff` strips — so by
 itself it proves nothing. `delta` truncation is only dangerous when it could
 hide the *newness* of an **authored** unacceptable path. So the check is
@@ -232,19 +231,6 @@ filtered, not raw:
 When `pr_diff` itself is truncated (`:no_filter`), we cannot bound the authored
 set, so any `delta` truncation conservatively fails safe — the over-revoke
 direction, consistent with the delta-only fallback above.
-
-### Why filtering must precede the truncation check
-
-The decisive case is mathlib4 PR #39106: the author clicked "Update branch",
-pulling in hundreds of master files. The three-dot `delta`
-(`delegated_at_commit...head`) drags in every file master touched since the
-branch point, so it blows past the 300-file cap on a busy base branch *as a
-matter of course*. The original code returned `:too_large` on that raw size
-before ever filtering, revoking a delegation whose authored diff was a single
-in-scope file — defeating the feature in exactly the scenario the `pr_diff`
-filter was built for. The allow-list's normal rule ("revoke unless every
-authored path is known-acceptable") still drives the decision; we just no longer
-let unseen *base-merge* paths, which are never authored, trip it.
 
 ### Why the split, and "un-actionable delegations"
 
