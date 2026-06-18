@@ -85,6 +85,7 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           | :delegation_invalidate_on_paths
           | :delegation_restrict_to_paths
           | :labels
+          | :label_names_not_distinct
           | :empty_config
           | :parse_failed
 
@@ -209,11 +210,15 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           label_delegated: label_delegated
         }
 
-        labels_valid? =
-          Enum.all?(
-            [label_on_queue, label_building, label_failed, label_delegated],
-            &valid_label?/1
-          )
+        label_names = [label_on_queue, label_building, label_failed, label_delegated]
+        labels_valid? = Enum.all?(label_names, &valid_label?/1)
+
+        # Each concern must map to its own label name. Two concerns sharing a name
+        # would make the reconcile contradict itself (one wants the label present,
+        # the other absent), so reject it at parse time. Only the managed (non-nil)
+        # names need to be distinct.
+        managed_names = Enum.reject(label_names, &is_nil/1)
+        labels_distinct? = managed_names == Enum.uniq(managed_names)
 
         case toml do
           %{status: status} when not is_list(status) ->
@@ -244,6 +249,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           # validity test calls valid_label?/1.)
           _ when not labels_valid? ->
             {:error, :labels}
+
+          _ when not labels_distinct? ->
+            {:error, :label_names_not_distinct}
 
           %{status: [], block_labels: [], pr_status: []} ->
             {:error, :empty_config}

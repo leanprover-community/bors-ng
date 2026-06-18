@@ -302,4 +302,20 @@ defmodule BatcherBorsTomlTest do
     r = BorsToml.new(~s/[labels]\non_queue = 42/)
     assert r == {:error, :labels}
   end
+
+  test "rejects a [labels] table that reuses a name across two concerns" do
+    r = BorsToml.new(~s/status = ["exl"]\n[labels]\non_queue = "x"\nfailed = "x"/)
+    assert r == {:error, :label_names_not_distinct}
+  end
+
+  test "allows distinct [labels] names" do
+    {:ok, toml} =
+      BorsToml.new(
+        ~s/status = ["exl"]\n[labels]\non_queue = "a"\nbuilding = "b"\ndelegated = "c"/
+      )
+
+    assert toml.label_on_queue == "a"
+    assert toml.label_building == "b"
+    assert toml.label_delegated == "c"
+  end
 end
