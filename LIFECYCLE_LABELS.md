@@ -22,19 +22,13 @@ state.
 
 ## Status
 
-**Implemented on the bors side.** The label write API
-(`BorsNG.GitHub.add_labels/remove_label`), the `[labels]` config, the
-`BorsNG.Worker.Labeler` module, and all the delegation and queue hooks described
-below exist and are covered by tests. Two deliberate scope choices:
-
-- The optional periodic full-reconcile backstop in `Delegation.sweep/0` was
-  **not** implemented; the per-event reconcile in `expire_delegations` (the
-  actual fix) is. The backstop can be added later if drift is ever observed.
-- The queue-label reconcile reads `bors.toml` from the PR's base branch once per
-  batch transition. This is a small, bounded number of extra `get_file` calls
-  per PR lifecycle (negligible against an installation's rate limit); threading
-  the already-fetched toml through the batcher is a possible future
-  optimization.
+**Implemented on the bors side.** The label write/read API
+(`BorsNG.GitHub.add_labels` / `remove_label` / `list_issues_by_label`), the
+`[labels]` config, the `BorsNG.Worker.Labeler` module — both the per-event
+reconciles and the periodic [backstop sweep](#backstop-sweep) — its timer
+(`BorsNG.Worker.LabelBackstopTimer`), the per-base-branch [config
+cache](#config-cache) (`GetBorsToml.get_cached`), and all the delegation and
+queue hooks described below exist and are covered by tests.
 
 The mathlib4 workflow cleanup is **not** done — that lands after this deploys
 (see [Rollout](#rollout-and-sequencing)).
@@ -53,8 +47,8 @@ Bors already owns every piece of state these labels mirror:
   statuses, Zulip notifications) on every transition.
 
 The infrastructure to drive labels from this state already exists; the GitHub
-client merely lacks the write calls, and there is a recurring sweep
-(`BorsNG.Worker.DelegationTimer`) that can act as a self-healing backstop.
+client gains a small set of label write/list calls, and a dedicated recurring
+sweep (`BorsNG.Worker.LabelBackstopTimer`) acts as the self-healing backstop.
 
 The guiding principle, mirroring how the rest of bors treats GitHub side
 effects, is that **labels are best-effort projections of bors's own state**.
@@ -104,11 +98,10 @@ convert-to-draft path), so the label comes off an abandoned PR. A PR that bors
 *merges* is left alone — its delegations expire and get swept in time, and the
 `delegated` label stays as the historical marker described above.
 
-The expiry reconcile is the direct fix for the stranded-label complaint. As a
-backstop, `Delegation.sweep/0` (every ~15 min via `DelegationTimer`) can
-reconcile `delegated` for all patches with active delegations, paced the same
-way it already paces comments, so even a missed event or a restart mid-transition
-converges within one sweep.
+The expiry reconcile is the direct fix for the stranded-label complaint. The
+periodic [backstop sweep](#backstop-sweep) is the second line of defence: even a
+missed event, a dropped best-effort write, or a restart mid-transition converges
+on the next sweep.
 
 ### `ready-to-merge` and `bors-staging`
 
@@ -181,6 +174,10 @@ event** and **sticky** until the next lifecycle move clears it:
   labels untouched, but a PR that merged is not awaiting a re-queue — it reached
   `awaiting-requeue` only via a failure, and re-queuing it would have cleared the
   label before it ever got the chance to merge.)
+
+Because it is event-driven, `awaiting-requeue` is **not** reconciled by the
+[backstop sweep](#backstop-sweep) the way the state-derived labels are; see there
+for why the listing mechanism is the same but the per-PR decision is not.
 
 ## Configuration
 
@@ -271,6 +268,69 @@ guarantee explicit and makes a missed transition self-healing. `awaiting-requeue
 is the exception: it is set/cleared by event, since its desired state is not a
 function of the current DB.
 
+### Backstop sweep
+
+The per-event reconciles keep labels accurate in the normal case, but a label
+can still drift out of sync: a best-effort write dropped at event time, a crash
+mid-transition, or a human editing a managed label by hand.
+`BorsNG.Worker.Labeler.backstop_sweep/0` — run on its own timer
+(`BorsNG.Worker.LabelBackstopTimer`, hourly by default, deliberately decoupled
+from the delegation sweep) — is the self-healing pass for that drift.
+
+It is **discovery-driven and diff-based**. For each project with open patches it
+resolves the per-base-branch `[labels]` config (through the [cache](#config-cache)),
+lists the PRs carrying each managed *state-derived* name with
+`GitHub.list_issues_by_label/2`, and reconciles each. Because that listing
+endpoint returns every PR's full label set, the sweep gets each candidate's
+current labels in the same call it uses to find them, so it diffs locally and a
+tick with no drift performs **zero writes**. A second "add-gap" pass adds a label
+to the (small) set of patches the DB says should be labeled but that surfaced in
+no listing — the one case discovery-by-label can't see: a PR that lost *all* its
+managed labels.
+
+Two properties bound it. It only ever touches **open** patches (`patch.open`),
+so a merged PR's frozen labels are never disturbed — belt-and-suspenders with the
+`state=open` listing filter. And it reconciles a label only where the PR's
+*current* base config manages that name, preserving "never touch foreign labels"
+and the [retarget limitation](#which-branch-the-config-is-read-from).
+
+**Why it sweeps the three state-derived labels but not `awaiting-requeue`.** The
+discovery mechanism would be identical — list the (small) set of PRs carrying the
+label, then reconcile — but the *per-PR decision* is not. For a state-derived
+label the decision is total: the DB always says whether the label should be
+present right now (`delegated` ⇔ an active delegation; `on_queue` / `building` ⇔
+a live batch), so a found label can be kept or removed with confidence.
+`awaiting-requeue` has no current-state predicate — a dropped PR is
+indistinguishable in the DB from one never approved, the whole reason it is
+event-driven — so the sweep can never *add* it, and for a PR carrying only
+`awaiting-requeue` it cannot tell one genuinely awaiting re-queue from a dropped
+`r-`/close clear. The single direction that *is* derivable — clearing it once the
+PR is back on the queue — is the live `reconcile_queue/3` rule, and the backstop
+applies it too: a re-queued PR also carries `on_queue`, so it is already
+discovered (with its full label set, including a stale `awaiting-requeue`) via the
+`on_queue` listing, and the sweep clears the stale label with no dedicated listing
+of its own. What it deliberately does *not* do is list `awaiting-requeue`
+directly: the PRs that would add — carrying it while neither queued nor delegated
+— are exactly the undecidable ones, and that listing's cost would scale with the
+sticky, ever-growing population while deciding almost nothing.
+
+### Config cache
+
+The label reconcile paths re-read the same base-branch `bors.toml` many times —
+the delegation sweep once per expiring patch, the backstop once per PR it touches
+— so a short-TTL cache keyed by `(repo_xref, branch)` collapses those into one
+read per branch per window. `GetBorsToml.get_cached/2` wraps the plain `get/2`,
+backed by an ETS table owned by `…GetBorsToml.Cache`; it caches both successes
+and errors (errors more briefly, so a freshly-added or fixed `bors.toml` is
+picked up promptly) and prunes expired entries periodically. The table is public
+with read concurrency, so the batcher casts, the sweep, and the backstop read it
+without serializing through one process.
+
+It is used **only** by the reconcile paths (the `Labeler` and the delegation
+sweep/backfill). The batcher's merge-decision reads stay on `get/2`: a stale
+config must never drive an actual merge. A non-positive TTL bypasses the cache
+entirely, which is how the test environment keeps config reads fresh.
+
 ### GitHub App permissions
 
 Adding and removing labels requires the installation to hold `issues: write`.
@@ -304,7 +364,8 @@ bors-first, so the expiry fix is live before the Actions stop running:
 - `BorsToml` parse/validation tests for the `[labels]` table (each key present,
   absent, and malformed).
 - Extend the GitHub test double (`lib/github/github/server_mock.ex`, which
-  already stores `labels[issue_xref]`) to handle add and remove.
+  already stores `labels[issue_xref]`) to handle add, remove, and
+  list-by-label.
 - Behavior tests:
   - delegate → `delegated` added; `d-` → removed.
   - **expiry sweep → `delegated` removed** (regression test for the original
@@ -316,6 +377,12 @@ bors-first, so the expiry fix is live before the Actions stop running:
   - terminal failure → `ready-to-merge`/`bors-staging` removed, `awaiting-requeue`
     added; re-`r+` → swapped back.
   - everything is a no-op when `[labels]` is unset.
+- Backstop sweep tests: strands removed (`delegated`/`ready-to-merge`), add-gap
+  re-adds a fully-stripped label, a stale `awaiting-requeue` left alone off the
+  queue but cleared once back on it, a closed/merged PR never touched, and no
+  write when labels already match.
+- Config-cache tests: hit serves a stale value within TTL, expiry/error
+  caching, and a non-positive TTL bypass.
 
 ## Risks and edge cases
 
@@ -328,8 +395,11 @@ bors-first, so the expiry fix is live before the Actions stop running:
   so moving a PR to a branch whose `[labels]` names differ can strand the old
   branch's label. Keeping label names uniform across managed branches avoids it;
   it is otherwise a documented limitation, like manual label edits above.
-- **Rate limits during the sweep** — reuse the existing comment pacing in
-  `Delegation.sweep/0`.
+- **Rate limits during the sweeps.** Label writes are throttled by
+  `Labeler.pace_write/1` (lighter than the comment pacing, since a label write
+  is cheap and idempotent); the backstop's discovery is label-filtered
+  server-side, so it lists only the few PRs carrying a managed label rather than
+  every open PR, and a no-drift tick writes nothing.
 - **`bors-staging` churn.** Every queued PR flickers through `bors-staging` as
   its batch runs. This is inherent to the label's meaning; projects that find it
   noisy simply leave the `building` key unset.
