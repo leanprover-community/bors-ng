@@ -136,6 +136,21 @@ defmodule BorsNG.Worker.Batcher.Registry do
         names
       end
 
+    # Notify, clean up the project's batches, and record the crash. State has
+    # already been pruned above, so this is best-effort: a failure here (e.g.
+    # the project row was deleted, leaving crashes_project_id_fkey dangling, or
+    # the DB connection dropped) must not raise and take the registry — and
+    # every batcher it tracks — down with it.
+    clean_up_after_crash(project_id, pid, reason)
+
+    {:noreply, {names, refs}}
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  defp clean_up_after_crash(project_id, pid, reason) do
     crash_messages =
       try do
         build_messages(project_id, pid, reason)
@@ -190,12 +205,11 @@ defmodule BorsNG.Worker.Batcher.Registry do
       component: "batch",
       crash: Enum.join(crash_messages, "\n")
     })
-
-    {:noreply, {names, refs}}
-  end
-
-  def handle_info(_msg, state) do
-    {:noreply, state}
+  rescue
+    e ->
+      Logger.error(
+        "Failed to handle batcher crash for project #{inspect(project_id)}: #{inspect(e)}"
+      )
   end
 
   defp build_messages(project_id, pid, reason) do
