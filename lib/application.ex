@@ -55,6 +55,22 @@ defmodule BorsNG.Application do
         start: {Confex.fetch_env!(:bors, :server), :start_link, []}
       },
       %{type: :worker, id: BorsNG.Attrs, start: {BorsNG.Attrs, :start_link, []}},
+      # PubSub and the Endpoint come before the workers on purpose. Under
+      # rest_for_one a child's crash restarts every child started *after* it, so
+      # keeping the web Endpoint ahead of the batcher/attemptor/branch-deleter
+      # workers means a transient worker crash can never bounce the Endpoint (and
+      # momentarily wipe its config ETS table mid-request). The Endpoint is
+      # configured with pubsub_server: BorsNG.PubSub, so PubSub is started first.
+      {Phoenix.PubSub, name: BorsNG.PubSub},
+      %{
+        type: :supervisor,
+        start: {
+          BorsNG.Endpoint,
+          :start_link,
+          []
+        },
+        id: BorsNG.Endpoint
+      },
       %{
         type: :supervisor,
         id: BorsNG.Worker.Batcher.Supervisor,
@@ -121,16 +137,6 @@ defmodule BorsNG.Application do
         },
         id: BorsNG.Worker.LabelBackstopTimer
       },
-      %{
-        type: :supervisor,
-        start: {
-          BorsNG.Endpoint,
-          :start_link,
-          []
-        },
-        id: BorsNG.Endpoint
-      },
-      {Phoenix.PubSub, name: BorsNG.PubSub},
       # The bors.toml config cache is an optional optimization the workers
       # tolerate missing (get_cached/2 falls back to an uncached read when its
       # ETS table is absent), so under rest_for_one it sits last: a restart of
