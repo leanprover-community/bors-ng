@@ -17,12 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         elixir: ["1.16.3", "1.17.3"]
-        otp_release: ["26.2.5", "27.2"]
+        otp_release: ["26.2.5", "27.3.4.13"]
         os: [ubuntu-latest]
         database: [postgresql, mysql]
         exclude:
           - elixir: "1.16.3"
-            otp_release: "27.2"
+            otp_release: "27.3.4.13"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0

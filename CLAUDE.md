@@ -201,7 +201,7 @@ The CI workflow is `.github/workflows/main.yml`. Key jobs:
 
 | Job | Elixir | OTP | Notes |
 |-----|--------|-----|-------|
-| test (matrix) | 1.16.3, 1.17.3 | 26.2.5, 27.2 | PostgreSQL + MySQL |
+| test (matrix) | 1.16.3, 1.17.3 | 26.2.5, 27.3.4.13 | PostgreSQL + MySQL |
 | exfmt | 1.16.3 | 26.2.5 | `mix format --check-formatted` |
 | lint-test | — | — | Helm chart linting only |
 
