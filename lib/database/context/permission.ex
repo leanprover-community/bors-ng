@@ -97,6 +97,23 @@ defmodule BorsNG.Database.Context.Permission do
     |> Kernel.not()
   end
 
+  @doc """
+  Whether the patch currently carries any active (non-expired) delegation,
+  regardless of who it's delegated to. Drives the `delegated` label: it stays on
+  until the last delegatee is gone. Uses the same lazy-expiry rule as
+  `patch_delegated_reviewer?/2`.
+  """
+  def patch_has_active_delegation?(patch_id) do
+    now = NaiveDateTime.utc_now()
+
+    UserPatchDelegation
+    |> where(
+      [d],
+      d.patch_id == ^patch_id and (is_nil(d.expires_at) or d.expires_at > ^now)
+    )
+    |> Repo.exists?()
+  end
+
   def delegate(user, patch, opts \\ []) do
     expires_at = Keyword.get(opts, :expires_at)
     delegated_at_commit = Keyword.get(opts, :delegated_at_commit)

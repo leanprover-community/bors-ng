@@ -34,7 +34,11 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             max_batch_size: nil,
             delegation_default_expiry_sec: nil,
             delegation_invalidate_on_paths: [],
-            delegation_restrict_to_paths: []
+            delegation_restrict_to_paths: [],
+            label_on_queue: nil,
+            label_building: nil,
+            label_failed: nil,
+            label_delegated: nil
 
   @type tcommitter :: %{
           name: binary,
@@ -59,7 +63,11 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           max_batch_size: integer | nil,
           delegation_default_expiry_sec: pos_integer() | nil,
           delegation_invalidate_on_paths: [binary],
-          delegation_restrict_to_paths: [binary]
+          delegation_restrict_to_paths: [binary],
+          label_on_queue: binary | nil,
+          label_building: binary | nil,
+          label_failed: binary | nil,
+          label_delegated: binary | nil
         }
 
   @type err ::
@@ -76,6 +84,7 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           | :delegation_default_expiry_sec
           | :delegation_invalidate_on_paths
           | :delegation_restrict_to_paths
+          | :labels
           | :empty_config
           | :parse_failed
 
@@ -95,6 +104,13 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
   end
 
   defp valid_glob?(_pattern), do: false
+
+  # A managed-label name is either unset (`nil`, the label is not managed) or a
+  # non-empty string. Anything else (a number, a list, the `:invalid` sentinel
+  # for a malformed `[labels]` table) is a configuration error.
+  defp valid_label?(nil), do: true
+  defp valid_label?(label) when is_binary(label), do: label != ""
+  defp valid_label?(_label), do: false
 
   @spec new(binary) :: {:ok, t} | {:error, err}
   def new(str) when is_binary(str) do
@@ -118,6 +134,23 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             m ->
               {Map.get(m, "default_expiry_sec", nil), Map.get(m, "invalidate_on_paths", []),
                Map.get(m, "restrict_to_paths", [])}
+          end
+
+        labels_table =
+          case Map.get(toml, "labels", nil) do
+            nil -> %{}
+            l when is_map(l) -> to_map(l)
+            _ -> :invalid
+          end
+
+        {label_on_queue, label_building, label_failed, label_delegated} =
+          case labels_table do
+            :invalid ->
+              {:invalid, :invalid, :invalid, :invalid}
+
+            m ->
+              {Map.get(m, "on_queue", nil), Map.get(m, "building", nil),
+               Map.get(m, "failed", nil), Map.get(m, "delegated", nil)}
           end
 
         committer = Map.get(toml, "committer", nil)
@@ -169,7 +202,11 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           max_batch_size: Map.get(toml, "max_batch_size", nil),
           delegation_default_expiry_sec: delegation_default_expiry_sec,
           delegation_invalidate_on_paths: delegation_invalidate_on_paths,
-          delegation_restrict_to_paths: delegation_restrict_to_paths
+          delegation_restrict_to_paths: delegation_restrict_to_paths,
+          label_on_queue: label_on_queue,
+          label_building: label_building,
+          label_failed: label_failed,
+          label_delegated: label_delegated
         }
 
         case toml do
@@ -247,6 +284,17 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
               not Enum.all?(toml.delegation_restrict_to_paths, &valid_glob?/1) ->
                 {:error, :delegation_restrict_to_paths}
+
+              not Enum.all?(
+                [
+                  toml.label_on_queue,
+                  toml.label_building,
+                  toml.label_failed,
+                  toml.label_delegated
+                ],
+                &valid_label?/1
+              ) ->
+                {:error, :labels}
 
               true ->
                 {:ok, %{toml | status: status, pr_status: pr_status}}

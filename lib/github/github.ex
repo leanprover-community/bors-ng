@@ -245,6 +245,26 @@ defmodule BorsNG.GitHub do
     call_with_retry(:get_labels, repo_conn, {issue_xref}, 500, 4_000)
   end
 
+  @doc """
+  Add labels to a PR or issue. Idempotent: GitHub does not duplicate a label
+  that is already present. An empty list is a no-op (no API call).
+  """
+  @spec add_labels(tconn, integer | bitstring, [bitstring]) :: :ok | {:error, term}
+  def add_labels(_repo_conn, _issue_xref, []), do: :ok
+
+  def add_labels(repo_conn, issue_xref, labels) when is_list(labels) do
+    call_with_retry(:add_labels, repo_conn, {issue_xref, labels}, 500, 4_000)
+  end
+
+  @doc """
+  Remove a single label from a PR or issue. Idempotent: a label that is already
+  absent (GitHub responds `404`) is treated as success.
+  """
+  @spec remove_label(tconn, integer | bitstring, bitstring) :: :ok | {:error, term}
+  def remove_label(repo_conn, issue_xref, label) do
+    call_with_retry(:remove_label, repo_conn, {issue_xref, label}, 500, 4_000)
+  end
+
   @spec get_reviews!(tconn, integer | bitstring) :: map
   def get_reviews!(repo_conn, issue_xref) do
     {:ok, labels} = get_reviews(repo_conn, issue_xref)

@@ -33,6 +33,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
   alias BorsNG.Database.UserPatchDelegation
   alias BorsNG.GitHub
   alias BorsNG.Worker.Batcher.GetBorsToml
+  alias BorsNG.Worker.Labeler
 
   require Logger
 
@@ -79,7 +80,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
            restrict = toml.delegation_restrict_to_paths,
            deny = toml.delegation_invalidate_on_paths,
            true <- restrict != [] or deny != [] do
-        do_invalidate(conn, patch, restrict, deny, delegations)
+        do_invalidate(conn, toml, patch, restrict, deny, delegations)
       else
         _ -> :ok
       end
@@ -94,7 +95,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     |> Repo.all()
   end
 
-  defp do_invalidate(conn, patch, restrict, deny, delegations) do
+  defp do_invalidate(conn, toml, patch, restrict, deny, delegations) do
     # pr_diff is the same base...head diff for every delegation; fetch it once.
     # On synchronize a push always happened, so a delta worth filtering exists.
     filter = pr_diff_filter(conn, patch)
@@ -115,6 +116,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
       ids = Enum.map(revoked, fn {d, _reason} -> d.id end)
       Repo.delete_all(from(d in UserPatchDelegation, where: d.id in ^ids))
       post_revoke_comment(conn, patch, revoked)
+      Labeler.reconcile_delegated(conn, toml, patch)
     end
 
     :ok
@@ -151,7 +153,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
                restrict = toml.delegation_restrict_to_paths,
                deny = toml.delegation_invalidate_on_paths,
                true <- restrict != [] or deny != [] do
-            decide_merge(conn, patch, restrict, deny, delegations)
+            decide_merge(conn, toml, patch, restrict, deny, delegations)
           else
             _ -> :ok
           end
@@ -159,7 +161,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
     end
   end
 
-  defp decide_merge(conn, patch, restrict, deny, delegations) do
+  defp decide_merge(conn, toml, patch, restrict, deny, delegations) do
     # Lazy + computed at most once: a (user, patch) delegation is unique, and an
     # empty delta short-circuits before the filter is ever forced.
     filter_fun = fn -> pr_diff_filter(conn, patch) end
@@ -172,6 +174,7 @@ defmodule BorsNG.Worker.DelegationInvalidator do
         {:revoke, reason} ->
           Repo.delete_all(from(x in UserPatchDelegation, where: x.id == ^d.id))
           post_revoke_comment(conn, patch, [{d, reason}])
+          Labeler.reconcile_delegated(conn, toml, patch)
           {:halt, :deny}
 
         # Couldn't read the delta: don't delete (we can't prove it's bad), but

@@ -33,6 +33,11 @@ defmodule BorsNG.Worker.BatcherTest do
     {:ok, inst: inst, proj: proj}
   end
 
+  defp labels_for(pr) do
+    GitHub.ServerMock.get_state()
+    |> get_in([{{:installation, 91}, 14}, :labels, pr]) || []
+  end
+
   test "cancel all", %{proj: proj} do
     patch =
       %Patch{
@@ -2116,6 +2121,162 @@ defmodule BorsNG.Worker.BatcherTest do
                files: %{}
              }
            }
+  end
+
+  test "queue labels: r+ adds ready-to-merge, running adds bors-staging, merge clears both",
+       %{proj: proj} do
+    labels_toml = ~s"""
+    status = [ "ci" ]
+    [labels]
+    on_queue = "ready-to-merge"
+    building = "bors-staging"
+    failed = "awaiting-requeue"
+    """
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        # bors.toml on staging.tmp drives the batcher's CI config; on master it
+        # drives the label reconcile (read from the PR's into_branch).
+        files: %{
+          "staging.tmp" => %{"bors.toml" => labels_toml},
+          "master" => %{"bors.toml" => labels_toml}
+        },
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]
+        }
+      }
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    # r+ : the PR is now queued (waiting), so it's "ready-to-merge" but not yet
+    # building.
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+    assert "ready-to-merge" in labels_for(1)
+    refute "bors-staging" in labels_for(1)
+
+    # Kick the waiting batch into running.
+    Repo.get_by!(Batch, project_id: proj.id)
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :running
+    assert "ready-to-merge" in labels_for(1)
+    assert "bors-staging" in labels_for(1)
+
+    # CI passes on the staging merge commit; the batch merges and the queue
+    # labels come off.
+    GitHub.ServerMock.put_state(
+      update_in(
+        GitHub.ServerMock.get_state(),
+        [{{:installation, 91}, 14}, :statuses, "iniN"],
+        &Map.put(&1 || %{}, "ci", :ok)
+      )
+    )
+
+    Repo.get_by!(Batch, project_id: proj.id)
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :ok
+    refute "ready-to-merge" in labels_for(1)
+    refute "bors-staging" in labels_for(1)
+  end
+
+  test "queue labels: a terminal build failure flags awaiting-requeue", %{proj: proj} do
+    labels_toml = ~s"""
+    status = [ "ci" ]
+    [labels]
+    on_queue = "ready-to-merge"
+    building = "bors-staging"
+    failed = "awaiting-requeue"
+    """
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{
+          "staging.tmp" => %{"bors.toml" => labels_toml},
+          "master" => %{"bors.toml" => labels_toml}
+        },
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]
+        }
+      }
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    Repo.get_by!(Batch, project_id: proj.id)
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :running
+
+    # CI fails on the staging merge commit: the single-patch batch fails
+    # terminally, so the PR is flagged for a maintainer to re-queue.
+    GitHub.ServerMock.put_state(
+      update_in(
+        GitHub.ServerMock.get_state(),
+        [{{:installation, 91}, 14}, :statuses, "iniN"],
+        &Map.put(&1 || %{}, "ci", :error)
+      )
+    )
+
+    Repo.get_by!(Batch, project_id: proj.id)
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :error
+
+    assert "awaiting-requeue" in labels_for(1)
+    refute "ready-to-merge" in labels_for(1)
+    refute "bors-staging" in labels_for(1)
   end
 
   test "full runthrough (with zero patches)", %{proj: proj} do

@@ -599,6 +599,33 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:add_labels, repo_conn, {issue_xref, new_labels}, state) do
+    with {:ok, repo} <- Map.fetch(state, repo_conn) do
+      labels = Map.get(repo, :labels, %{})
+      existing = labels[issue_xref] || []
+      merged = Enum.uniq(existing ++ new_labels)
+      repo = Map.put(repo, :labels, Map.put(labels, issue_xref, merged))
+      {:ok, %{state | repo_conn => repo}}
+    end
+    |> case do
+      {:ok, state} -> {:ok, state}
+      _ -> {{:error, :add_labels}, state}
+    end
+  end
+
+  def do_handle_call(:remove_label, repo_conn, {issue_xref, label}, state) do
+    with {:ok, repo} <- Map.fetch(state, repo_conn) do
+      labels = Map.get(repo, :labels, %{})
+      remaining = (labels[issue_xref] || []) -- [label]
+      repo = Map.put(repo, :labels, Map.put(labels, issue_xref, remaining))
+      {:ok, %{state | repo_conn => repo}}
+    end
+    |> case do
+      {:ok, state} -> {:ok, state}
+      _ -> {{:error, :remove_label}, state}
+    end
+  end
+
   def do_handle_call(
         :get_reviews,
         repo_conn,

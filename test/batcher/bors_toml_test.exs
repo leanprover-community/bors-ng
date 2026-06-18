@@ -249,4 +249,52 @@ defmodule BatcherBorsTomlTest do
 
     assert toml.delegation_restrict_to_paths == ["src/**/*.rs", "a?b"]
   end
+
+  test "defaults all [labels] entries to nil" do
+    {:ok, toml} = BorsToml.new(~s/status = ["exl"]/)
+    assert is_nil(toml.label_on_queue)
+    assert is_nil(toml.label_building)
+    assert is_nil(toml.label_failed)
+    assert is_nil(toml.label_delegated)
+  end
+
+  test "parses the [labels] table" do
+    {:ok, toml} =
+      BorsToml.new(~S"""
+      status = ["exl"]
+      [labels]
+      on_queue = "ready-to-merge"
+      building = "bors-staging"
+      failed = "awaiting-requeue"
+      delegated = "delegated"
+      """)
+
+    assert toml.label_on_queue == "ready-to-merge"
+    assert toml.label_building == "bors-staging"
+    assert toml.label_failed == "awaiting-requeue"
+    assert toml.label_delegated == "delegated"
+  end
+
+  test "parses a partial [labels] table, leaving the rest nil" do
+    {:ok, toml} =
+      BorsToml.new(~s/status = ["exl"]\n[labels]\ndelegated = "delegated"/)
+
+    assert toml.label_delegated == "delegated"
+    assert is_nil(toml.label_on_queue)
+  end
+
+  test "rejects a non-table [labels] value" do
+    r = BorsToml.new(~s/status = ["exl"]\nlabels = "nope"/)
+    assert r == {:error, :labels}
+  end
+
+  test "rejects a non-string [labels] entry" do
+    r = BorsToml.new(~s/status = ["exl"]\n[labels]\non_queue = 42/)
+    assert r == {:error, :labels}
+  end
+
+  test "rejects an empty-string [labels] entry" do
+    r = BorsToml.new(~s/status = ["exl"]\n[labels]\ndelegated = ""/)
+    assert r == {:error, :labels}
+  end
 end

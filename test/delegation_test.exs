@@ -69,6 +69,24 @@ defmodule BorsNG.Database.Context.DelegationTest do
     })
   end
 
+  # Like put_state_with_bors_toml/1, but also seeds the PR's existing labels so
+  # the sweep's label reconcile has something to remove.
+  defp put_state_with_bors_toml(contents, labels) do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 92}, 21} => %{
+        branches: %{},
+        comments: %{7 => []},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => contents}},
+        labels: %{7 => labels}
+      }
+    })
+  end
+
+  defp labels do
+    GitHub.ServerMock.get_state() |> get_in([{{:installation, 92}, 21}, :labels, 7])
+  end
+
   describe "sweep/0" do
     test "deletes expired delegations and posts a notification", %{user: user, patch: patch} do
       past =
@@ -88,6 +106,73 @@ defmodule BorsNG.Database.Context.DelegationTest do
       assert [] == Repo.all(UserPatchDelegation)
       assert Enum.any?(comments(), &String.contains?(&1, "Delegation for @alice"))
       assert Enum.any?(comments(), &String.contains?(&1, "expired"))
+    end
+
+    test "removes the delegated label when the last delegation expires", %{
+      user: user,
+      patch: patch
+    } do
+      put_state_with_bors_toml(~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/, [
+        "delegated"
+      ])
+
+      past =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: past,
+        delegated_at_commit: "abc"
+      })
+
+      Delegation.sweep()
+
+      assert [] == Repo.all(UserPatchDelegation)
+      refute "delegated" in labels()
+    end
+
+    test "keeps the delegated label while another delegation is still active", %{
+      user: user,
+      patch: patch
+    } do
+      put_state_with_bors_toml(~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/, [
+        "delegated"
+      ])
+
+      bob = Repo.insert!(%User{user_xref: 42, login: "bob"})
+
+      past =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      future =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(30 * 24 * 3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: past,
+        delegated_at_commit: "abc"
+      })
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: bob.id,
+        patch_id: patch.id,
+        expires_at: future,
+        delegated_at_commit: "abc"
+      })
+
+      Delegation.sweep()
+
+      assert [remaining] = Repo.all(UserPatchDelegation)
+      assert remaining.user_id == bob.id
+      assert "delegated" in labels()
     end
 
     test "does not post expired comment when patch is closed", %{user: user, patch: patch} do

@@ -26,6 +26,7 @@ defmodule BorsNG.Worker.Batcher do
   alias BorsNG.Database.Context.Delegation
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.Batcher.Divider
+  alias BorsNG.Worker.Labeler
   alias BorsNG.Worker.Zulip
   alias BorsNG.Database.Repo
   alias BorsNG.Database.Batch
@@ -212,12 +213,20 @@ defmodule BorsNG.Worker.Batcher do
       |> Batch.all_for_project(:waiting)
       |> Repo.all()
 
-    Enum.each(waiting, &Repo.delete!/1)
-
     running =
       project_id
       |> Batch.all_for_project(:running)
       |> Repo.all()
+
+    # Capture each batch's patches (with its base branch) before mutating —
+    # deleting a waiting batch removes its patch links — so the labels can be
+    # reconciled off the queue at the end.
+    affected =
+      Enum.map(waiting ++ running, fn b ->
+        {b.into_branch, b.id |> Patch.all_for_batch() |> Repo.all()}
+      end)
+
+    Enum.each(waiting, &Repo.delete!/1)
 
     Enum.map(running, &Batch.changeset(&1, %{state: :canceled}))
     |> Enum.each(&Repo.update!/1)
@@ -231,6 +240,10 @@ defmodule BorsNG.Worker.Batcher do
 
     Enum.each(running, &send_status(repo_conn, &1, :canceled))
     Enum.each(waiting, &send_status(repo_conn, &1, :canceled))
+
+    Enum.each(affected, fn {branch, patches} ->
+      Labeler.reconcile_queue(repo_conn, branch, patches)
+    end)
   end
 
   def handle_info({:poll, repetition}, project_id) do
@@ -324,6 +337,11 @@ defmodule BorsNG.Worker.Batcher do
       reviewer: reviewer
     })
     |> Repo.insert!()
+
+    # The patch is now on the queue (a :waiting batch); reflect that in the
+    # labels. This also clears any lingering `awaiting-requeue` from a previous
+    # failed build, since the PR has been put back on the queue.
+    Labeler.reconcile_queue(repo_conn, patch.into_branch, [patch])
 
     Project.ping!(project.id)
 
@@ -497,6 +515,11 @@ defmodule BorsNG.Worker.Batcher do
       |> Repo.update!()
 
       send_zulip(batch, status)
+
+      # Now that the batch state is committed, reflect it in the queue labels:
+      # a `:running` batch is "building", while a failed merge (:conflict /
+      # :error) takes its patches off the queue.
+      Labeler.reconcile_queue(repo_conn, batch.into_branch, Enum.map(patch_links, & &1.patch))
 
       Project.ping!(batch.project_id)
       status
@@ -892,6 +915,13 @@ defmodule BorsNG.Worker.Batcher do
     send_zulip(batch, next_status)
 
     if next_status != :running do
+      # The batch has left :running (merged, errored, or conflicted), so its
+      # patches are no longer on the queue. `awaiting-requeue` for a terminal
+      # build failure is set separately in complete_batch(:error); this only
+      # takes `ready-to-merge` / `bors-staging` off.
+      patches = batch.id |> Patch.all_for_batch() |> Repo.all()
+      Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
+
       poll_(batch.project_id)
     end
   end
@@ -1004,6 +1034,12 @@ defmodule BorsNG.Worker.Batcher do
 
     if state == :retrying do
       poll_after_delay(project)
+    else
+      # Terminal failure (a single-patch batch): the PR is dropped and needs a
+      # maintainer to put it back on the queue, so flag it. `ready-to-merge` /
+      # `bors-staging` are taken off by maybe_complete_batch once the batch
+      # state is committed to :error.
+      Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
     end
 
     send_message(repo_conn, patches, {state, erred})
@@ -1133,6 +1169,10 @@ defmodule BorsNG.Worker.Batcher do
     end
 
     send_status(repo_conn, batch, :canceled)
+
+    # The canceled patch leaves the queue; any uncanceled patches were re-queued
+    # into a fresh batch above, so reconcile reflects both.
+    Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
   end
 
   defp cancel_patch(batch, patch_id, _state, reason) do
@@ -1150,6 +1190,9 @@ defmodule BorsNG.Worker.Batcher do
     repo_conn = get_repo_conn(project)
     send_status(repo_conn, batch.id, [patch], :canceled)
     send_message(repo_conn, [patch], {:canceled, :failed, reason})
+
+    # The patch has been removed from its (waiting) batch, so it's off the queue.
+    Labeler.reconcile_queue(repo_conn, batch.into_branch, [patch])
   end
 
   defp patch_preflight(repo_conn, patch) do

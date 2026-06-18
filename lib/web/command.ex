@@ -30,6 +30,7 @@ defmodule BorsNG.Command do
   alias BorsNG.Database.User
   alias BorsNG.GitHub
   alias BorsNG.Worker.DelegationInvalidator
+  alias BorsNG.Worker.Labeler
   alias BorsNG.Worker.Syncer
 
   import BorsNG.Router.Helpers
@@ -674,6 +675,8 @@ defmodule BorsNG.Command do
   def run(c, :undelegate) do
     Permission.undelegate_patch(c.patch.id)
 
+    Labeler.reconcile_delegated(c.patch)
+
     Project.ping!(c.project.id)
 
     c.project.repo_xref
@@ -688,6 +691,8 @@ defmodule BorsNG.Command do
     undelegatee = get_or_insert_user_by_login(c, login)
 
     Permission.undelegate(undelegatee.id, c.patch.id)
+
+    Labeler.reconcile_delegated(c.patch)
 
     Project.ping!(c.project.id)
 
@@ -762,6 +767,8 @@ defmodule BorsNG.Command do
         expires_at: expires_at,
         delegated_at_commit: c.patch.commit
       )
+
+      Labeler.reconcile_delegated(conn, toml, c.patch)
 
       Project.ping!(c.project.id)
 

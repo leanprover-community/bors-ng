@@ -31,6 +31,7 @@ defmodule BorsNG.Database.Context.Delegation do
   alias BorsNG.Command
   alias BorsNG.GitHub
   alias BorsNG.Worker.Batcher.GetBorsToml
+  alias BorsNG.Worker.Labeler
 
   require Logger
 
@@ -136,12 +137,26 @@ defmodule BorsNG.Database.Context.Delegation do
 
       Repo.delete_all(from(d in UserPatchDelegation, where: d.id in ^ids))
 
-      expired
-      |> Enum.filter(&(&1.patch && &1.patch.open && &1.patch.project))
+      expired_open = Enum.filter(expired, &(&1.patch && &1.patch.open && &1.patch.project))
+
+      expired_open
       |> Enum.with_index()
       |> Enum.each(fn {d, idx} ->
         pace_comment(idx)
         post_expired_comment(d)
+      end)
+
+      # Reconcile the `delegated` label once per affected patch — a patch may
+      # have had several delegations expire in the same tick. Done after the
+      # deletes so the label reflects whether *any* delegation still stands;
+      # this is the fix for the label being stranded when a delegation times
+      # out (there's no GitHub event a workflow could react to).
+      expired_open
+      |> Enum.uniq_by(& &1.patch_id)
+      |> Enum.with_index()
+      |> Enum.each(fn {d, idx} ->
+        pace_comment(idx)
+        Labeler.reconcile_delegated(d.patch)
       end)
     end
   end

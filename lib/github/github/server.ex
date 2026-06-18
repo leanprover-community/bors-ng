@@ -430,6 +430,35 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
+  def do_handle_call(:add_labels, repo_conn, {issue_xref, labels}) do
+    repo_conn
+    |> post!("issues/#{issue_xref}/labels", Jason.encode!(%{labels: labels}))
+    |> case do
+      %{status: status} when status in [200, 201] ->
+        :ok
+
+      %{body: body, status: status} ->
+        {:error, :add_labels, status, body}
+    end
+  end
+
+  def do_handle_call(:remove_label, repo_conn, {issue_xref, label}) do
+    # The label name is a path segment; `delete!` runs the whole path through
+    # `URI.encode`, which escapes spaces but not `/`. Bors-managed labels are
+    # simple kebab-case names with neither, so this is fine in practice. A 404
+    # means the label was already absent, which is success for an idempotent
+    # remove.
+    repo_conn
+    |> delete!("issues/#{issue_xref}/labels/#{label}")
+    |> case do
+      %{status: status} when status in [200, 404] ->
+        :ok
+
+      %{body: body, status: status} ->
+        {:error, :remove_label, status, body}
+    end
+  end
+
   def do_handle_call(:get_reviews, {{:raw, token}, repo_xref}, {issue_xref, sha}) do
     reviews =
       token
