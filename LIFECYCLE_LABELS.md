@@ -96,6 +96,13 @@ delegation is gone. Reconcile points:
 | Manual revoke (`d-`, `d-=user`) | `run(:undelegate)` / `run({:undelegate_to, _})` in `lib/web/command.ex` |
 | **Timed expiry** | `expire_delegations` in `lib/database/context/delegation.ex` |
 | Sensitive-path revoke | the revoke path in `lib/worker/delegation_invalidator.ex` |
+| Convert-to-draft (wipes delegations) | the `is_draft` clause of `do_webhook_pr`, after `undelegate_patch` |
+| Close without merging (wipes delegations) | the `closed` clause of `do_webhook_pr`, when `pr.merged` is false |
+
+Closing a PR without merging now also **wipes its delegations** (mirroring the
+convert-to-draft path), so the label comes off an abandoned PR. A PR that bors
+*merges* is left alone — its delegations expire and get swept in time, and the
+`delegated` label stays as the historical marker described above.
 
 The expiry reconcile is the direct fix for the stranded-label complaint. As a
 backstop, `Delegation.sweep/0` (every ~15 min via `DelegationTimer`) can
@@ -132,16 +139,23 @@ the existing batcher transitions, all of which already fire `send_status` /
 
 | Transition | Site | Effect |
 |------------|------|--------|
-| Patch reviewed (`r+`) → enters a `:waiting` batch | `do_handle_cast({:reviewed, …})` | + `ready-to-merge` |
+| Patch reviewed (`r+`) → enters a `:waiting` batch | `run` (via `do_handle_cast({:reviewed, …})`) | + `ready-to-merge`, − `awaiting-requeue` |
 | Batch `:waiting` → `:running` | `start_waiting_batch` | + `bors-staging` |
-| Batch completes `:ok` (merged) | `complete_batch` | − both (PR also closes) |
-| Batch completes `:error` / `:conflict` | `complete_batch` | − both (+ `awaiting-requeue`, see below) |
-| Cancel (`r-`) / `cancel_all` | `cancel` / `cancel_all` | − both |
-| PR closed | the `l.patch.open == false` reject in `poll` | − both |
+| Batch merges `:ok` | `maybe_complete_batch` | **labels left in place** (frozen as history; see below) |
+| Batch fails terminally (`:error` / `:conflict` / timeout) | `maybe_complete_batch` / `start_waiting_batch` / `timeout_batch` | − `ready-to-merge` / `bors-staging`, + `awaiting-requeue` |
+| Cancel (`r-`) / `cancel_all` | `cancel_patch` / `cancel_all` | − both |
+| PR closed without merging | `closed` webhook → `Batcher.cancel` | − both (also wipes delegations, see [`delegated`](#delegated)) |
 
 Because batches are reconciled from truth, bisection (a failed multi-PR batch
 splitting and re-running its halves) needs no special handling: a patch's labels
 simply track whatever batch state it currently sits in.
+
+**A successful merge is the one transition that does *not* reconcile.** The PR
+closes, so its labels can no longer drift, and leaving them in place turns
+`ready-to-merge` / `delegated` into a (best-effort) historical record of how the
+PR merged — in particular, which merged PRs had been delegated. Failures leave
+the PR *open*, so those still reconcile their queue labels off. The asymmetry is
+deliberate: open PRs reflect live state, closed-by-merge PRs are frozen.
 
 ### `awaiting-requeue` (event-driven)
 
@@ -161,9 +175,12 @@ event** and **sticky** until the next lifecycle move clears it:
   once a size-1 batch fails (the natural endpoint of bisection). Labeling at the
   terminal point — not mid-bisection — keeps the label meaning "needs a human to
   re-queue," not "is somewhere in a retry."
-- **Cleared** on re-`r+` (which re-adds `ready-to-merge`), `r-`, PR close, or a
-  successful merge. Re-queuing therefore swaps `awaiting-requeue` back to
-  `ready-to-merge`; the two are never both present.
+- **Cleared** on re-`r+` (which re-adds `ready-to-merge`), `r-`, or a PR close
+  without merging. Re-queuing therefore swaps `awaiting-requeue` back to
+  `ready-to-merge`; the two are never both present. (A *successful merge* leaves
+  labels untouched, but a PR that merged is not awaiting a re-queue — it reached
+  `awaiting-requeue` only via a failure, and re-queuing it would have cleared the
+  label before it ever got the chance to merge.)
 
 ## Configuration
 

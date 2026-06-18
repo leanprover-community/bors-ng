@@ -926,12 +926,15 @@ defmodule BorsNG.Worker.Batcher do
     send_zulip(batch, next_status)
 
     if next_status != :running do
-      # The batch has left :running (merged, errored, or conflicted), so its
-      # patches are no longer on the queue. `awaiting-requeue` for a terminal
-      # build failure is set separately in complete_batch(:error); this only
-      # takes `ready-to-merge` / `bors-staging` off.
-      patches = batch.id |> Patch.all_for_batch() |> Repo.all()
-      Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
+      # A successful merge deliberately leaves the PR's labels untouched: the PR
+      # closes, so `ready-to-merge` / `bors-staging` (and `delegated`) freeze as a
+      # best-effort historical record of how it merged. Only a failure — which
+      # leaves the PR open — reconciles its queue labels off (`awaiting-requeue`
+      # for a terminal build failure is set separately in complete_batch(:error)).
+      if next_status != :ok do
+        patches = batch.id |> Patch.all_for_batch() |> Repo.all()
+        Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
+      end
 
       poll_(batch.project_id)
     end

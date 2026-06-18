@@ -66,6 +66,7 @@ defmodule BorsNG.WebhookController do
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.BranchDeleter
   alias BorsNG.Worker.DelegationInvalidator
+  alias BorsNG.Worker.Labeler
   alias BorsNG.Command
   alias BorsNG.Database.Attempt
   alias BorsNG.Database.Batch
@@ -370,6 +371,7 @@ defmodule BorsNG.WebhookController do
       |> Kernel.not()
 
     {delegation_count, _} = Permission.undelegate_patch(patch.id)
+    Labeler.reconcile_delegated(patch)
 
     if had_incomplete_batch do
       batcher = Batcher.Registry.get(project.id)
@@ -419,7 +421,7 @@ defmodule BorsNG.WebhookController do
     |> Command.run()
   end
 
-  def do_webhook_pr(_conn, %{action: "closed", project: project, patch: p}) do
+  def do_webhook_pr(_conn, %{action: "closed", project: project, patch: p, pr: pr}) do
     Project.ping!(project.id)
     Repo.update!(Patch.changeset(p, %{open: false}))
     # Ensure a closed PR is removed from any waiting/running batches and try jobs
@@ -429,6 +431,16 @@ defmodule BorsNG.WebhookController do
     attemptor = Attemptor.Registry.get(project.id)
     Attemptor.cancel(attemptor, p.id)
     BranchDeleter.delete(p)
+
+    # A PR abandoned without merging has no reason to keep its delegations, so
+    # wipe them and take the `delegated` label off. A bors *merge* also arrives
+    # here as a "closed" event, but we deliberately leave a merged PR's
+    # delegations and labels in place as a historical record (the rows expire
+    # and get swept in time; see LIFECYCLE_LABELS.md).
+    unless pr.merged do
+      Permission.undelegate_patch(p.id)
+      Labeler.reconcile_delegated(p)
+    end
   end
 
   def do_webhook_pr(conn, %{action: "reopened", project: project, patch: p}) do

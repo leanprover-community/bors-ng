@@ -305,6 +305,125 @@ defmodule BorsNG.WebhookControllerTest do
     assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
   end
 
+  test "closing a PR without merging wipes its delegations and clears the delegated label", %{
+    conn: conn,
+    project: proj,
+    user: user
+  } do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{
+          "master" => %{"bors.toml" => ~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/}
+        },
+        labels: %{1 => ["delegated"]}
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true
+      })
+
+    Repo.insert!(%UserPatchDelegation{user_id: user.id, patch_id: patch.id})
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "closed",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "closed",
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    # undelegate + label reconcile run synchronously in the closed handler.
+    assert Repo.all(from(d in UserPatchDelegation, where: d.patch_id == ^patch.id)) == []
+
+    labels =
+      GitHub.ServerMock.get_state()
+      |> get_in([{{:installation, 31}, 13}, :labels, 1])
+
+    refute "delegated" in labels
+  end
+
+  test "closing a merged PR keeps its delegations and the delegated label", %{
+    conn: conn,
+    project: proj,
+    user: user
+  } do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{
+          "master" => %{"bors.toml" => ~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/}
+        },
+        labels: %{1 => ["delegated"]}
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true
+      })
+
+    Repo.insert!(%UserPatchDelegation{user_id: user.id, patch_id: patch.id})
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "closed",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "closed",
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => "2020-01-01T00:00:00Z",
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    # A merged PR keeps its delegation rows (they expire and get swept) and its
+    # `delegated` label stays as a historical marker.
+    assert [_] = Repo.all(from(d in UserPatchDelegation, where: d.patch_id == ^patch.id))
+
+    labels =
+      GitHub.ServerMock.get_state()
+      |> get_in([{{:installation, 31}, 13}, :labels, 1])
+
+    assert "delegated" in labels
+  end
+
   test "synchronize webhook cancels active try jobs", %{conn: conn, project: proj} do
     patch =
       Repo.insert!(%Patch{
@@ -356,18 +475,22 @@ defmodule BorsNG.WebhookControllerTest do
     assert Repo.get!(Patch, patch.id).commit == "B"
   end
 
-  test "converting a PR to draft cancels active work, removes delegations, and posts notice", %{
-    conn: conn,
-    project: proj,
-    user: user
-  } do
+  test "converting a PR to draft cancels active work, removes delegations and the delegated label, and posts notice",
+       %{
+         conn: conn,
+         project: proj,
+         user: user
+       } do
     GitHub.ServerMock.put_state(%{
       {{:installation, 31}, 13} => %{
         branches: %{},
         commits: %{},
         comments: %{1 => []},
         statuses: %{},
-        files: %{}
+        files: %{
+          "master" => %{"bors.toml" => ~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/}
+        },
+        labels: %{1 => ["delegated"]}
       }
     })
 
@@ -445,6 +568,13 @@ defmodule BorsNG.WebhookControllerTest do
 
     assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
     assert Enum.any?(comments, &String.contains?(&1, "will ignore commands"))
+
+    # The delegations are gone, so the `delegated` label is reconciled off too.
+    labels =
+      GitHub.ServerMock.get_state()
+      |> get_in([{{:installation, 31}, 13}, :labels, 1])
+
+    refute "delegated" in labels
   end
 
   test "ignore pull_request_review_comment commands on draft PR", %{conn: conn} do

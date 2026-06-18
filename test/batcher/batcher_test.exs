@@ -2123,7 +2123,7 @@ defmodule BorsNG.Worker.BatcherTest do
            }
   end
 
-  test "queue labels: r+ adds ready-to-merge, running adds bors-staging, merge clears both",
+  test "queue labels: r+ adds ready-to-merge, running adds bors-staging, merge leaves them",
        %{proj: proj} do
     labels_toml = ~s"""
     status = [ "ci" ]
@@ -2201,8 +2201,10 @@ defmodule BorsNG.Worker.BatcherTest do
 
     Batcher.handle_info({:poll, :once}, proj.id)
     assert Repo.get_by!(Batch, project_id: proj.id).state == :ok
-    refute "ready-to-merge" in labels_for(1)
-    refute "bors-staging" in labels_for(1)
+    # A successful merge deliberately leaves the labels in place: the PR is now
+    # closed and they stand as a historical record of how it merged.
+    assert "ready-to-merge" in labels_for(1)
+    assert "bors-staging" in labels_for(1)
   end
 
   test "queue labels: a terminal build failure flags awaiting-requeue", %{proj: proj} do
