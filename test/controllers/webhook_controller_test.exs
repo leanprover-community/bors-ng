@@ -209,6 +209,7 @@ defmodule BorsNG.WebhookControllerTest do
     attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
     _ = :sys.get_state(batcher)
     _ = :sys.get_state(attemptor)
+    flush_branch_deleter()
 
     branches =
       GitHub.ServerMock.get_state()
@@ -292,6 +293,7 @@ defmodule BorsNG.WebhookControllerTest do
     attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
     :ok = BorsNG.Worker.Batcher.set_is_single(batcher, patch.id, false)
     _ = :sys.get_state(attemptor)
+    flush_branch_deleter()
 
     # Patch should be closed
     patch2 = Repo.get!(Patch, patch.id)
@@ -354,6 +356,8 @@ defmodule BorsNG.WebhookControllerTest do
     |> put_req_header("x-github-event", "pull_request")
     |> post(webhook_path(conn, :webhook, "github"), body_params)
 
+    flush_branch_deleter()
+
     # undelegate + label reconcile run synchronously in the closed handler.
     assert Repo.all(from(d in UserPatchDelegation, where: d.patch_id == ^patch.id)) == []
 
@@ -412,6 +416,8 @@ defmodule BorsNG.WebhookControllerTest do
     conn
     |> put_req_header("x-github-event", "pull_request")
     |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    flush_branch_deleter()
 
     # A merged PR keeps its delegation rows (they expire and get swept) and its
     # `delegated` label stays as a historical marker.
@@ -715,6 +721,15 @@ defmodule BorsNG.WebhookControllerTest do
       |> post(webhook_path(conn, :webhook, "github"), body_params)
 
     assert conn.status == 200
+  end
+
+  # A "closed" PR webhook fires an async BranchDeleter.delete cast that runs on
+  # the shared sandbox connection. Flush it before the test ends so the worker
+  # isn't mid-query when the sandbox owner (this process) exits — which would
+  # otherwise crash it and churn the supervision tree.
+  def flush_branch_deleter do
+    _ = :sys.get_state(BorsNG.Worker.BranchDeleter)
+    :ok
   end
 
   def wait_until_other_branch_is_removed do
