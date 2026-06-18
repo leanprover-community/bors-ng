@@ -174,7 +174,22 @@ defmodule BorsNG.Worker.Syncer do
 
     case Repo.get_by(Patch, project_id: project_id, pr_xref: number) do
       nil ->
-        Repo.insert!(struct(Patch, data))
+        try do
+          Repo.insert!(struct(Patch, data))
+        rescue
+          Ecto.ConstraintError ->
+            # sync_patch runs in the web request process, so two concurrent
+            # webhooks for the same PR (or a webhook racing the background
+            # syncer) can both see `nil` here and both try to insert the same
+            # (project_id, pr_xref). The unique index (patches_pr_xref_index)
+            # makes the loser raise; update the now-existing row instead of
+            # crashing the request — a crash just 500s the webhook and GitHub
+            # redelivers it.
+            Patch
+            |> Repo.get_by!(project_id: project_id, pr_xref: number)
+            |> Patch.changeset(data)
+            |> Repo.update!()
+        end
 
       patch ->
         patch
