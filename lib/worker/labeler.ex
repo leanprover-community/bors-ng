@@ -120,14 +120,10 @@ defmodule BorsNG.Worker.Labeler do
   # several batches over its life (e.g. a failed batch plus a fresh re-queue), so
   # we look at all of them: "on the queue" is true if *any* is live.
   defp batch_states_for_patch(patch_id) do
-    Repo.all(
-      from(l in LinkPatchBatch,
-        join: b in Batch,
-        on: b.id == l.batch_id,
-        where: l.patch_id == ^patch_id,
-        select: b.state
-      )
-    )
+    patch_id
+    |> Batch.all_for_patch()
+    |> Repo.all()
+    |> Enum.map(& &1.state)
   end
 
   defp with_toml(repo_conn, branch, fun) do

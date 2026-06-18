@@ -442,14 +442,19 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
-  def do_handle_call(:remove_label, repo_conn, {issue_xref, label}) do
-    # The label name is a path segment; `delete!` runs the whole path through
-    # `URI.encode`, which escapes spaces but not `/`. Bors-managed labels are
-    # simple kebab-case names with neither, so this is fine in practice. A 404
-    # means the label was already absent, which is success for an idempotent
-    # remove.
-    repo_conn
-    |> delete!("issues/#{issue_xref}/labels/#{label}")
+  def do_handle_call(:remove_label, {{:raw, token}, repo_xref}, {issue_xref, label}) do
+    # The label is a single path segment, so it must be www-form-encoded: a label
+    # may legitimately contain `/`, `?`, or `#`, none of which `URI.encode`
+    # escapes (they are reserved characters). We can't route this through the
+    # shared `delete!` either — it runs the whole path through `URI.encode`, which
+    # would double-encode the `%` in our escapes — so we build the path directly,
+    # the way `:get_user_by_login` does. A 404 means the label was already absent,
+    # which is success for an idempotent remove.
+    "token #{token}"
+    |> tesla_client()
+    |> Tesla.delete!(
+      "/repositories/#{repo_xref}/issues/#{issue_xref}/labels/#{URI.encode_www_form(label)}"
+    )
     |> case do
       %{status: status} when status in [200, 404] ->
         :ok

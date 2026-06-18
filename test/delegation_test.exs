@@ -138,9 +138,10 @@ defmodule BorsNG.Database.Context.DelegationTest do
       user: user,
       patch: patch
     } do
-      put_state_with_bors_toml(~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/, [
-        "delegated"
-      ])
+      # Seed the label *absent* so the assertion proves the keep-path actually
+      # reconciles it to present (adds it), rather than passing on a pre-seeded
+      # label that a no-op keep would also leave in place.
+      put_state_with_bors_toml(~s/status = ["ci"]\n[labels]\ndelegated = "delegated"\n/, [])
 
       bob = Repo.insert!(%User{user_xref: 42, login: "bob"})
 

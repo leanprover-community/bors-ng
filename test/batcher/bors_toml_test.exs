@@ -297,4 +297,9 @@ defmodule BatcherBorsTomlTest do
     r = BorsToml.new(~s/status = ["exl"]\n[labels]\ndelegated = ""/)
     assert r == {:error, :labels}
   end
+
+  test "reports :labels (not :empty_config) for an invalid [labels] table with no other config" do
+    r = BorsToml.new(~s/[labels]\non_queue = 42/)
+    assert r == {:error, :labels}
+  end
 end

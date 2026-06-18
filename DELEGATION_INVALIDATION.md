@@ -173,6 +173,17 @@ rationale. The advisory `invalidate_on_paths` lint deliberately stays on the
 short budget: its reads (`get_repo_tree`, `get_pr_comments`) only gate a
 cosmetic warning, so a failure just skips it.
 
+### On close or convert-to-draft (full wipe)
+
+Two lifecycle events drop a PR's delegations outright, independent of the
+path-based checks above: **converting the PR to a draft** and **closing it
+without merging**. Both signal the PR is no longer an active candidate to merge
+under the granted trust, so bors wipes every delegation on the patch (and
+reconciles the `delegated` label off). A PR that bors *merges* is left alone —
+its delegations simply expire and are swept normally. These wipes live in the
+`do_webhook_pr` handler; see `LIFECYCLE_LABELS.md` (the `delegated`
+reconcile-points table) for the full lifecycle.
+
 ## GitHub API file ceilings
 
 The two compares hit two different GitHub endpoints with two different,

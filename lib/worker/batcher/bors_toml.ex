@@ -209,6 +209,12 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           label_delegated: label_delegated
         }
 
+        labels_valid? =
+          Enum.all?(
+            [label_on_queue, label_building, label_failed, label_delegated],
+            &valid_label?/1
+          )
+
         case toml do
           %{status: status} when not is_list(status) ->
             {:error, :status}
@@ -231,6 +237,13 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
           %{cut_body_after: c} when not is_binary(c) and not is_nil(c) ->
             {:error, :cut_body_after}
+
+          # Checked before :empty_config so a malformed [labels] table reports the
+          # specific :labels error rather than being masked as an empty config when
+          # the toml sets no status/block_labels/pr_status. (Can't be a guard: the
+          # validity test calls valid_label?/1.)
+          _ when not labels_valid? ->
+            {:error, :labels}
 
           %{status: [], block_labels: [], pr_status: []} ->
             {:error, :empty_config}
@@ -284,17 +297,6 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
               not Enum.all?(toml.delegation_restrict_to_paths, &valid_glob?/1) ->
                 {:error, :delegation_restrict_to_paths}
-
-              not Enum.all?(
-                [
-                  toml.label_on_queue,
-                  toml.label_building,
-                  toml.label_failed,
-                  toml.label_delegated
-                ],
-                &valid_label?/1
-              ) ->
-                {:error, :labels}
 
               true ->
                 {:ok, %{toml | status: status, pr_status: pr_status}}

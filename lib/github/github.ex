@@ -590,6 +590,16 @@ defmodule BorsNG.GitHub do
     Confex.get_env(:bors, :api_github_retry_max_elapsed_ms, 180_000)
   end
 
+  # Label writes are best-effort projections of bors's own state
+  # (LIFECYCLE_LABELS.md): a dropped one is re-reconciled on the next lifecycle
+  # event, so it is never worth grinding retries that serially block the batcher
+  # or the delegation sweep. The acute case is a missing `issues: write` scope,
+  # where every call 403s and the write budget below would burn ~10 attempts /
+  # ~30s apiece. Give them an essentially single-shot budget instead.
+  defp max_retry_elapsed_ms(action) when action in [:add_labels, :remove_label] do
+    Confex.get_env(:bors, :api_github_retry_label_max_elapsed_ms, 1_000)
+  end
+
   defp max_retry_elapsed_ms(_action) do
     Confex.get_env(:bors, :api_github_retry_write_max_elapsed_ms, 30_000)
   end
