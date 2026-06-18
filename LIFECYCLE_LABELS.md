@@ -190,6 +190,32 @@ delegated = "delegated"
   checks in `bors_toml.ex`: each value must be a non-empty string or absent;
   anything else is a `bors.toml` configuration error with a clear message.
 
+### Which branch the config is read from
+
+The `[labels]` config is read from the **PR's base branch** (`patch.into_branch`)
+— the current tip of the branch the PR targets — never from the PR's own head.
+This matches how the `[delegation]` options are read, and gives the same safety
+property: a PR cannot change the label (or delegation) rules it is evaluated
+under by editing `bors.toml` in the PR itself; the change only takes effect once
+it is merged into that base branch. It is also self-consistent — the branch the
+config is read from is the same branch the batch merges into, so the only person
+who can weaken a branch's config is someone who can already push to that branch.
+
+Because config is per-base-branch, a project whose branches carry **different**
+`[labels]` names can strand a label across a **base-branch retarget**. The
+reconcile only ever touches the names configured on the PR's *current* base (the
+"never touch foreign labels" guarantee, see [Reconciliation](#reconciliation));
+if a PR is moved from a branch where `on_queue = "ready-to-merge"` to one where
+it is `"queued"` (or unset), the `ready-to-merge` it picked up earlier is now
+unmanaged and is left stranded — and bors updates `into_branch` live on the
+`pull_request` *edited* webhook, so the switch is immediate.
+
+**Recommendation: keep the `[labels]` names (and, ideally, the `[delegation]`
+options) uniform across the branches bors manages.** If the managed *names* are
+branch-invariant, the managed set never changes on a retarget and nothing
+strands — the configs may still legitimately differ in other ways. For mathlib4
+this is automatic, since PRs effectively target a single branch.
+
 ## Architecture
 
 ### GitHub write calls
@@ -280,6 +306,11 @@ bors-first, so the expiry fix is live before the Actions stop running:
 - **Manual label edits.** Bors only ever touches its managed set, so a
   human-removed `delegated` is re-added on the next reconcile. This is intended:
   the label is a projection of bors state, not an independent annotation.
+- **Base-branch retarget with divergent label names.** Config is read per base
+  branch (see [Which branch the config is read from](#which-branch-the-config-is-read-from)),
+  so moving a PR to a branch whose `[labels]` names differ can strand the old
+  branch's label. Keeping label names uniform across managed branches avoids it;
+  it is otherwise a documented limitation, like manual label edits above.
 - **Rate limits during the sweep** — reuse the existing comment pacing in
   `Delegation.sweep/0`.
 - **`bors-staging` churn.** Every queued PR flickers through `bors-staging` as

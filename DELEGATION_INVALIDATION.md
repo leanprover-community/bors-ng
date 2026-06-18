@@ -85,8 +85,23 @@ change. That asymmetry drives the truncation policy below.
 
 ### bors.toml provenance
 
-`bors.toml` is read from the PR's **base** branch, never the head. A PR cannot
-disable invalidation by editing its own copy of the config.
+`bors.toml` is read from the PR's **base** branch (`patch.into_branch`), never
+the head. A PR cannot disable invalidation by editing its own copy of the
+config; a change to the `[delegation]` options only takes effect once it is
+merged into that base branch. This is also self-consistent: the branch the
+config is read from is the same branch a delegated `r+` would merge into, so the
+only person who can weaken a branch's delegation rules is someone who can already
+push to that branch.
+
+Because the rules are per-base-branch they can differ between branches, and a
+PR's base can change mid-flight — bors updates `into_branch` on the
+`pull_request` *edited* webhook (`Syncer.sync_patch`). A live delegation is
+therefore re-evaluated under the **new** base branch's `[delegation]` options
+after a retarget: its `restrict_to_paths` / `invalidate_on_paths` / expiry may
+differ from the branch it was granted under. To avoid surprises, keep the
+`[delegation]` options uniform across the branches bors manages (`LIFECYCLE_LABELS.md`
+notes the same per-branch consideration for the `delegated` label name). See
+[Known limitations](#known-limitations).
 
 ## Deciding what's acceptable
 
@@ -325,6 +340,12 @@ issued.
   push that both exceeds 300 changed files *and* touches an out-of-scope
   authored path is un-mergeable by a delegate by design: the truncation hides
   whether that path is new, so bors fails safe.
+- **Per-branch config and retargeting.** `[delegation]` options are read from
+  the PR's current base branch, so retargeting a PR (GitHub's *edit base*) moves
+  it onto that branch's rules — a delegation granted under one branch's
+  `restrict_to_paths` / expiry is re-evaluated under the new branch's on the next
+  push or `r+`. Keeping the options uniform across managed branches avoids the
+  surprise; see [bors.toml provenance](#borstoml-provenance).
 
 See also [bors-ng/rfcs](https://github.com/bors-ng/rfcs) for broader design
 documentation.
