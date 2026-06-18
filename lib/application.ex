@@ -43,7 +43,22 @@ defmodule BorsNG.Application do
 
     repo = fetch_repo()
 
-    children = [
+    # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
+    # for other strategies and supported options
+    opts = [strategy: :rest_for_one, name: BorsNG.Supervisor]
+    Supervisor.start_link(child_specs(repo), opts)
+  end
+
+  @doc """
+  The ordered list of supervised children, given the chosen repo module.
+
+  The order matters: the supervisor runs `:rest_for_one`, so PubSub and the
+  Endpoint deliberately precede the workers (see the inline note below). This is
+  a pure function of `repo` so the ordering invariant can be asserted in tests
+  without booting the application.
+  """
+  def child_specs(repo) do
+    [
       %{
         type: :supervisor,
         id: repo,
@@ -147,10 +162,5 @@ defmodule BorsNG.Application do
         start: {BorsNG.Worker.Batcher.GetBorsToml.Cache, :start_link, []}
       }
     ]
-
-    # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
-    # for other strategies and supported options
-    opts = [strategy: :rest_for_one, name: BorsNG.Supervisor]
-    Supervisor.start_link(children, opts)
   end
 end
