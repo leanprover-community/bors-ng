@@ -2279,6 +2279,76 @@ defmodule BorsNG.Worker.BatcherTest do
     refute "bors-staging" in labels_for(1)
   end
 
+  test "queue labels: a batch timeout flags awaiting-requeue and clears queue labels",
+       %{proj: proj} do
+    labels_toml = ~s"""
+    status = [ "ci" ]
+    [labels]
+    on_queue = "ready-to-merge"
+    building = "bors-staging"
+    failed = "awaiting-requeue"
+    """
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{
+          "staging.tmp" => %{"bors.toml" => labels_toml},
+          "master" => %{"bors.toml" => labels_toml}
+        },
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{
+          1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]
+        }
+      }
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    Repo.get_by!(Batch, project_id: proj.id)
+    |> Batch.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :running
+    assert "ready-to-merge" in labels_for(1)
+    assert "bors-staging" in labels_for(1)
+
+    # The running batch's deadline passes before CI reports: poll_batches sees
+    # timeout_is_past and routes to timeout_batch, the path that previously
+    # reconciled no labels at all.
+    Repo.get_by!(Batch, project_id: proj.id)
+    |> Batch.changeset(%{timeout_at: 0})
+    |> Repo.update!()
+
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :error
+
+    assert "awaiting-requeue" in labels_for(1)
+    refute "ready-to-merge" in labels_for(1)
+    refute "bors-staging" in labels_for(1)
+  end
+
   test "full runthrough (with zero patches)", %{proj: proj} do
     # Create a zero-patch batch in a "waiting" state
     # This isn't normally possible through the user interface,

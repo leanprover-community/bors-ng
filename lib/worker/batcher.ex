@@ -405,14 +405,17 @@ defmodule BorsNG.Worker.Batcher do
     project = batch.project
     repo_conn = get_repo_conn(project)
 
-    patch_links =
+    {closed_links, patch_links} =
       Repo.all(LinkPatchBatch.from_batch(batch.id))
       |> Enum.sort_by(& &1.patch.pr_xref)
-      |> Enum.reject(fn l ->
-        closed = l.patch.open == false
-        if closed, do: Repo.delete!(l)
-        closed
-      end)
+      |> Enum.split_with(&(&1.patch.open == false))
+
+    Enum.each(closed_links, &Repo.delete!/1)
+
+    # A PR closed while queued has just left the queue; reconcile its labels off.
+    # The closed links are gone now and these patches are dropped from the
+    # reconcile below, so they wouldn't be touched otherwise.
+    Labeler.reconcile_queue(repo_conn, batch.into_branch, Enum.map(closed_links, & &1.patch))
 
     # If all patches were closed and removed, cancel the batch early
     if Enum.empty?(patch_links) do
@@ -764,6 +767,14 @@ defmodule BorsNG.Worker.Batcher do
     state = Divider.split_batch_with_conflicts(patch_links, batch)
     poll_after_delay(project)
 
+    if state == :failed do
+      # A single unmergeable PR is dropped terminally, so flag it for a
+      # maintainer to re-queue. The queue labels (`ready-to-merge` /
+      # `bors-staging`) come off in start_waiting_batch's reconcile once the
+      # batch is committed to :conflict.
+      Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
+    end
+
     conflict_msg =
       case state do
         :failed -> {:conflict, :failed, batch.into_branch}
@@ -1011,6 +1022,12 @@ defmodule BorsNG.Worker.Batcher do
           {:push_failed_unknown_failure, batch.into_branch, status_code, raw_error_content}
         )
 
+        # The build passed but the push to the base branch failed unrecoverably
+        # and we don't re-queue, so the PR is dropped and needs a maintainer to
+        # put it back on. `ready-to-merge` / `bors-staging` come off in
+        # maybe_complete_batch once the batch state is committed to :error.
+        Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
+
         :error
     end
   end
@@ -1080,6 +1097,7 @@ defmodule BorsNG.Worker.Batcher do
 
   defp timeout_batch(batch) do
     project = batch.project
+    repo_conn = get_repo_conn(project)
 
     patch_links =
       batch.id
@@ -1091,11 +1109,14 @@ defmodule BorsNG.Worker.Batcher do
 
     if state == :retrying do
       poll_after_delay(project)
+    else
+      # Terminal failure (a single-patch batch): the PR is dropped and needs a
+      # maintainer to put it back on the queue, so flag it before the queue
+      # reconcile below takes `ready-to-merge` / `bors-staging` off.
+      Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
     end
 
-    project
-    |> get_repo_conn()
-    |> send_message(patches, {:timeout, state})
+    send_message(repo_conn, patches, {:timeout, state})
 
     batch
     |> Batch.changeset(%{state: :error})
@@ -1105,9 +1126,12 @@ defmodule BorsNG.Worker.Batcher do
 
     Project.ping!(project.id)
 
-    project
-    |> get_repo_conn()
-    |> send_status(batch, :timeout)
+    send_status(repo_conn, batch, :timeout)
+
+    # The batch is no longer :running, so its patches are off the queue. A
+    # :retrying bisect re-queued its halves into fresh :waiting batches, which
+    # this reconcile sees and keeps labeled. Mirrors maybe_complete_batch.
+    Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
   end
 
   defp cancel_patch(nil, _, _), do: :ok

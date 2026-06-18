@@ -84,6 +84,8 @@ defmodule BorsNG.Worker.Labeler do
   cleared in the same pass — being queued again is exactly the signal that it no
   longer needs a maintainer to re-queue it.
   """
+  def reconcile_queue(_repo_conn, _branch, []), do: :ok
+
   def reconcile_queue(repo_conn, branch, patches) when is_list(patches) do
     with_toml(repo_conn, branch, fn toml ->
       Enum.each(patches, fn patch ->
@@ -104,6 +106,8 @@ defmodule BorsNG.Worker.Labeler do
   queue. Reads `bors.toml` once from `branch`. The label is cleared later by
   `reconcile_queue/3` when the PR is put back on the queue.
   """
+  def mark_awaiting_requeue(_repo_conn, _branch, []), do: :ok
+
   def mark_awaiting_requeue(repo_conn, branch, patches) when is_list(patches) do
     with_toml(repo_conn, branch, fn toml ->
       Enum.each(patches, fn patch ->
