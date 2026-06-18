@@ -464,6 +464,16 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
+  def do_handle_call(:list_issues_by_label, {{:raw, token}, repo_xref}, {label}) do
+    {:ok,
+     get_issues_by_label_!(
+       token,
+       "#{site()}/repositories/#{repo_xref}/issues?state=open&per_page=100&labels=" <>
+         URI.encode_www_form(label),
+       []
+     )}
+  end
+
   def do_handle_call(:get_reviews, {{:raw, token}, repo_xref}, {issue_xref, sha}) do
     reviews =
       token
@@ -822,6 +832,45 @@ defmodule BorsNG.GitHub.Server do
     case next_headers do
       [] -> prs
       [next] -> get_open_prs_!(token, next.url, prs)
+    end
+  end
+
+  # Paginate the repo's issues list filtered by label. Returns `{number,
+  # [label_name]}` per issue — the issues endpoint already embeds each item's
+  # full label set, so the backstop sweep gets every PR's current labels in the
+  # same response it uses to discover them, with no extra per-PR read. The
+  # `?labels=` filter is applied server-side, so a repo with thousands of open
+  # PRs still only returns the (few) PRs carrying the label.
+  @spec get_issues_by_label_!(binary, binary | nil, [{integer, [binary]}]) ::
+          [{integer, [binary]}]
+  defp get_issues_by_label_!(_, nil, acc) do
+    acc
+  end
+
+  defp get_issues_by_label_!(token, url, acc) do
+    params = get_url_params(url)
+
+    {raw, headers} =
+      "token #{token}"
+      |> tesla_client(@content_type)
+      |> Tesla.get!(url, query: params)
+      |> case do
+        %{body: raw, status: 200, headers: headers} -> {raw, headers}
+        _ -> {"[]", %{}}
+      end
+
+    acc =
+      raw
+      |> Jason.decode!()
+      |> Enum.map(fn issue ->
+        names = Enum.map(issue["labels"] || [], fn %{"name" => name} -> name end)
+        {issue["number"], names}
+      end)
+      |> Enum.concat(acc)
+
+    case get_next_headers(headers) do
+      [] -> acc
+      [next] -> get_issues_by_label_!(token, next.url, acc)
     end
   end
 

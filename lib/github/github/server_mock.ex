@@ -626,6 +626,22 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:list_issues_by_label, repo_conn, {label}, state) do
+    with {:ok, repo} <- Map.fetch(state, repo_conn) do
+      result =
+        repo
+        |> Map.get(:labels, %{})
+        |> Enum.filter(fn {_issue_xref, names} -> label in (names || []) end)
+        |> Enum.map(fn {issue_xref, names} -> {issue_xref, names} end)
+
+      {{:ok, result}, state}
+    end
+    |> case do
+      {{:ok, _}, _} = res -> res
+      _ -> {{:error, :list_issues_by_label}, state}
+    end
+  end
+
   def do_handle_call(
         :get_reviews,
         repo_conn,

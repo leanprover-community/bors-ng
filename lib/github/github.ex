@@ -265,6 +265,20 @@ defmodule BorsNG.GitHub do
     call_with_retry(:remove_label, repo_conn, {issue_xref, label}, 500, 4_000)
   end
 
+  @doc """
+  List the open issues/PRs in the repo that currently carry `label`, each paired
+  with its full set of label names (as the GitHub issues endpoint returns them).
+
+  Drives the label backstop sweep (LIFECYCLE_LABELS.md): the labels in the
+  response feed a diff against bors's own state, so a sweep that finds no drift
+  performs no writes.
+  """
+  @spec list_issues_by_label(tconn, bitstring) ::
+          {:ok, [{integer, [bitstring]}]} | {:error, term}
+  def list_issues_by_label(repo_conn, label) do
+    call_with_retry(:list_issues_by_label, repo_conn, {label}, 500, 4_000)
+  end
+
   @spec get_reviews!(tconn, integer | bitstring) :: map
   def get_reviews!(repo_conn, issue_xref) do
     {:ok, labels} = get_reviews(repo_conn, issue_xref)
@@ -590,13 +604,16 @@ defmodule BorsNG.GitHub do
     Confex.get_env(:bors, :api_github_retry_max_elapsed_ms, 180_000)
   end
 
-  # Label writes are best-effort projections of bors's own state
-  # (LIFECYCLE_LABELS.md): a dropped one is re-reconciled on the next lifecycle
-  # event, so it is never worth grinding retries that serially block the batcher
-  # or the delegation sweep. The acute case is a missing `issues: write` scope,
-  # where every call 403s and the write budget below would burn ~10 attempts /
-  # ~30s apiece. Give them an essentially single-shot budget instead.
-  defp max_retry_elapsed_ms(action) when action in [:add_labels, :remove_label] do
+  # Label operations are best-effort projections of bors's own state
+  # (LIFECYCLE_LABELS.md): a dropped write is re-reconciled on the next
+  # lifecycle event or backstop sweep, so it is never worth grinding retries
+  # that serially block the batcher or the sweeps. The acute case is a missing
+  # `issues: write` scope, where every call 403s and the write budget below
+  # would burn ~10 attempts / ~30s apiece. The backstop's own label listing
+  # rides the same budget: giving up early just means it re-runs next tick.
+  # Give them all an essentially single-shot budget instead.
+  defp max_retry_elapsed_ms(action)
+       when action in [:add_labels, :remove_label, :list_issues_by_label] do
     Confex.get_env(:bors, :api_github_retry_label_max_elapsed_ms, 1_000)
   end
 

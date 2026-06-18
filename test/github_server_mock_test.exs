@@ -49,4 +49,35 @@ defmodule BorsNG.GitHub.ServerMockTest do
       assert GitHub.get_labels!(@conn, 1) == ["existing"]
     end
   end
+
+  describe "list_issues_by_label" do
+    @conn {{:installation, 91}, 14}
+
+    setup do
+      ServerMock.put_state(%{
+        @conn => %{
+          labels: %{
+            1 => ["ready-to-merge", "delegated"],
+            2 => ["ready-to-merge"],
+            3 => ["other"]
+          }
+        }
+      })
+
+      :ok
+    end
+
+    test "returns each matching issue with its full label set" do
+      assert {:ok, issues} = GitHub.list_issues_by_label(@conn, "ready-to-merge")
+
+      assert Enum.sort(issues) == [
+               {1, ["ready-to-merge", "delegated"]},
+               {2, ["ready-to-merge"]}
+             ]
+    end
+
+    test "returns an empty list when no issue carries the label" do
+      assert {:ok, []} = GitHub.list_issues_by_label(@conn, "nonexistent")
+    end
+  end
 end
