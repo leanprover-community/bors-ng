@@ -151,11 +151,16 @@ defmodule BorsNG.Database.Context.Delegation do
       # deletes so the label reflects whether *any* delegation still stands;
       # this is the fix for the label being stranded when a delegation times
       # out (there's no GitHub event a workflow could react to).
+      #
+      # Paced with the lighter label throttle, not `pace_comment`: this loop
+      # only writes labels (no comments), so the ~750ms content-creation budget
+      # would just be dead sleep. `d.patch` carries its preloaded `:project`, so
+      # `reconcile_delegated/1` reuses it rather than re-reading the project.
       expired_open
       |> Enum.uniq_by(& &1.patch_id)
       |> Enum.with_index()
       |> Enum.each(fn {d, idx} ->
-        pace_comment(idx)
+        Labeler.pace_write(idx)
         Labeler.reconcile_delegated(d.patch)
       end)
     end
@@ -223,7 +228,10 @@ defmodule BorsNG.Database.Context.Delegation do
     project = Repo.get!(Project, patch.project_id)
     conn = Project.installation_connection(project.repo_xref, Repo)
 
-    case GetBorsToml.get(conn, patch.into_branch) do
+    # Sweep-time read: a slightly stale default-expiry config self-corrects on
+    # the next sweep, and the eager command/preflight path always reads fresh,
+    # so the cache is safe here and spares the sweep a per-patch GitHub read.
+    case GetBorsToml.get_cached(conn, patch.into_branch) do
       {:ok, toml} -> reconcile_default_expiry(patch, toml.delegation_default_expiry_sec)
       {:error, _} -> []
     end

@@ -23,4 +23,9 @@ config :bors, :server, BorsNG.GitHub.ServerMock
 config :bors, :oauth2, BorsNG.GitHub.OAuth2Mock
 config :bors, :is_test, true
 
+# Bypass the bors.toml reconcile-path cache in tests so a test that rewrites a
+# repo's bors.toml mid-run always observes the new config. The `get_cached/2`
+# code path is still exercised; it just always falls through to `get/2`.
+config :bors, :bors_toml_cache_ttl_ms, 0
+
 config :bors, :celebrate_new_year, false

@@ -56,6 +56,11 @@ defmodule BorsNG.Application do
       },
       %{type: :worker, id: BorsNG.Attrs, start: {BorsNG.Attrs, :start_link, []}},
       %{
+        type: :worker,
+        id: BorsNG.Worker.Batcher.GetBorsToml.Cache,
+        start: {BorsNG.Worker.Batcher.GetBorsToml.Cache, :start_link, []}
+      },
+      %{
         type: :supervisor,
         id: BorsNG.Worker.Batcher.Supervisor,
         start: {BorsNG.Worker.Batcher.Supervisor, :start_link, []}
@@ -111,6 +116,15 @@ defmodule BorsNG.Application do
           []
         },
         id: BorsNG.Worker.DelegationTimer
+      },
+      %{
+        type: :worker,
+        start: {
+          BorsNG.Worker.LabelBackstopTimer,
+          :start_link,
+          []
+        },
+        id: BorsNG.Worker.LabelBackstopTimer
       },
       %{
         type: :supervisor,

@@ -27,7 +27,12 @@ config :bors,
   api_github_timeout: {:system, :integer, "GITHUB_API_TIMEOUT", 100_000},
   log_outgoing: {:system, "BORS_LOG_OUTGOING", false},
   poll_period: {:system, :integer, "BORS_POLL_PERIOD", 1_800_000},
-  delegation_sweep_period: {:system, :integer, "BORS_DELEGATION_SWEEP_PERIOD", 600_000}
+  delegation_sweep_period: {:system, :integer, "BORS_DELEGATION_SWEEP_PERIOD", 600_000},
+  label_backstop_period: {:system, :integer, "BORS_LABEL_BACKSTOP_PERIOD", 3_600_000},
+  label_write_pace_ms: {:system, :integer, "BORS_LABEL_WRITE_PACE_MS", 250},
+  bors_toml_cache_ttl_ms: {:system, :integer, "BORS_TOML_CACHE_TTL_MS", 120_000},
+  bors_toml_cache_error_ttl_ms: {:system, :integer, "BORS_TOML_CACHE_ERROR_TTL_MS", 15_000},
+  bors_toml_cache_prune_period_ms: {:system, :integer, "BORS_TOML_CACHE_PRUNE_PERIOD_MS", 600_000}
 
 config :bors,
   zulip_api_url: {:system, "ZULIP_API_URL", ""},
