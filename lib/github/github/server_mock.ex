@@ -103,6 +103,7 @@ defmodule BorsNG.GitHub.ServerMock do
           :get_pr_files_error => integer,
           :get_commit_status_error => integer,
           :get_labels_error => integer,
+          :list_issues_by_label_error => boolean,
           :get_reviews_error => integer,
           :post_commit_status_error => integer,
           :post_comment_error => integer
@@ -624,6 +625,15 @@ defmodule BorsNG.GitHub.ServerMock do
       {:ok, state} -> {:ok, state}
       _ -> {{:error, :remove_label}, state}
     end
+  end
+
+  def do_handle_call(
+        :list_issues_by_label,
+        _repo_conn,
+        {_label},
+        %{list_issues_by_label_error: true} = state
+      ) do
+    {{:error, :list_issues_by_label, 502, "Bad Gateway"}, state}
   end
 
   def do_handle_call(:list_issues_by_label, repo_conn, {label}, state) do

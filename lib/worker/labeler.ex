@@ -130,9 +130,12 @@ defmodule BorsNG.Worker.Labeler do
     * **Open PRs only.** A merged PR's labels are frozen as history
       (LIFECYCLE_LABELS.md): the discovery query asks for `state=open`, and the
       sweep only ever touches patches whose `patch.open` is true.
-    * **State-derived labels only.** The event-driven `failed`/`awaiting-requeue`
-      label has no current-state definition, so it is never reconciled here; its
-      clear-on-requeue stays with the live `reconcile_queue/3`.
+    * **State-derived labels, plus a one-way `awaiting-requeue` clear.** The
+      three state-derived labels are reconciled in both directions. The
+      event-driven `failed`/`awaiting-requeue` label has no current-state
+      definition, so it is never *added* here and is *removed* only when the PR
+      is back on the queue (mirroring the live `reconcile_queue/3`); a stale
+      `awaiting-requeue` off the queue is undecidable, so it is left alone.
     * **Each PR under its own base branch's config.** A label is reconciled only
       if the PR's *current* `into_branch` config manages that name — preserving
       the "never touch foreign labels" guarantee and the documented

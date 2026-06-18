@@ -56,11 +56,6 @@ defmodule BorsNG.Application do
       },
       %{type: :worker, id: BorsNG.Attrs, start: {BorsNG.Attrs, :start_link, []}},
       %{
-        type: :worker,
-        id: BorsNG.Worker.Batcher.GetBorsToml.Cache,
-        start: {BorsNG.Worker.Batcher.GetBorsToml.Cache, :start_link, []}
-      },
-      %{
         type: :supervisor,
         id: BorsNG.Worker.Batcher.Supervisor,
         start: {BorsNG.Worker.Batcher.Supervisor, :start_link, []}
@@ -135,7 +130,16 @@ defmodule BorsNG.Application do
         },
         id: BorsNG.Endpoint
       },
-      {Phoenix.PubSub, name: BorsNG.PubSub}
+      {Phoenix.PubSub, name: BorsNG.PubSub},
+      # The bors.toml config cache is an optional optimization the workers
+      # tolerate missing (get_cached/2 falls back to an uncached read when its
+      # ETS table is absent), so under rest_for_one it sits last: a restart of
+      # this process can't cascade into the batcher, registries, or endpoint.
+      %{
+        type: :worker,
+        id: BorsNG.Worker.Batcher.GetBorsToml.Cache,
+        start: {BorsNG.Worker.Batcher.GetBorsToml.Cache, :start_link, []}
+      }
     ]
 
     # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html

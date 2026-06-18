@@ -182,4 +182,113 @@ defmodule BorsNG.Worker.LabelerBackstopTest do
     # Still present exactly once: no spurious add or remove.
     assert labels_for(7) == ["delegated"]
   end
+
+  test "removes a stranded building label while keeping on_queue (waiting batch)", %{patch: patch} do
+    link_to_batch(patch, :waiting)
+    seed(@all_labels, %{7 => ["ready-to-merge", "bors-staging"]})
+
+    Labeler.backstop_sweep()
+
+    labels = labels_for(7)
+    # Waiting (not running): on the queue but not building.
+    assert "ready-to-merge" in labels
+    refute "bors-staging" in labels
+  end
+
+  test "leaves a label the PR's current base config does not manage", %{proj: proj, patch: patch} do
+    # PR #7 targets "dev", whose config has no [labels]; only "master" defines
+    # on_queue. A second open patch on master puts that config in play.
+    Repo.update!(Ecto.Changeset.change(patch, into_branch: "dev"))
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 8,
+      commit: "def",
+      into_branch: "master",
+      open: true
+    })
+
+    GitHub.ServerMock.put_state(%{
+      @conn => %{
+        files: %{
+          "master" => %{"bors.toml" => @all_labels},
+          "dev" => %{"bors.toml" => ~s/status = ["ci"]\n/}
+        },
+        labels: %{7 => ["ready-to-merge"]}
+      }
+    })
+
+    Labeler.backstop_sweep()
+
+    # "ready-to-merge" is managed on master but not on dev (PR #7's base), so the
+    # sweep must not strip it — the documented divergent-name retarget case.
+    assert "ready-to-merge" in labels_for(7)
+  end
+
+  test "leaves a label on a PR bors does not track" do
+    seed(@all_labels, %{999 => ["delegated"]})
+
+    Labeler.backstop_sweep()
+
+    # No patch row for #999, so the sweep can't compute desired state for it and
+    # leaves the label alone.
+    assert "delegated" in labels_for(999)
+  end
+
+  test "reconciles a configured project and skips an unconfigured one in one sweep", %{proj: proj} do
+    inst = Repo.get!(Installation, proj.installation_id)
+
+    proj2 =
+      Repo.insert!(%Project{
+        installation_id: inst.id,
+        repo_xref: 22,
+        staging_branch: "staging",
+        name: "example/other"
+      })
+
+    Repo.insert!(%Patch{
+      project_id: proj2.id,
+      pr_xref: 70,
+      commit: "ghi",
+      into_branch: "master",
+      open: true
+    })
+
+    conn2 = {{:installation, 92}, 22}
+
+    GitHub.ServerMock.put_state(%{
+      @conn => %{
+        files: %{"master" => %{"bors.toml" => @all_labels}},
+        labels: %{7 => ["delegated"]}
+      },
+      conn2 => %{
+        files: %{"master" => %{"bors.toml" => ~s/status = ["ci"]\n/}},
+        labels: %{70 => ["delegated"]}
+      }
+    })
+
+    Labeler.backstop_sweep()
+
+    # proj manages `delegated` and #7 has no active delegation -> removed.
+    refute "delegated" in labels_for(7)
+    # proj2 has no [labels] -> its stranded label is untouched.
+    proj2_labels = GitHub.ServerMock.get_state() |> get_in([conn2, :labels, 70]) || []
+    assert "delegated" in proj2_labels
+  end
+
+  test "tolerates a label-discovery failure without crashing or touching labels" do
+    GitHub.ServerMock.put_state(%{
+      @conn => %{
+        files: %{"master" => %{"bors.toml" => @all_labels}},
+        labels: %{7 => ["delegated"]}
+      },
+      list_issues_by_label_error: true
+    })
+
+    assert :ok = Labeler.backstop_sweep()
+
+    # Discovery errored, so the stranded label isn't reconciled away this tick
+    # (it retries next sweep); the run completed without raising.
+    assert "delegated" in labels_for(7)
+  end
 end
