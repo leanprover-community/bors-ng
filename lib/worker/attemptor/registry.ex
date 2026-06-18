@@ -11,6 +11,7 @@ defmodule BorsNG.Worker.Attemptor.Registry do
   """
 
   use GenServer
+  require Logger
 
   alias BorsNG.Worker.Attemptor
   alias BorsNG.Database.Crash
@@ -82,16 +83,30 @@ defmodule BorsNG.Worker.Attemptor.Registry do
     project_id = refs[ref]
     {_pid, state} = start_and_insert(project_id, state)
 
-    Repo.insert(%Crash{
-      project_id: project_id,
-      component: "try",
-      crash: inspect(reason, pretty: true, width: 60)
-    })
+    record_crash(project_id, reason)
 
     {:noreply, state}
   end
 
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  # Recording the crash is best-effort. The attemptor has already been
+  # restarted above, so a failed insert here (e.g. the project row was deleted,
+  # leaving the crashes_project_id_fkey dangling, or the DB connection dropped)
+  # must not raise and take the registry — and every attemptor it tracks — down
+  # with it.
+  defp record_crash(project_id, reason) do
+    Repo.insert(%Crash{
+      project_id: project_id,
+      component: "try",
+      crash: inspect(reason, pretty: true, width: 60)
+    })
+  rescue
+    e ->
+      Logger.error(
+        "Failed to record attemptor crash for project #{inspect(project_id)}: #{inspect(e)}"
+      )
   end
 end
