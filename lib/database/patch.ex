@@ -25,6 +25,10 @@ defmodule BorsNG.Database.Patch do
     field(:is_mergeable, :boolean, default: true)
     field(:is_draft, :boolean, default: false)
     belongs_to(:author, User)
+    belongs_to(:bundle, PatchBundle)
+    field(:bundle_reviewer, :string)
+    belongs_to(:stacked_on, Patch)
+    field(:head_ref, :string)
     timestamps()
   end
 
@@ -46,7 +50,11 @@ defmodule BorsNG.Database.Patch do
       :priority,
       :is_single,
       :is_mergeable,
-      :is_draft
+      :is_draft,
+      :bundle_id,
+      :bundle_reviewer,
+      :stacked_on_id,
+      :head_ref
     ])
     |> unique_constraint(:pr_xref, name: :patches_pr_xref_index, match: :suffix)
   end
@@ -108,6 +116,14 @@ defmodule BorsNG.Database.Patch do
       where: p.open,
       group_by: p.id,
       having: count(p.id) > 1
+    )
+  end
+
+  @spec all_for_bundle(PatchBundle.id()) :: Ecto.Queryable.t()
+  def all_for_bundle(bundle_id) do
+    from(p in Patch,
+      where: p.bundle_id == ^bundle_id,
+      order_by: [asc: p.pr_xref]
     )
   end
 

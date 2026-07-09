@@ -31,6 +31,7 @@ defmodule BorsNG.Database.Model do
       alias BorsNG.Database.LinkUserProject
       alias BorsNG.Database.Log
       alias BorsNG.Database.Patch
+      alias BorsNG.Database.PatchBundle
       alias BorsNG.Database.Project
       alias BorsNG.Database.Status
       alias BorsNG.Database.User
