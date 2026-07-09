@@ -20,6 +20,38 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert expected_message == actual_message
   end
 
+  test "generate bundle messages" do
+    assert Message.generate_message({:linked, [1, 2]}) =~ "linked bundle: #1, #2"
+    assert Message.generate_message(:unlinked) =~ "no longer linked"
+    assert Message.generate_message({:stacked, 2, 1}) =~ "#2 is now stacked on #1"
+    assert Message.generate_message({:link_error, {:not_rebased, 5}}) =~ "Rebase it onto #5"
+    assert Message.generate_message({:stack_stale, 2, 1}) =~ "#2 contains the current head of #1"
+    assert Message.generate_message({:retargeted, "master"}) =~ "base branch to `master`"
+
+    assert Message.generate_message({:stack_retarget_failed, 7}) =~
+             "could not change the base branch of #7"
+
+    assert Message.generate_message({:bundle_waiting, [7]}) =~ "linked pull request(s): #7"
+    assert Message.generate_message({:bundle_pulled, 7, :closed}) =~ "#7, which was closed"
+    assert Message.generate_message({:bundle_pulled, 7, :push}) =~ "#7, which was pushed to"
+    assert Message.generate_message({:bundle_pulled, 7, :requested}) =~ "#7, which was canceled"
+
+    for reason <- [
+          :nothing_to_link,
+          :not_found,
+          :closed,
+          :branch_mismatch,
+          :in_batch,
+          :stack_usage,
+          :cycle,
+          :cannot_infer
+        ] do
+      message = Message.generate_message({:link_error, reason})
+      assert is_binary(message)
+      assert message =~ ":-1:"
+    end
+  end
+
   test "every bors.toml error key has an explicit, friendly renderer" do
     # Single source of truth: BorsToml's @type err (introspected below), plus
     # the fetch-layer-only :fetch_failed. Adding a new validation key extends

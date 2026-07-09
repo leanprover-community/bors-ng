@@ -140,6 +140,20 @@ Note that you can watch this process running on the [dashboard page] if you want
 
 As a convenience, you can also run `bors try`, which will kick off a build the same way `r+` would, but without actually pushing it to the main branch even if it does succeed. To help keep them separate, `r+` merge commits go in `staging` and `try` builds go in `trying`.
 
+If two or more pull requests must land atomically (for example, one PR deletes a module and another adds a shim re-exporting it), a reviewer can link them into a bundle by commenting on any one of them:
+
+    bors link #123 #456
+
+Each member of the bundle still needs its own `bors r+`; once the last one is approved, all of them enter the same batch and merge together — or not at all. Bisection never separates them, and canceling one (or closing it, or pushing new commits to it) pulls the whole bundle out of the queue. `bors unlink` dissolves the bundle.
+
+When the order of the commits matters — say #123 moves a module as a pure rename (so `git log --follow` keeps working) and #456 re-creates the old path as a deprecation shim — comment on #456:
+
+    bors stack #123
+
+This links #456 into #123's bundle *and* guarantees #456 lands as a separate commit after #123, adjacent to it in history. For this to merge cleanly, author the stacked PR's branch on top of the branch it stacks on — bors enforces this, refusing the stack command (and holding the bundle at approval time) whenever the stacked branch doesn't contain the current head of the PR it stacks on, e.g. after that PR was amended. Stacking cycles are rejected.
+
+Stacked-PR tooling (such as GitHub's `gh stack`) conventionally opens each layer against the branch of the layer below rather than the final branch. bors understands that shape: a bare `bors stack` infers the parent from the base-branch chain, and when the bundle is queued bors retargets each layer's base onto the final branch itself (announcing it on the PR). So landing a stack is just `bors stack` on each child plus the usual `bors r+` per layer.
+
 [Bors-NG]: https://bors.tech/
 [GitHub Actions]: https://github.com/features/actions
 [GitHub Application]: https://github.com/settings/installations

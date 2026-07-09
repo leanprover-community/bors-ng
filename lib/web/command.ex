@@ -15,6 +15,23 @@ defmodule BorsNG.Command do
 
   Your build scripts should then inspect the commit message
   to pull out the commands.
+
+  # link
+
+  `bors link #123 #456` links pull requests into a bundle that merges
+  atomically: each member still needs its own `bors r+`, and once every
+  member is approved they all enter the same batch, landing together or
+  not at all. `bors unlink` (or `bors link-`) dissolves the bundle.
+
+  `bors stack #123` (commented on another PR) additionally records an
+  order: this PR joins #123's bundle and merges after it, as a separate
+  commit — useful when a module move must stay a pure rename and the
+  deprecation shim re-creating the old path must come right after it.
+
+  Bare `bors stack` infers the parent from the base-branch chain (the
+  gh-stack convention, where a stacked PR's base is its parent's branch);
+  such bases are retargeted onto the final branch automatically when the
+  bundle is queued.
   """
 
   alias BorsNG.Worker.Attemptor
@@ -134,6 +151,9 @@ defmodule BorsNG.Command do
           | {:autocorrect, binary}
           | :ping
           | :retry
+          | {:link, [pos_integer()]}
+          | {:stack, [pos_integer()]}
+          | :unlink
 
   @delegation_max_duration_sec 90 * 24 * 60 * 60
   def delegation_max_duration_sec, do: @delegation_max_duration_sec
@@ -199,7 +219,35 @@ defmodule BorsNG.Command do
   def parse_cmd("p=" <> rest), do: parse_priority(rest)
   def parse_cmd("retry" <> _), do: [:retry]
   def parse_cmd("cancel" <> _), do: [:deactivate]
+  def parse_cmd("unlink" <> _), do: [:unlink]
+  def parse_cmd("link-" <> _), do: [:unlink]
+  def parse_cmd("link" <> arguments), do: [{:link, parse_pr_refs(arguments)}]
+  def parse_cmd("stack" <> arguments), do: [{:stack, parse_pr_refs(arguments)}]
   def parse_cmd(_), do: []
+
+  @doc ~S"""
+  The arguments of a link or stack command are pull request numbers,
+  separated by whitespace or commas, each with an optional leading `#`:
+
+      iex> alias BorsNG.Command
+      iex> Command.parse_pr_refs(" #1 #2")
+      [1, 2]
+      iex> Command.parse_pr_refs("= 1, 2, 3")
+      [1, 2, 3]
+      iex> Command.parse_pr_refs("")
+      []
+      iex> Command.parse_pr_refs(" nonsense")
+      []
+  """
+  def parse_pr_refs(arguments) do
+    arguments
+    |> String.split("\n", parts: 2)
+    |> List.first()
+    |> String.split(~r/[\s,=]+/, trim: true)
+    |> Enum.map(&String.replace_prefix(&1, "#", ""))
+    |> Enum.filter(&String.match?(&1, ~r/^\d+$/))
+    |> Enum.map(&String.to_integer/1)
+  end
 
   @doc ~S"""
   The username part of an activation-by command is defined like this:
@@ -524,6 +572,18 @@ defmodule BorsNG.Command do
     :member
   end
 
+  def required_permission_level_cmd({:link, _}) do
+    :reviewer
+  end
+
+  def required_permission_level_cmd({:stack, _}) do
+    :reviewer
+  end
+
+  def required_permission_level_cmd(:unlink) do
+    :reviewer
+  end
+
   def required_permission_level_cmd(_) do
     :reviewer
   end
@@ -615,6 +675,21 @@ defmodule BorsNG.Command do
     c = fetch_patch(c)
     batcher = Batcher.Registry.get(c.project.id)
     Batcher.cancel(batcher, c.patch.id)
+  end
+
+  def run(c, {:link, pr_numbers}) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.link(batcher, c.patch.id, pr_numbers)
+  end
+
+  def run(c, {:stack, pr_numbers}) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.stack(batcher, c.patch.id, pr_numbers)
+  end
+
+  def run(c, :unlink) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.unlink(batcher, c.patch.id)
   end
 
   def run(c, {:try, arguments}) do

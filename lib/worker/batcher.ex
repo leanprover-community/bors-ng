@@ -32,6 +32,7 @@ defmodule BorsNG.Worker.Batcher do
   alias BorsNG.Database.Batch
   alias BorsNG.Database.BatchState
   alias BorsNG.Database.Patch
+  alias BorsNG.Database.PatchBundle
   alias BorsNG.Database.Project
   alias BorsNG.Database.Status
   alias BorsNG.Database.LinkPatchBatch
@@ -78,6 +79,18 @@ defmodule BorsNG.Worker.Batcher do
     GenServer.cast(pid, {:cancel_all})
   end
 
+  def link(pid, patch_id, pr_xrefs) when is_integer(patch_id) do
+    GenServer.cast(pid, {:link, patch_id, pr_xrefs})
+  end
+
+  def stack(pid, patch_id, pr_xrefs) when is_integer(patch_id) do
+    GenServer.cast(pid, {:stack, patch_id, pr_xrefs})
+  end
+
+  def unlink(pid, patch_id) when is_integer(patch_id) do
+    GenServer.cast(pid, {:unlink, patch_id})
+  end
+
   # Server callbacks
 
   def init(project_id) do
@@ -107,9 +120,15 @@ defmodule BorsNG.Worker.Batcher do
         nil
 
       patch ->
+        # Linked patches batch as one unit, so `single` only means something
+        # applied to the whole bundle.
         patch
-        |> Patch.changeset(%{is_single: is_single})
-        |> Repo.update!()
+        |> bundle_members_or_self()
+        |> Enum.each(fn p ->
+          p
+          |> Patch.changeset(%{is_single: is_single})
+          |> Repo.update!()
+        end)
     end
 
     {:reply, :ok, project_id}
@@ -131,14 +150,28 @@ defmodule BorsNG.Worker.Batcher do
         |> Repo.one()
         |> raise_batch_priority(priority)
 
+        # Linked patches enter the queue at one priority, so a change to one
+        # member applies to the whole bundle.
         patch
-        |> Patch.changeset(%{priority: priority})
-        |> Repo.update!()
+        |> bundle_members_or_self()
+        |> Enum.each(fn p ->
+          p
+          |> Patch.changeset(%{priority: priority})
+          |> Repo.update!()
+        end)
 
         Project.ping!(project_id)
     end
 
     {:reply, :ok, project_id}
+  end
+
+  defp bundle_members_or_self(%Patch{bundle_id: nil} = patch), do: [patch]
+
+  defp bundle_members_or_self(%Patch{bundle_id: bundle_id}) do
+    bundle_id
+    |> Patch.all_for_bundle()
+    |> Repo.all()
   end
 
   def do_handle_cast({:reviewed, patch_id, reviewer}, _project_id) do
@@ -162,7 +195,7 @@ defmodule BorsNG.Worker.Batcher do
 
         case patch_preflight(repo_conn, patch) do
           {:ok, max_batch_size} ->
-            run(reviewer, patch, max_batch_size)
+            activate(reviewer, patch, max_batch_size)
 
           {:waiting, toml} ->
             handle_waiting_preflight(repo_conn, reviewer, patch, 0, toml)
@@ -196,6 +229,17 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   def do_handle_cast({:cancel, patch_id, reason}, _project_id) do
+    # A bundled patch may hold an approval while waiting for its siblings;
+    # canceling (r-, close, or a new push) revokes this member's held
+    # approval, so re-queueing the bundle needs a fresh r+ on it.
+    case Repo.get(Patch, patch_id) do
+      %Patch{bundle_reviewer: reviewer} = patch when not is_nil(reviewer) ->
+        patch |> Patch.changeset(%{bundle_reviewer: nil}) |> Repo.update!()
+
+      _ ->
+        :ok
+    end
+
     patch_id
     |> Batch.all_for_patch(:incomplete)
     |> Repo.one()
@@ -246,6 +290,79 @@ defmodule BorsNG.Worker.Batcher do
     end)
   end
 
+  def do_handle_cast({:link, patch_id, pr_xrefs}, project_id) do
+    patch = Repo.get!(Patch, patch_id)
+    project = Repo.get!(Project, project_id)
+    repo_conn = get_repo_conn(project)
+
+    case validate_link(patch, pr_xrefs, project_id) do
+      {:error, reason} ->
+        send_message(repo_conn, [patch], {:link_error, reason})
+
+      {:ok, members} ->
+        members = form_bundle(members, project_id)
+        xrefs = members |> Enum.map(& &1.pr_xref) |> Enum.sort()
+        send_message(repo_conn, members, {:linked, xrefs})
+    end
+  end
+
+  def do_handle_cast({:stack, patch_id, pr_xrefs}, project_id) do
+    patch = Repo.get!(Patch, patch_id)
+    project = Repo.get!(Project, project_id)
+    repo_conn = get_repo_conn(project)
+
+    target_xrefs =
+      pr_xrefs
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == patch.pr_xref))
+
+    case target_xrefs do
+      [] ->
+        # Bare `bors stack`: infer the parent from the base-branch chain
+        # (gh-stack convention — a stacked PR's base is its parent's branch).
+        case infer_stack_parent(patch, project_id) do
+          {:ok, parent} ->
+            do_stack(repo_conn, patch, parent.pr_xref, project_id)
+
+          :error ->
+            send_message(repo_conn, [patch], {:link_error, :cannot_infer})
+        end
+
+      [target_xref] ->
+        do_stack(repo_conn, patch, target_xref, project_id)
+
+      _ ->
+        send_message(repo_conn, [patch], {:link_error, :stack_usage})
+    end
+  end
+
+  def do_handle_cast({:unlink, patch_id}, project_id) do
+    patch = Repo.get!(Patch, patch_id)
+
+    case patch.bundle_id do
+      nil ->
+        :ok
+
+      bundle_id ->
+        project = Repo.get!(Project, project_id)
+        repo_conn = get_repo_conn(project)
+        members = bundle_id |> Patch.all_for_bundle() |> Repo.all()
+
+        if Enum.any?(members, &in_incomplete_batch?/1) do
+          send_message(repo_conn, [patch], {:link_error, :in_batch})
+        else
+          Enum.each(members, fn p ->
+            p
+            |> Patch.changeset(%{bundle_id: nil, bundle_reviewer: nil, stacked_on_id: nil})
+            |> Repo.update!()
+          end)
+
+          Repo.delete!(Repo.get!(PatchBundle, bundle_id))
+          send_message(repo_conn, members, :unlinked)
+        end
+    end
+  end
+
   def handle_info({:poll, repetition}, project_id) do
     check_self(project_id)
 
@@ -279,7 +396,7 @@ defmodule BorsNG.Worker.Batcher do
       _ ->
         case patch_preflight(repo_conn, patch) do
           {:ok, max_batch_size} ->
-            run(reviewer, patch, max_batch_size)
+            activate(reviewer, patch, max_batch_size)
 
           {:waiting, toml} ->
             handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml)
@@ -355,6 +472,441 @@ defmodule BorsNG.Worker.Batcher do
     send_status(repo_conn, batch.id, [patch], :waiting)
   end
 
+  # A reviewed patch that passed its own preflight enters the queue here. An
+  # unbundled patch is queued directly; a bundled one holds its approval on
+  # the patch row until every member of the bundle is approved, then all
+  # members enter the same batch together.
+  defp activate(reviewer, patch, max_batch_size) do
+    case patch.bundle_id do
+      nil ->
+        run(reviewer, patch, max_batch_size)
+
+      bundle_id ->
+        patch =
+          patch
+          |> Patch.changeset(%{bundle_reviewer: reviewer})
+          |> Repo.update!()
+
+        activate_bundle(patch, bundle_id, max_batch_size)
+    end
+  end
+
+  defp activate_bundle(patch, bundle_id, max_batch_size) do
+    project = Repo.get!(Project, patch.project_id)
+    repo_conn = get_repo_conn(project)
+
+    members = bundle_id |> Patch.all_for_bundle() |> Repo.all()
+
+    pending =
+      members
+      |> Enum.filter(&(is_nil(&1.bundle_reviewer) or &1.open == false))
+      |> Enum.map(& &1.pr_xref)
+
+    cond do
+      pending != [] ->
+        send_message(repo_conn, [patch], {:bundle_waiting, pending})
+
+      (stale = stale_stack_pair(repo_conn, members)) != nil ->
+        # A stacked branch went stale (its parent was amended after it was
+        # stacked, or a webhook was missed): hold the bundle rather than
+        # merge stale content. Held approvals survive; rebasing the child
+        # clears its approval via the push webhook, and a fresh r+ re-runs
+        # this check.
+        {child, parent} = stale
+        send_message(repo_conn, members, {:stack_stale, child.pr_xref, parent.pr_xref})
+
+      true ->
+        # Everything is approved and fresh: normalize gh-stack-shaped bases
+        # onto the final branch, then preflight the rest of the bundle (the
+        # current patch already passed its own preflight).
+        case normalize_bundle_bases(repo_conn, members) do
+          {:error, :branch_mismatch} ->
+            send_message(repo_conn, members, {:link_error, :branch_mismatch})
+
+          {:error, xref} when is_integer(xref) ->
+            send_message(repo_conn, members, {:stack_retarget_failed, xref})
+
+          {:ok, members} ->
+            activate_bundle_preflight(repo_conn, project, patch, members, max_batch_size)
+        end
+    end
+  end
+
+  defp activate_bundle_preflight(repo_conn, project, patch, members, max_batch_size) do
+    others = Enum.reject(members, &(&1.id == patch.id))
+
+    case bundle_preflight(repo_conn, others) do
+      :ok ->
+        run_bundle(project, members, max_batch_size)
+
+      {:waiting, failed, toml} ->
+        # That member's statuses are still pending; its prerun poll loop
+        # re-enters activate/3 once they settle, and the held approvals
+        # make this whole check idempotent.
+        handle_waiting_preflight(repo_conn, failed.bundle_reviewer, failed, 0, toml)
+
+        repo_conn
+        |> send_message(
+          Enum.reject(members, &(&1.id == failed.id)),
+          {:bundle_waiting, [failed.pr_xref]}
+        )
+
+      {:error, message, failed} ->
+        send_message(repo_conn, [failed], {:preflight, message})
+
+        repo_conn
+        |> send_message(
+          Enum.reject(members, &(&1.id == failed.id)),
+          {:bundle_waiting, [failed.pr_xref]}
+        )
+    end
+  end
+
+  # Bring every member's base branch onto the bundle's final target before
+  # queueing. The final target is the into_branch of the stack roots (which
+  # must agree); members still in gh-stack shape (base = parent's branch)
+  # are retargeted via the GitHub API, mirroring what the branch deleter
+  # does after a merge. Fails closed: any API failure holds the bundle.
+  defp normalize_bundle_bases(repo_conn, members) do
+    member_ids = MapSet.new(members, & &1.id)
+
+    roots =
+      Enum.filter(members, fn p ->
+        is_nil(p.stacked_on_id) or p.stacked_on_id not in member_ids
+      end)
+
+    case roots |> Enum.map(& &1.into_branch) |> Enum.uniq() do
+      [final] ->
+        members
+        |> Enum.reduce_while({:ok, []}, fn p, {:ok, acc} ->
+          case retarget_patch(repo_conn, p, final) do
+            {:ok, p} -> {:cont, {:ok, [p | acc]}}
+            :error -> {:halt, {:error, p.pr_xref}}
+          end
+        end)
+        |> case do
+          {:ok, acc} -> {:ok, Enum.reverse(acc)}
+          error -> error
+        end
+
+      _ ->
+        {:error, :branch_mismatch}
+    end
+  end
+
+  defp retarget_patch(_repo_conn, %Patch{into_branch: final} = patch, final), do: {:ok, patch}
+
+  defp retarget_patch(repo_conn, patch, final) do
+    with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref),
+         {:ok, _} <- GitHub.update_pr_base(repo_conn, %{pr | base_ref: final}) do
+      # The "edited" webhook will echo this update; writing it now keeps the
+      # rest of activation working with the normalized base.
+      patch =
+        patch
+        |> Patch.changeset(%{into_branch: final})
+        |> Repo.update!()
+
+      send_message(repo_conn, [patch], {:retargeted, final})
+      {:ok, patch}
+    else
+      _ -> :error
+    end
+  end
+
+  defp bundle_preflight(_repo_conn, []), do: :ok
+
+  defp bundle_preflight(repo_conn, [patch | rest]) do
+    case patch_preflight(repo_conn, patch) do
+      {:ok, _} -> bundle_preflight(repo_conn, rest)
+      :waiting -> {:waiting, patch, nil}
+      {:waiting, toml} -> {:waiting, patch, toml}
+      {:error, message} -> {:error, message, patch}
+    end
+  end
+
+  defp run_bundle(project, members, max_batch_size) do
+    repo_conn = get_repo_conn(project)
+    members = stack_order(members)
+    into_branch = hd(members).into_branch
+
+    priority = members |> Enum.map(& &1.priority) |> Enum.max()
+    is_single = Enum.any?(members, & &1.is_single)
+
+    {batch, is_new_batch} =
+      get_new_batch(
+        max_batch_size,
+        project.id,
+        into_branch,
+        priority,
+        is_single,
+        Enum.count(members)
+      )
+
+    Enum.each(members, fn p ->
+      %LinkPatchBatch{}
+      |> LinkPatchBatch.changeset(%{
+        batch_id: batch.id,
+        patch_id: p.id,
+        reviewer: p.bundle_reviewer
+      })
+      |> Repo.insert!()
+    end)
+
+    Labeler.reconcile_queue(repo_conn, into_branch, members)
+
+    Project.ping!(project.id)
+
+    if is_new_batch do
+      put_incomplete_on_hold(repo_conn, batch)
+    end
+
+    poll_after_delay(project)
+    send_status(repo_conn, batch.id, members, :waiting)
+  end
+
+  defp in_incomplete_batch?(patch) do
+    batches =
+      patch.id
+      |> Batch.all_for_patch(:incomplete)
+      |> Repo.all()
+
+    batches != []
+  end
+
+  defp validate_link(patch, pr_xrefs, project_id, mode \\ :link) do
+    target_xrefs =
+      pr_xrefs
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == patch.pr_xref))
+
+    targets =
+      Enum.map(target_xrefs, &Repo.get_by(Patch, project_id: project_id, pr_xref: &1))
+
+    cond do
+      target_xrefs == [] ->
+        {:error, :nothing_to_link}
+
+      Enum.any?(targets, &is_nil/1) ->
+        {:error, :not_found}
+
+      Enum.any?([patch | targets], &(&1.open == false)) ->
+        {:error, :closed}
+
+      Enum.any?(targets, &branch_mismatch?(mode, patch, &1)) ->
+        {:error, :branch_mismatch}
+
+      true ->
+        members = expand_bundles([patch | targets])
+
+        if Enum.any?(members, &in_incomplete_batch?/1) do
+          {:error, :in_batch}
+        else
+          {:ok, members}
+        end
+    end
+  end
+
+  # `link` requires a common target branch. `stack` also accepts the
+  # gh-stack shape — the child's base branch IS the parent's head branch —
+  # since the bases get normalized onto the final branch when the bundle
+  # is queued (see normalize_bundle_bases/2).
+  defp branch_mismatch?(:link, patch, target) do
+    target.into_branch != patch.into_branch
+  end
+
+  defp branch_mismatch?(:stack, patch, target) do
+    target.into_branch != patch.into_branch and
+      (is_nil(target.head_ref) or target.head_ref != patch.into_branch)
+  end
+
+  # Linking a patch that is already bundled links its whole bundle: the
+  # member sets are unioned.
+  defp expand_bundles(patches) do
+    extra =
+      patches
+      |> Enum.map(& &1.bundle_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.flat_map(&(&1 |> Patch.all_for_bundle() |> Repo.all()))
+
+    (patches ++ extra) |> Enum.uniq_by(& &1.id)
+  end
+
+  # Put every member on one bundle (creating it if none exists), and delete
+  # any bundles emptied by the union. Returns the updated members.
+  defp form_bundle(members, project_id) do
+    old_bundle_ids =
+      members |> Enum.map(& &1.bundle_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    bundle_id =
+      case old_bundle_ids do
+        [] -> Repo.insert!(PatchBundle.new(project_id)).id
+        [first | _] -> first
+      end
+
+    members =
+      Enum.map(members, fn p ->
+        if p.bundle_id == bundle_id do
+          p
+        else
+          p |> Patch.changeset(%{bundle_id: bundle_id}) |> Repo.update!()
+        end
+      end)
+
+    emptied = old_bundle_ids -- [bundle_id]
+
+    if emptied != [] do
+      PatchBundle
+      |> where([b], b.id in ^emptied)
+      |> Repo.delete_all()
+    end
+
+    members
+  end
+
+  defp do_stack(repo_conn, patch, target_xref, project_id) do
+    case validate_link(patch, [target_xref], project_id, :stack) do
+      {:error, reason} ->
+        send_message(repo_conn, [patch], {:link_error, reason})
+
+      {:ok, members} ->
+        target = Enum.find(members, &(&1.pr_xref == target_xref))
+
+        cond do
+          creates_stack_cycle?(target, patch) ->
+            send_message(repo_conn, [patch], {:link_error, :cycle})
+
+          not contains_head?(repo_conn, target, patch) ->
+            send_message(repo_conn, [patch], {:link_error, {:not_rebased, target_xref}})
+
+          true ->
+            members = form_bundle(members, project_id)
+
+            members
+            |> Enum.find(&(&1.id == patch.id))
+            |> Patch.changeset(%{stacked_on_id: target.id})
+            |> Repo.update!()
+
+            send_message(repo_conn, members, {:stacked, patch.pr_xref, target_xref})
+        end
+    end
+  end
+
+  # The single open patch whose head branch is this patch's base branch.
+  # Zero or several candidates -> can't infer; the user must name the parent.
+  defp infer_stack_parent(%Patch{into_branch: nil}, _project_id), do: :error
+
+  defp infer_stack_parent(patch, project_id) do
+    Patch
+    |> where([p], p.project_id == ^project_id)
+    |> where([p], p.open)
+    |> where([p], p.head_ref == ^patch.into_branch)
+    |> where([p], p.id != ^patch.id)
+    |> limit(2)
+    |> Repo.all()
+    |> case do
+      [parent] -> {:ok, parent}
+      _ -> :error
+    end
+  end
+
+  # Stacking `patch` on `target` is a cycle iff `patch` already appears in
+  # `target`'s chain of stacked-on ancestors.
+  defp creates_stack_cycle?(target, patch) do
+    walk_stack_chain(target, MapSet.new(), patch.id)
+  end
+
+  defp walk_stack_chain(nil, _seen, _goal), do: false
+  defp walk_stack_chain(%Patch{id: goal}, _seen, goal), do: true
+
+  defp walk_stack_chain(%Patch{} = p, seen, goal) do
+    cond do
+      # A cycle already stored (shouldn't happen): refuse rather than loop.
+      p.id in seen -> true
+      is_nil(p.stacked_on_id) -> false
+      true -> walk_stack_chain(Repo.get(Patch, p.stacked_on_id), MapSet.put(seen, p.id), goal)
+    end
+  end
+
+  # The first stacked member whose branch does not contain the current head
+  # of the patch it stacks on, or nil if every stack edge is fresh. An
+  # unverifiable comparison (GitHub error) counts as stale: this check
+  # fails closed, because merging a stale stack can silently reintroduce
+  # content its parent has since dropped.
+  defp stale_stack_pair(repo_conn, members) do
+    by_id = Map.new(members, &{&1.id, &1})
+
+    Enum.find_value(members, fn child ->
+      parent = child.stacked_on_id && by_id[child.stacked_on_id]
+
+      if parent != nil and not contains_head?(repo_conn, parent, child) do
+        {child, parent}
+      end
+    end)
+  end
+
+  defp contains_head?(repo_conn, parent, child) do
+    case GitHub.compare_status(repo_conn, parent.commit, child.commit) do
+      {:ok, status} when status in [:ahead, :identical] -> true
+      _ -> false
+    end
+  end
+
+  @doc """
+  Order patches for merging: a patch stacked on another (`stacked_on_id`)
+  comes after it, and PR-number order applies otherwise. A stacked-on patch
+  that isn't in the list is ignored (its dependents count as roots). Public
+  so the ordering contract can be tested directly.
+  """
+  def stack_order(patches) do
+    sorted = Enum.sort_by(patches, & &1.pr_xref)
+    present = MapSet.new(sorted, & &1.id)
+    do_stack_order(sorted, present, MapSet.new(), [])
+  end
+
+  defp do_stack_order([], _present, _placed, acc), do: acc
+
+  defp do_stack_order(remaining, present, placed, acc) do
+    {ready, blocked} =
+      Enum.split_with(remaining, fn p ->
+        is_nil(p.stacked_on_id) or p.stacked_on_id in placed or
+          p.stacked_on_id not in present
+      end)
+
+    case ready do
+      [] ->
+        # Defensive: a cycle in the stored edges. Fall back to PR-number
+        # order rather than dropping patches or looping.
+        acc ++ remaining
+
+      _ ->
+        do_stack_order(
+          blocked,
+          present,
+          Enum.into(ready, placed, & &1.id),
+          acc ++ ready
+        )
+    end
+  end
+
+  # Merge order for a batch: bundles stay contiguous (units ordered by their
+  # lowest PR number), members within a bundle in stack order, everything
+  # else by PR number — so a stacked pair like a module move plus its
+  # deprecation shim lands as two adjacent commits, move first.
+  defp sort_links_for_merge(patch_links) do
+    patch_links
+    |> Enum.sort_by(& &1.patch.pr_xref)
+    |> Divider.group_units()
+    |> Enum.flat_map(fn unit ->
+      by_patch_id = Map.new(unit, &{&1.patch_id, &1})
+
+      unit
+      |> Enum.map(& &1.patch)
+      |> stack_order()
+      |> Enum.map(&Map.fetch!(by_patch_id, &1.id))
+    end)
+  end
+
   def sort_batches(batches) do
     sorted_batches =
       Enum.sort_by(
@@ -410,12 +962,40 @@ defmodule BorsNG.Worker.Batcher do
       |> Enum.sort_by(& &1.patch.pr_xref)
       |> Enum.split_with(&(&1.patch.open == false))
 
-    Enum.each(closed_links, &Repo.delete!/1)
+    # A closed patch takes its whole bundle with it: linked patches merge
+    # together or not at all.
+    closed_bundles =
+      closed_links
+      |> Enum.map(& &1.patch.bundle_id)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    {pulled_links, patch_links} =
+      Enum.split_with(patch_links, &(&1.patch.bundle_id in closed_bundles))
+
+    Enum.each(closed_links ++ pulled_links, &Repo.delete!/1)
+
+    Enum.each(pulled_links, fn link ->
+      closed_xref =
+        Enum.find_value(closed_links, fn closed ->
+          closed.patch.bundle_id == link.patch.bundle_id && closed.patch.pr_xref
+        end)
+
+      send_message(repo_conn, [link.patch], {:bundle_pulled, closed_xref, :closed})
+    end)
 
     # A PR closed while queued has just left the queue; reconcile its labels off.
     # The closed links are gone now and these patches are dropped from the
     # reconcile below, so they wouldn't be touched otherwise.
-    Labeler.reconcile_queue(repo_conn, batch.into_branch, Enum.map(closed_links, & &1.patch))
+    Labeler.reconcile_queue(
+      repo_conn,
+      batch.into_branch,
+      Enum.map(closed_links ++ pulled_links, & &1.patch)
+    )
+
+    # Stacked patches must merge after the patch they stack on, and bundles
+    # merge contiguously.
+    patch_links = sort_links_for_merge(patch_links)
 
     # If all patches were closed and removed, cancel the batch early
     if Enum.empty?(patch_links) do
@@ -986,6 +1566,14 @@ defmodule BorsNG.Worker.Batcher do
 
     case push_status do
       {:success} ->
+        # The bundle (if any) has merged; drop the held approvals so a future
+        # run of the same bundle needs fresh r+'s.
+        from(p in Patch,
+          where: p.id in ^Enum.map(patches, & &1.id),
+          where: not is_nil(p.bundle_reviewer)
+        )
+        |> Repo.update_all(set: [bundle_reviewer: nil])
+
         if toml.use_squash_merge do
           Enum.each(patches, fn patch ->
             send_message(repo_conn, [patch], {:merged, :squashed, batch.into_branch, statuses})
@@ -1154,8 +1742,15 @@ defmodule BorsNG.Worker.Batcher do
 
     patches = Enum.map(patch_links, & &1.patch)
 
+    # Canceling a bundled patch cancels its whole bundle: linked patches
+    # merge together or not at all.
+    canceled_ids = bundle_member_ids(patch_links, patch_id)
+
+    uncanceled_patch_links =
+      Enum.reject(patch_links, &(&1.patch_id in canceled_ids))
+
     state =
-      case tl(patch_links) do
+      case uncanceled_patch_links do
         [] -> :failed
         _ -> :retrying
       end
@@ -1169,57 +1764,75 @@ defmodule BorsNG.Worker.Batcher do
     repo_conn = get_repo_conn(project)
 
     if state == :retrying do
-      uncanceled_patch_links =
-        Enum.filter(
-          patch_links,
-          &(&1.patch_id != patch_id)
-        )
-
       Divider.clone_batch(uncanceled_patch_links, project.id, batch.into_branch)
 
-      canceled_patches =
-        Enum.filter(
-          patches,
-          &(&1.id == patch_id)
-        )
-
       uncanceled_patches =
-        Enum.filter(
+        Enum.reject(
           patches,
-          &(&1.id != patch_id)
+          &(&1.id in canceled_ids)
         )
 
-      send_message(repo_conn, canceled_patches, {:canceled, :failed, reason})
       send_message(repo_conn, uncanceled_patches, {:canceled, :retrying})
-    else
-      send_message(repo_conn, patches, {:canceled, :failed, reason})
     end
+
+    canceled_patch = Enum.find(patches, &(&1.id == patch_id))
+    siblings = Enum.filter(patches, &(&1.id in canceled_ids and &1.id != patch_id))
+
+    send_message(repo_conn, [canceled_patch], {:canceled, :failed, reason})
+    send_message(repo_conn, siblings, {:bundle_pulled, canceled_patch.pr_xref, reason})
 
     send_status(repo_conn, batch, :canceled)
 
-    # The canceled patch leaves the queue; any uncanceled patches were re-queued
-    # into a fresh batch above, so reconcile reflects both.
+    # The canceled patch (and its bundle) leaves the queue; any uncanceled
+    # patches were re-queued into a fresh batch above, so reconcile reflects both.
     Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
   end
 
   defp cancel_patch(batch, patch_id, _state, reason) do
     project = batch.project
 
-    LinkPatchBatch
-    |> Repo.get_by!(batch_id: batch.id, patch_id: patch_id)
-    |> Repo.delete!()
+    patch_links =
+      batch.id
+      |> LinkPatchBatch.from_batch()
+      |> Repo.all()
+
+    # Canceling a bundled patch pulls its whole bundle from the waiting batch.
+    canceled_ids = bundle_member_ids(patch_links, patch_id)
+
+    canceled_links = Enum.filter(patch_links, &(&1.patch_id in canceled_ids))
+    Enum.each(canceled_links, &Repo.delete!/1)
 
     if Batch.is_empty(batch.id, Repo) do
       Repo.delete!(batch)
     end
 
+    canceled_patches = Enum.map(canceled_links, & &1.patch)
     patch = Repo.get!(Patch, patch_id)
+    siblings = Enum.reject(canceled_patches, &(&1.id == patch_id))
     repo_conn = get_repo_conn(project)
-    send_status(repo_conn, batch.id, [patch], :canceled)
+    send_status(repo_conn, batch.id, canceled_patches, :canceled)
     send_message(repo_conn, [patch], {:canceled, :failed, reason})
+    send_message(repo_conn, siblings, {:bundle_pulled, patch.pr_xref, reason})
 
-    # The patch has been removed from its (waiting) batch, so it's off the queue.
-    Labeler.reconcile_queue(repo_conn, batch.into_branch, [patch])
+    # The patches have been removed from their (waiting) batch, so they're off
+    # the queue.
+    Labeler.reconcile_queue(repo_conn, batch.into_branch, canceled_patches)
+  end
+
+  # The ids of every patch that must leave a batch when `patch_id` does:
+  # just the patch itself, or all of its bundle's members present in the batch.
+  defp bundle_member_ids(patch_links, patch_id) do
+    target = Enum.find(patch_links, &(&1.patch_id == patch_id))
+
+    case target && target.patch.bundle_id do
+      nil ->
+        [patch_id]
+
+      bundle_id ->
+        patch_links
+        |> Enum.filter(&(&1.patch.bundle_id == bundle_id))
+        |> Enum.map(& &1.patch_id)
+    end
   end
 
   defp patch_preflight(repo_conn, patch) do
@@ -1469,17 +2082,28 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  def get_new_batch(_max_batch_size, project_id, into_branch, priority, true) do
+  def get_new_batch(max_batch_size, project_id, into_branch, priority, force) do
+    get_new_batch(max_batch_size, project_id, into_branch, priority, force, 1)
+  end
+
+  def get_new_batch(_max_batch_size, project_id, into_branch, priority, true, _capacity) do
     {Repo.insert!(Batch.new(project_id, into_branch, priority)), true}
   end
 
-  def get_new_batch(max_batch_size, project_id, into_branch, priority, _force) do
+  # A bundle that fills or exceeds max_batch_size can't share a batch with
+  # anything else (and can't be split), so it gets one of its own.
+  def get_new_batch(max_batch_size, project_id, into_branch, priority, _force, capacity)
+      when is_integer(max_batch_size) and capacity >= max_batch_size do
+    {Repo.insert!(Batch.new(project_id, into_branch, priority)), true}
+  end
+
+  def get_new_batch(max_batch_size, project_id, into_branch, priority, _force, capacity) do
     Batch
     |> where([b], b.project_id == ^project_id)
     |> where([b], b.state == ^:waiting)
     |> where([b], b.into_branch == ^into_branch)
     |> where([b], b.priority == ^priority)
-    |> apply_max_batch_size(max_batch_size)
+    |> apply_max_batch_size(max_batch_size, capacity)
     |> order_by([b], desc: b.updated_at)
     |> Repo.all()
     |> Enum.reject(fn b ->
@@ -1491,18 +2115,21 @@ defmodule BorsNG.Worker.Batcher do
     |> Enum.take(1)
     |> case do
       [batch] -> {batch, false}
-      _ -> get_new_batch(max_batch_size, project_id, into_branch, priority, true)
+      _ -> get_new_batch(max_batch_size, project_id, into_branch, priority, true, capacity)
     end
   end
 
-  defp apply_max_batch_size(query, nil) do
+  defp apply_max_batch_size(query, nil, _capacity) do
     query
   end
 
-  defp apply_max_batch_size(query, n) do
+  defp apply_max_batch_size(query, n, capacity) do
+    # The batch may take `capacity` more patches without exceeding `n`.
+    room = n - capacity
+
     query
     |> join(:inner, [b], p in assoc(b, :patches))
-    |> having([b, p], count(p.id) < ^n)
+    |> having([b, p], count(p.id) <= ^room)
     |> group_by([b], b.id)
   end
 

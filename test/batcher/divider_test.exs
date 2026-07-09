@@ -6,6 +6,7 @@ defmodule BorsNG.Worker.Batcher.DividerTest do
   alias BorsNG.Database.Installation
   alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.Patch
+  alias BorsNG.Database.PatchBundle
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.GitHub.Pr
@@ -90,6 +91,14 @@ defmodule BorsNG.Worker.Batcher.DividerTest do
 
     # manually preload
     %LinkPatchBatch{link | patch: patch}
+  end
+
+  defp bundle_up(proj, patches) do
+    bundle = Repo.insert!(PatchBundle.new(proj.id))
+
+    Enum.map(patches, fn p ->
+      p |> Patch.changeset(%{bundle_id: bundle.id}) |> Repo.update!()
+    end)
   end
 
   describe "split_batch" do
@@ -585,6 +594,189 @@ defmodule BorsNG.Worker.Batcher.DividerTest do
         Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^new_batch1.id))
 
       assert Enum.map(links_for_new_batch1, & &1.patch_id) == [patch.id]
+    end
+  end
+
+  describe "bundles" do
+    test "bisection keeps a bundle whole", %{
+      proj: proj,
+      batch: batch,
+      patch1: patch1,
+      patch2: patch2,
+      patch3: patch3,
+      patch4: patch4
+    } do
+      [patch1, patch2] = bundle_up(proj, [patch1, patch2])
+
+      links = Enum.map([patch1, patch2, patch3, patch4], &create_link(&1, batch))
+
+      result = Divider.split_batch(links, batch)
+
+      assert result == :retrying
+
+      [original_batch, new_batch1, new_batch2] =
+        Repo.all(from(b in Batch, where: b.project_id == ^proj.id, order_by: [asc: b.id]))
+
+      assert batch.id == original_batch.id
+
+      links_for_new_batch1 =
+        Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^new_batch1.id))
+
+      assert Enum.map(links_for_new_batch1, & &1.patch_id) == [patch1.id, patch2.id]
+
+      links_for_new_batch2 =
+        Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^new_batch2.id))
+
+      assert Enum.map(links_for_new_batch2, & &1.patch_id) == [patch3.id, patch4.id]
+    end
+
+    test "a batch that is exactly one bundle fails terminally", %{
+      proj: proj,
+      batch: batch,
+      patch1: patch1,
+      patch2: patch2
+    } do
+      [patch1, patch2] = bundle_up(proj, [patch1, patch2])
+
+      links = Enum.map([patch1, patch2], &create_link(&1, batch))
+
+      result = Divider.split_batch(links, batch)
+
+      assert result == :failed
+      batches = Repo.all(from(b in Batch, where: b.project_id == ^proj.id))
+      assert Enum.count(batches) == 1
+    end
+
+    test "an is_single member takes its whole bundle to a solo batch", %{
+      proj: proj,
+      batch: batch,
+      patch1: patch1,
+      patch2: patch2,
+      patch3: patch3,
+      patch4: patch4
+    } do
+      patch1 = patch1 |> Patch.changeset(%{is_single: true}) |> Repo.update!()
+      [patch1, patch2] = bundle_up(proj, [patch1, patch2])
+
+      links = Enum.map([patch1, patch2, patch3, patch4], &create_link(&1, batch))
+
+      result = Divider.split_batch(links, batch)
+
+      assert result == :retrying
+
+      [original_batch, single_batch, bisect_batch1, bisect_batch2] =
+        Repo.all(from(b in Batch, where: b.project_id == ^proj.id, order_by: [asc: b.id]))
+
+      assert batch.id == original_batch.id
+
+      links_for_single =
+        Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^single_batch.id))
+
+      assert Enum.map(links_for_single, & &1.patch_id) == [patch1.id, patch2.id]
+
+      assert [patch3.id] ==
+               Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^bisect_batch1.id))
+               |> Enum.map(& &1.patch_id)
+
+      assert [patch4.id] ==
+               Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^bisect_batch2.id))
+               |> Enum.map(& &1.patch_id)
+    end
+
+    test "conflict isolation treats a bundle as one unit", %{
+      proj: proj,
+      batch: batch,
+      patch1: patch1,
+      patch2: patch2,
+      patch3: patch3
+    } do
+      GitHub.ServerMock.put_state(%{
+        {{:installation, 91}, 14} => %{
+          branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+          commits: %{},
+          comments: %{1 => [], 2 => [], 3 => []},
+          statuses: %{"iniN" => %{}},
+          pulls: %{
+            1 => %Pr{
+              number: 1,
+              title: "Test",
+              body: "Mess",
+              state: :open,
+              base_ref: "master",
+              head_sha: "00000001",
+              head_ref: "update",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: false
+            },
+            2 => %Pr{
+              number: 2,
+              title: "Test 2",
+              body: "Mess 2",
+              state: :open,
+              base_ref: "master",
+              head_sha: "00000002",
+              head_ref: "update",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: true
+            },
+            3 => %Pr{
+              number: 3,
+              title: "Test 3",
+              body: "Mess 3",
+              state: :open,
+              base_ref: "master",
+              head_sha: "00000003",
+              head_ref: "update",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: true
+            }
+          },
+          files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+          pr_commits: %{
+            1 => [
+              %GitHub.Commit{sha: "0001", author_name: "a", author_email: "e"}
+            ],
+            2 => [
+              %GitHub.Commit{sha: "0002", author_name: "a", author_email: "e"}
+            ],
+            3 => [
+              %GitHub.Commit{sha: "0003", author_name: "a", author_email: "e"}
+            ]
+          }
+        },
+        :merge_conflict => 0
+      })
+
+      # patch1 is unmergeable, so its whole bundle counts as unmergeable and
+      # is isolated together, ahead of the mergeable solo patch.
+      [patch1, patch2] = bundle_up(proj, [patch1, patch2])
+
+      links = Enum.map([patch1, patch2, patch3], &create_link(&1, batch))
+
+      result = Divider.split_batch_with_conflicts(links, batch)
+
+      assert result == :retrying
+
+      [original_batch, bundle_batch, solo_batch] =
+        Repo.all(from(b in Batch, where: b.project_id == ^proj.id, order_by: [asc: b.id]))
+
+      assert batch.id == original_batch.id
+
+      links_for_bundle =
+        Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^bundle_batch.id))
+
+      assert Enum.map(links_for_bundle, & &1.patch_id) == [patch1.id, patch2.id]
+
+      links_for_solo =
+        Repo.all(from(l in LinkPatchBatch, where: l.batch_id == ^solo_batch.id))
+
+      assert Enum.map(links_for_solo, & &1.patch_id) == [patch3.id]
     end
   end
 
