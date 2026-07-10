@@ -319,7 +319,7 @@ defmodule BorsNG.Worker.Batcher do
     case target_xrefs do
       [] ->
         # Bare `bors stack`: infer the parent from the base-branch chain
-        # (gh-stack convention — a stacked PR's base is its parent's branch).
+        # (gh-stack convention: a stacked PR's base is its parent's branch).
         case infer_stack_parent(patch, project_id) do
           {:ok, parent} ->
             do_stack(repo_conn, patch, parent.pr_xref, project_id)
@@ -565,8 +565,8 @@ defmodule BorsNG.Worker.Batcher do
   # Bring every member's base branch onto the bundle's final target before
   # queueing. The final target is the into_branch of the stack roots (which
   # must agree); members still in gh-stack shape (base = parent's branch)
-  # are retargeted via the GitHub API, mirroring what the branch deleter
-  # does after a merge. Fails closed: any API failure holds the bundle.
+  # are retargeted via the GitHub API. Fails closed: any API failure holds
+  # the bundle.
   defp normalize_bundle_bases(repo_conn, members) do
     member_ids = MapSet.new(members, & &1.id)
 
@@ -707,9 +707,9 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   # `link` requires a common target branch. `stack` also accepts the
-  # gh-stack shape — the child's base branch IS the parent's head branch —
-  # since the bases get normalized onto the final branch when the bundle
-  # is queued (see normalize_bundle_bases/2).
+  # gh-stack shape, where the child's base branch is the parent's head
+  # branch; such bases are normalized onto the final branch when the
+  # bundle is queued (normalize_bundle_bases/2).
   defp branch_mismatch?(:link, patch, target) do
     target.into_branch != patch.into_branch
   end
@@ -855,8 +855,7 @@ defmodule BorsNG.Worker.Batcher do
   @doc """
   Order patches for merging: a patch stacked on another (`stacked_on_id`)
   comes after it, and PR-number order applies otherwise. A stacked-on patch
-  that isn't in the list is ignored (its dependents count as roots). Public
-  so the ordering contract can be tested directly.
+  that isn't in the list is ignored (its dependents count as roots).
   """
   def stack_order(patches) do
     sorted = Enum.sort_by(patches, & &1.pr_xref)
@@ -891,8 +890,8 @@ defmodule BorsNG.Worker.Batcher do
 
   # Merge order for a batch: bundles stay contiguous (units ordered by their
   # lowest PR number), members within a bundle in stack order, everything
-  # else by PR number — so a stacked pair like a module move plus its
-  # deprecation shim lands as two adjacent commits, move first.
+  # else by PR number. A stacked pair therefore lands as two adjacent
+  # commits, parent first.
   defp sort_links_for_merge(patch_links) do
     patch_links
     |> Enum.sort_by(& &1.patch.pr_xref)

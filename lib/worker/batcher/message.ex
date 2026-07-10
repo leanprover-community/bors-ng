@@ -165,21 +165,21 @@ defmodule BorsNG.Worker.Batcher.Message do
   def generate_message({:linked, xrefs}) do
     prs = Enum.map_join(xrefs, ", ", &"##{&1}")
 
-    ":link: This pull request is part of a linked bundle: #{prs}.\n\nLinked pull requests are merged together or not at all: each one still needs its own `bors r+`, and once every member is approved they all enter the same batch. Use `bors unlink` to dissolve the bundle."
+    "This pull request is part of a linked bundle: #{prs}.\n\nLinked pull requests merge in the same batch, or not at all. Each one still needs its own `bors r+`; `bors unlink` removes the link."
   end
 
   def generate_message(:unlinked) do
-    ":link: This pull request is no longer linked; it will merge on its own."
+    "This pull request is no longer linked; it will merge on its own."
   end
 
   def generate_message({:stacked, child_xref, parent_xref}) do
-    ":link: ##{child_xref} is now stacked on ##{parent_xref}: they are part of a linked bundle that merges together or not at all, with ##{child_xref} landing as a separate commit after ##{parent_xref}. Each pull request still needs its own `bors r+`; `bors unlink` dissolves the bundle."
+    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all, with ##{child_xref} landing as a separate commit after ##{parent_xref}. Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
   end
 
   def generate_message({:bundle_waiting, xrefs}) do
     prs = Enum.map_join(xrefs, ", ", &"##{&1}")
 
-    ":clock1: Waiting for approval (`bors r+`) of the linked pull request(s): #{prs}. Linked pull requests enter the merge queue together once every member is approved."
+    ":clock1: Waiting for approval (`bors r+`) of the linked pull request(s): #{prs}. The bundle enters the queue once every member is approved."
   end
 
   def generate_message({:bundle_pulled, xref, reason}) do
@@ -190,7 +190,7 @@ defmodule BorsNG.Worker.Batcher.Message do
         _ -> "was canceled"
       end
 
-    "This PR left the queue because it is linked with ##{xref}, which #{what}. Linked pull requests merge together or not at all.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
+    "This PR left the queue because it is linked with ##{xref}, which #{what}.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
   end
 
   def generate_message({:link_error, :nothing_to_link}) do
@@ -222,23 +222,23 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:link_error, {:not_rebased, parent_xref}}) do
-    ":-1: Cannot stack: this pull request's branch does not contain the current head of ##{parent_xref}. Rebase it onto ##{parent_xref} and run the stack command again."
+    ":-1: Cannot stack: this pull request's branch does not contain the current head of ##{parent_xref}. Rebase it onto ##{parent_xref} and run `bors stack` again."
   end
 
   def generate_message({:stack_stale, child_xref, parent_xref}) do
-    "The bundle was not queued: bors could not verify that ##{child_xref} contains the current head of ##{parent_xref} (a rebase onto ##{parent_xref} may be needed). Once rebased, approve ##{child_xref} again with `bors r+`."
+    "The bundle was not queued: bors could not verify that ##{child_xref} contains the current head of ##{parent_xref}. Rebase ##{child_xref} onto ##{parent_xref} if needed, then run `bors r+` on it again."
   end
 
   def generate_message({:link_error, :cannot_infer}) do
-    ":-1: Could not infer which open pull request this one stacks on: its base branch must match the branch of exactly one open pull request. Pass the number explicitly, e.g. `bors stack #123`."
+    ":-1: Could not infer which open pull request this one stacks on: the base branch must match the head branch of exactly one open pull request. Pass the number, e.g. `bors stack #123`."
   end
 
   def generate_message({:retargeted, branch}) do
-    ":link: bors changed this pull request's base branch to `#{branch}` so its bundle can land there together."
+    "bors changed this pull request's base branch to `#{branch}`, the target branch of its bundle."
   end
 
   def generate_message({:stack_retarget_failed, xref}) do
-    "The bundle was not queued: bors could not change the base branch of ##{xref} to the bundle's target branch. `bors r+` again to retry."
+    "The bundle was not queued: bors could not change the base branch of ##{xref} to the bundle's target branch. Run `bors r+` again to retry."
   end
 
   def generate_message({state, statuses}) do

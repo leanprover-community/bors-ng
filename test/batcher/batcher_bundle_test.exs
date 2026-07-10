@@ -522,7 +522,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         }
       })
 
-      # The "shim" PR has the LOWER number but is stacked on the "move" PR,
+      # The "shim" PR has the lower number but is stacked on the "move" PR,
       # so the move must merge first.
       p1 = insert_patch(proj, 1, %{commit: "N"})
       p2 = insert_patch(proj, 2, %{commit: "O"})

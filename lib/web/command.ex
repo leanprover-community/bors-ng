@@ -25,8 +25,9 @@ defmodule BorsNG.Command do
 
   `bors stack #123` (commented on another PR) additionally records an
   order: this PR joins #123's bundle and merges after it, as a separate
-  commit — useful when a module move must stay a pure rename and the
-  deprecation shim re-creating the old path must come right after it.
+  commit. This covers the case where a module move must stay a pure
+  rename and the deprecation shim re-creating the old path must come
+  right after it.
 
   Bare `bors stack` infers the parent from the base-branch chain (the
   gh-stack convention, where a stacked PR's base is its parent's branch);
