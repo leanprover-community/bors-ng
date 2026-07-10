@@ -97,6 +97,9 @@ defmodule BorsNG.Worker.Batcher.Divider do
   Group patch links into atomic units, preserving the batch's link order:
   links whose patches share a `bundle_id` form one unit; every other link is
   a unit by itself.
+
+  Links should have `patch` preloaded (`LinkPatchBatch.from_batch/1` does);
+  otherwise each link falls back to its own patch query.
   """
   def group_units(patch_links) do
     patch_links

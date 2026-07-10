@@ -434,7 +434,7 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  defp run(reviewer, patch, max_batch_size) do
+  defp activate_single(reviewer, patch, max_batch_size) do
     project = Repo.get!(Project, patch.project_id)
     repo_conn = get_repo_conn(project)
 
@@ -479,7 +479,7 @@ defmodule BorsNG.Worker.Batcher do
   defp activate(reviewer, patch, max_batch_size) do
     case patch.bundle_id do
       nil ->
-        run(reviewer, patch, max_batch_size)
+        activate_single(reviewer, patch, max_batch_size)
 
       bundle_id ->
         patch =
@@ -2081,6 +2081,12 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
+  @doc """
+  Find a waiting batch to add patches to, or create one. `capacity` is the
+  number of patches about to be inserted (1 for a solo patch, the member
+  count for a bundle): a batch is only reused if all of them fit within
+  max_batch_size.
+  """
   def get_new_batch(max_batch_size, project_id, into_branch, priority, force) do
     get_new_batch(max_batch_size, project_id, into_branch, priority, force, 1)
   end
