@@ -302,7 +302,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
           pulls: %{
             1 => %Pr{
               number: 1,
-              title: "Shim",
+              title: "Child",
               body: "Mess",
               state: :open,
               base_ref: "feature-a",
@@ -490,7 +490,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
           pulls: %{
             1 => %Pr{
               number: 1,
-              title: "Shim",
+              title: "Child",
               body: "Mess",
               state: :open,
               base_ref: "master",
@@ -503,7 +503,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
             },
             2 => %Pr{
               number: 2,
-              title: "Move",
+              title: "Parent",
               body: "Mess",
               state: :open,
               base_ref: "master",
@@ -522,8 +522,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         }
       })
 
-      # The "shim" PR has the lower number but is stacked on the "move" PR,
-      # so the move must merge first.
+      # The child PR has the lower number but is stacked on the parent PR,
+      # so the parent must merge first.
       p1 = insert_patch(proj, 1, %{commit: "N"})
       p2 = insert_patch(proj, 2, %{commit: "O"})
       {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
