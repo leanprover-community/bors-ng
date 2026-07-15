@@ -18,10 +18,13 @@ defmodule BorsNG.Command do
 
   # link
 
-  `bors link #123 #456` links pull requests into a bundle that merges
-  atomically: each member still needs its own `bors r+`, and once every
-  member is approved they all enter the same batch, landing together or
-  not at all. `bors unlink` (or `bors link-`) dissolves the bundle.
+  `bors link #456`, commented on a pull request, links it with #456 into
+  a bundle that merges atomically: each member still needs its own
+  `bors r+`, and once every member is approved they all enter the same
+  batch, landing together or not at all. Listing several numbers bundles
+  more than two pull requests at once; the PR the comment is on is always
+  included (listing its own number is harmless). `bors unlink` (or
+  `bors link-`) dissolves the bundle.
 
   `bors stack #123` (commented on another PR) additionally records an
   order: this PR joins #123's bundle and merges after it, as a separate
@@ -571,18 +574,6 @@ defmodule BorsNG.Command do
 
   def required_permission_level_cmd(:retry) do
     :member
-  end
-
-  def required_permission_level_cmd({:link, _}) do
-    :reviewer
-  end
-
-  def required_permission_level_cmd({:stack, _}) do
-    :reviewer
-  end
-
-  def required_permission_level_cmd(:unlink) do
-    :reviewer
   end
 
   def required_permission_level_cmd(_) do

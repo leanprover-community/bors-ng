@@ -140,11 +140,11 @@ Note that you can watch this process running on the [dashboard page] if you want
 
 As a convenience, you can also run `bors try`, which will kick off a build the same way `r+` would, but without actually pushing it to the main branch even if it does succeed. To help keep them separate, `r+` merge commits go in `staging` and `try` builds go in `trying`.
 
-If two or more pull requests must land atomically (for example, one PR deletes a module and another adds a shim re-exporting it), a reviewer can link them into a bundle by commenting on any one of them:
+If two or more pull requests must land atomically (for example, one PR deletes a module and another adds a shim re-exporting it), a reviewer can link them into a bundle by commenting on one of them and naming the other(s):
 
-    bors link #123 #456
+    bors link #456
 
-Each member of the bundle still needs its own `bors r+`; once the last one is approved, all of them enter the same batch and merge together, or not at all. Bisection never separates them, and canceling one (or closing it, or pushing new commits to it) pulls the whole bundle out of the queue. `bors unlink` dissolves the bundle.
+The PR the comment is on is always part of the bundle, so its own number never needs to be given (listing it anyway is harmless); listing several numbers bundles more than two pull requests at once. Each member of the bundle still needs its own `bors r+`; once the last one is approved, all of them enter the same batch and merge together, or not at all. Bisection never separates them, and canceling one (or closing it, or pushing new commits to it) pulls the whole bundle out of the queue. `bors unlink` dissolves the bundle.
 
 When commit order matters (for example, #123 moves a module as a pure rename so `git log --follow` keeps working, and #456 re-creates the old path as a deprecation shim), comment on #456:
 
