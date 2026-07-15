@@ -31,7 +31,9 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert Message.generate_message({:stack_retarget_failed, 7}) =~
              "could not change the base branch of #7"
 
-    assert Message.generate_message({:bundle_waiting, [7]}) =~ "linked pull request(s): #7"
+    assert Message.generate_message({:bundle_waiting, [7]}) =~
+             "Waiting for approval (`bors r+`) of: #7"
+
     assert Message.generate_message({:bundle_pulled, 7, :closed}) =~ "#7, which was closed"
     assert Message.generate_message({:bundle_pulled, 7, :push}) =~ "#7, which was pushed to"
     assert Message.generate_message({:bundle_pulled, 7, :requested}) =~ "#7, which was canceled"

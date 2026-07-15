@@ -24,8 +24,6 @@ defmodule BorsNG.Worker.Batcher.Bundles do
 
   import Ecto.Query
 
-  # Membership
-
   @doc """
   All members of a bundle, in PR-number order.
   """
@@ -42,8 +40,6 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   """
   def members_or_self(%Patch{bundle_id: nil} = patch), do: [patch]
   def members_or_self(%Patch{bundle_id: bundle_id}), do: members(bundle_id)
-
-  # Held approvals
 
   @doc """
   The members whose approval the bundle is still waiting on. A closed
@@ -89,8 +85,6 @@ defmodule BorsNG.Worker.Batcher.Bundles do
     )
     |> Repo.update_all(set: [bundle_reviewer: nil])
   end
-
-  # Forming and dissolving
 
   @doc """
   Check that `patch` may be linked with the given PR numbers. Returns
@@ -238,8 +232,6 @@ defmodule BorsNG.Worker.Batcher.Bundles do
     end
   end
 
-  # Stacking structure
-
   @doc """
   The single open patch whose head branch is this patch's base branch (the
   gh-stack convention). Zero or several candidates -> `:error`; the user
@@ -331,8 +323,6 @@ defmodule BorsNG.Worker.Batcher.Bundles do
     end
   end
 
-  # Merge order
-
   @doc """
   Order patches for merging: a patch stacked on another (`stacked_on_id`)
   comes after it, and PR-number order applies otherwise. A stacked-on patch
@@ -388,8 +378,6 @@ defmodule BorsNG.Worker.Batcher.Bundles do
       |> Enum.map(&Map.fetch!(by_patch_id, &1.id))
     end)
   end
-
-  # Bundles within a batch
 
   @doc """
   The ids of every patch that must leave a batch when `patch_id` does:

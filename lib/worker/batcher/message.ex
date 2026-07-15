@@ -173,13 +173,13 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:stacked, child_xref, parent_xref}) do
-    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all, with ##{child_xref} landing as a separate commit after ##{parent_xref}. Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
+    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. ##{child_xref} lands as a separate commit directly after ##{parent_xref}. Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
   end
 
   def generate_message({:bundle_waiting, xrefs}) do
     prs = Enum.map_join(xrefs, ", ", &"##{&1}")
 
-    ":clock1: Waiting for approval (`bors r+`) of the linked pull request(s): #{prs}. The bundle enters the queue once every member is approved."
+    ":clock1: Waiting for approval (`bors r+`) of: #{prs}. The bundle enters the queue once every linked pull request is approved."
   end
 
   def generate_message({:bundle_pulled, xref, reason}) do
@@ -190,7 +190,7 @@ defmodule BorsNG.Worker.Batcher.Message do
         _ -> "was canceled"
       end
 
-    "This PR left the queue because it is linked with ##{xref}, which #{what}.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
+    "This pull request left the queue because it is linked with ##{xref}, which #{what}.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
   end
 
   def generate_message({:link_error, :nothing_to_link}) do
