@@ -228,6 +228,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert p2.stacked_on_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "stacked on #2"))
       assert Enum.any?(comments_for(2), &(&1 =~ "stacked on #2"))
+      assert Enum.any?(comments_for(1), &(&1 =~ "/compare/commit-2...commit-1"))
     end
 
     test "stack requires exactly one target", %{proj: proj} do

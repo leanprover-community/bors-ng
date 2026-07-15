@@ -172,8 +172,8 @@ defmodule BorsNG.Worker.Batcher.Message do
     "This pull request is no longer linked; it will merge on its own."
   end
 
-  def generate_message({:stacked, child_xref, parent_xref}) do
-    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. ##{child_xref} lands as a separate commit directly after ##{parent_xref}. Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
+  def generate_message({:stacked, child_xref, parent_xref, compare_url}) do
+    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. ##{child_xref} lands as a separate commit directly after ##{parent_xref} ([##{child_xref}'s own changes](#{compare_url})). Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
   end
 
   def generate_message({:bundle_waiting, xrefs}) do

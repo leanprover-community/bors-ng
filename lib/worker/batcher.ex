@@ -308,14 +308,14 @@ defmodule BorsNG.Worker.Batcher do
         # (gh-stack convention: a stacked PR's base is its parent's branch).
         case Bundles.infer_stack_parent(patch, project_id) do
           {:ok, parent} ->
-            do_stack(repo_conn, patch, parent.pr_xref, project_id)
+            do_stack(repo_conn, patch, parent.pr_xref, project)
 
           :error ->
             send_message(repo_conn, [patch], {:link_error, :cannot_infer})
         end
 
       [target_xref] ->
-        do_stack(repo_conn, patch, target_xref, project_id)
+        do_stack(repo_conn, patch, target_xref, project)
 
       _ ->
         send_message(repo_conn, [patch], {:link_error, :stack_usage})
@@ -635,8 +635,8 @@ defmodule BorsNG.Worker.Batcher do
     send_status(repo_conn, batch.id, members, :waiting)
   end
 
-  defp do_stack(repo_conn, patch, target_xref, project_id) do
-    case Bundles.validate_link(patch, [target_xref], project_id, :stack) do
+  defp do_stack(repo_conn, patch, target_xref, project) do
+    case Bundles.validate_link(patch, [target_xref], project.id, :stack) do
       {:error, reason} ->
         send_message(repo_conn, [patch], {:link_error, reason})
 
@@ -651,10 +651,19 @@ defmodule BorsNG.Worker.Batcher do
             send_message(repo_conn, [patch], {:link_error, {:not_rebased, target_xref}})
 
           true ->
-            members = Bundles.form_stacked(members, patch, target, project_id)
-            send_message(repo_conn, members, {:stacked, patch.pr_xref, target_xref})
+            members = Bundles.form_stacked(members, patch, target, project.id)
+            compare_url = compare_url(project, target, patch)
+            send_message(repo_conn, members, {:stacked, patch.pr_xref, target_xref, compare_url})
         end
     end
+  end
+
+  # A point-in-time compare view of the child's own changes: exactly the
+  # delta contains_head?/3 verified. Built from SHAs, so it also works when
+  # the branches live in a fork.
+  defp compare_url(project, parent, child) do
+    root = Confex.fetch_env!(:bors, :html_github_root)
+    "#{root}/#{project.name}/compare/#{parent.commit}...#{child.commit}"
   end
 
   def sort_batches(batches) do

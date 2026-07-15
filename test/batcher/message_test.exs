@@ -23,7 +23,9 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   test "generate bundle messages" do
     assert Message.generate_message({:linked, [1, 2]}) =~ "linked bundle: #1, #2"
     assert Message.generate_message(:unlinked) =~ "no longer linked"
-    assert Message.generate_message({:stacked, 2, 1}) =~ "#2 is now stacked on #1"
+    stacked = Message.generate_message({:stacked, 2, 1, "https://github.com/o/r/compare/a...b"})
+    assert stacked =~ "#2 is now stacked on #1"
+    assert stacked =~ "[#2's own changes](https://github.com/o/r/compare/a...b)"
     assert Message.generate_message({:link_error, {:not_rebased, 5}}) =~ "Rebase it onto #5"
     assert Message.generate_message({:stack_stale, 2, 1}) =~ "#2 contains the current head of #1"
     assert Message.generate_message({:retargeted, "master"}) =~ "base branch to `master`"
