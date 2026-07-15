@@ -520,7 +520,7 @@ defmodule BorsNG.Worker.Batcher do
         repo_conn
         |> send_message(
           Enum.reject(members, &(&1.id == failed.id)),
-          {:bundle_waiting, [failed.pr_xref]}
+          {:bundle_held, failed.pr_xref}
         )
 
       {:error, message, failed} ->
@@ -529,7 +529,7 @@ defmodule BorsNG.Worker.Batcher do
         repo_conn
         |> send_message(
           Enum.reject(members, &(&1.id == failed.id)),
-          {:bundle_waiting, [failed.pr_xref]}
+          {:bundle_held, failed.pr_xref}
         )
     end
   end
@@ -537,7 +537,10 @@ defmodule BorsNG.Worker.Batcher do
   # Bring every member's base branch onto the bundle's final target before
   # queueing; members still in gh-stack shape (base = parent's branch) are
   # retargeted via the GitHub API. Fails closed: any API failure holds the
-  # bundle.
+  # bundle. Retargeting is one-way: if the bundle later leaves the queue
+  # without merging, bases stay on the final branch — the stored stack edges
+  # still order any future merge, and restoring bases could clobber pushes
+  # made in the meantime.
   defp normalize_bundle_bases(repo_conn, members) do
     case Bundles.final_target(members) do
       {:ok, final} ->

@@ -182,6 +182,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":clock1: Waiting for approval (`bors r+`) of: #{prs}. The bundle enters the queue once every linked pull request is approved."
   end
 
+  def generate_message({:bundle_held, xref}) do
+    ":clock1: Waiting on ##{xref} before the bundle can queue; see that pull request for details."
+  end
+
   def generate_message({:bundle_pulled, xref, reason}) do
     what =
       case reason do

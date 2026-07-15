@@ -619,6 +619,85 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Enum.map(links, & &1.reviewer) == ["r1", "r2"]
     end
 
+    test "a fully-approved bundle holds while a sibling's CI is pending, after retargeting",
+         %{proj: proj} do
+      toml = ~s/status = [ "ci" ]\npr_status = [ "cn" ]/
+
+      put_plain_state(
+        %{1 => [], 2 => []},
+        %{
+          compare_status: %{{"commit-2", "commit-1"} => :ahead},
+          statuses: %{"commit-2" => %{"cn" => :running}},
+          files: %{"commit-2" => %{"bors.toml" => toml}},
+          pulls: %{
+            1 => %Pr{
+              number: 1,
+              title: "Child",
+              body: "Mess",
+              state: :open,
+              base_ref: "feature-a",
+              head_sha: "commit-1",
+              head_ref: "feature-b",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: true
+            }
+          }
+        }
+      )
+
+      p2 = insert_patch(proj, 2, %{head_ref: "feature-a", bundle_reviewer: "r2"})
+      p1 = insert_patch(proj, 1, %{into_branch: "feature-a", head_ref: "feature-b"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      p1 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+
+      # The bundle does not queue, but the retarget has already happened
+      # (one-way: it is not undone by the hold).
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Repo.get!(Patch, p1.id).into_branch == "master"
+
+      state = GitHub.ServerMock.get_state()
+      assert get_in(state, [{{:installation, 91}, 14}, :pulls, 1]).base_ref == "master"
+
+      assert Enum.any?(comments_for(1), &(&1 =~ "base branch to `master`"))
+      assert Enum.any?(comments_for(1), &(&1 =~ "Waiting on #2 before the bundle can queue"))
+    end
+
+    test "a fully-approved bundle holds when a sibling fails preflight", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1)
+
+      p2 =
+        insert_patch(proj, 2, %{
+          bundle_reviewer: "r2",
+          title: "[ci skip][skip ci][skip netlify]"
+        })
+
+      {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Enum.any?(comments_for(2), &(&1 =~ "CI-skip marker"))
+      assert Enum.any?(comments_for(1), &(&1 =~ "Waiting on #2 before the bundle can queue"))
+    end
+
+    test "disagreeing root base branches refuse the bundle at activation", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1)
+      p2 = insert_patch(proj, 2, %{into_branch: "develop", bundle_reviewer: "r2"})
+      {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Enum.any?(comments_for(1), &(&1 =~ "must target the same base branch"))
+      assert Enum.any?(comments_for(2), &(&1 =~ "must target the same base branch"))
+    end
+
     test "r- clears this member's held approval", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => []})
       p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1"})
