@@ -616,15 +616,20 @@ defmodule BorsNG.Worker.Batcher do
         Enum.count(members)
       )
 
-    Enum.each(members, fn p ->
-      %LinkPatchBatch{}
-      |> LinkPatchBatch.changeset(%{
-        batch_id: batch.id,
-        patch_id: p.id,
-        reviewer: p.bundle_reviewer
-      })
-      |> Repo.insert!()
-    end)
+    # All members join the batch or none do: a crash after a partial insert
+    # would otherwise leave a batch that merges only part of the bundle.
+    {:ok, _} =
+      Repo.transaction(fn ->
+        Enum.each(members, fn p ->
+          %LinkPatchBatch{}
+          |> LinkPatchBatch.changeset(%{
+            batch_id: batch.id,
+            patch_id: p.id,
+            reviewer: p.bundle_reviewer
+          })
+          |> Repo.insert!()
+        end)
+      end)
 
     Labeler.reconcile_queue(repo_conn, into_branch, members)
 
