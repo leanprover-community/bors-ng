@@ -87,10 +87,10 @@ defmodule BorsNG.CommandTest do
     assert [:unlink] == Command.parse("bors link-")
   end
 
-  test "link commands require reviewer permission" do
-    assert :reviewer == Command.required_permission_level([{:link, [1]}])
-    assert :reviewer == Command.required_permission_level([{:stack, [1]}])
-    assert :reviewer == Command.required_permission_level([:unlink])
+  test "link commands require member permission" do
+    assert :member == Command.required_permission_level([{:link, [1]}])
+    assert :member == Command.required_permission_level([{:stack, [1]}])
+    assert :member == Command.required_permission_level([:unlink])
   end
 
   test "accept single patch" do

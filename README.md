@@ -140,7 +140,7 @@ Note that you can watch this process running on the [dashboard page] if you want
 
 As a convenience, you can also run `bors try`, which will kick off a build the same way `r+` would, but without actually pushing it to the main branch even if it does succeed. To help keep them separate, `r+` merge commits go in `staging` and `try` builds go in `trying`.
 
-If two or more pull requests must land atomically — each is only correct with the others in place — a reviewer can link them into a bundle by commenting on one of them and naming the other(s):
+If two or more pull requests must land atomically — each is only correct with the others in place — a member can link them into a bundle by commenting on one of them and naming the other(s):
 
     bors link #456
 

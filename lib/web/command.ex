@@ -575,6 +575,18 @@ defmodule BorsNG.Command do
     :member
   end
 
+  def required_permission_level_cmd({:link, _}) do
+    :member
+  end
+
+  def required_permission_level_cmd({:stack, _}) do
+    :member
+  end
+
+  def required_permission_level_cmd(:unlink) do
+    :member
+  end
+
   def required_permission_level_cmd(_) do
     :reviewer
   end
