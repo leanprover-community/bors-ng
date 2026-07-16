@@ -27,6 +27,28 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert stacked =~ "#2 is now stacked on #1"
     assert stacked =~ "[#2's own changes](https://github.com/o/r/compare/a...b)"
     assert Message.generate_message({:link_error, {:not_rebased, 5}}) =~ "Rebase it onto #5"
+
+    assert Message.generate_message({:link_error, {:stack_reversed, 5, 2}}) =~
+             "Comment `bors stack #2` on #5 instead"
+
+    assert Message.generate_message({:link_error, {:malformed_refs, :link, ["#2x"]}}) =~
+             "Could not read `#2x` in `bors link`"
+
+    assert Message.generate_message({:link_error, :unlink_args}) =~
+             "takes no pull request numbers"
+
+    assert Message.generate_message({:unlinked, :fresh_approval_needed}) =~
+             "no longer linked. The approval it held"
+
+    assert Message.generate_message({:bundle_last_unapproved, :awaiting_review}) =~
+             "once this pull request gets `bors r+`"
+
+    assert Message.generate_message({:bundle_last_unapproved, :draft}) =~
+             "leaves draft"
+
+    assert Message.generate_message({:bundle_last_unapproved, :closed}) =~
+             "Reopen it"
+
     assert Message.generate_message({:stack_stale, 2, 1}) =~ "#2 contains the current head of #1"
     assert Message.generate_message({:retargeted, "master"}) =~ "base branch to `master`"
 
@@ -47,6 +69,10 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     assert Message.generate_message({:bundle_pulled, 7, :closed}) =~ "#7, which was closed"
     assert Message.generate_message({:bundle_pulled, 7, :push}) =~ "#7, which was pushed to"
+
+    assert Message.generate_message({:bundle_pulled, 7, :draft}) =~
+             "#7, which was converted to draft"
+
     assert Message.generate_message({:bundle_pulled, 7, :requested}) =~ "#7, which was canceled"
 
     for reason <- [

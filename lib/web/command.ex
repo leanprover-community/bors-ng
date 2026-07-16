@@ -156,7 +156,9 @@ defmodule BorsNG.Command do
           | :retry
           | {:link, [pos_integer()]}
           | {:stack, [pos_integer()]}
+          | {:link_malformed, :link | :stack, [binary]}
           | :unlink
+          | :unlink_with_args
 
   @delegation_max_duration_sec 90 * 24 * 60 * 60
   def delegation_max_duration_sec, do: @delegation_max_duration_sec
@@ -222,11 +224,30 @@ defmodule BorsNG.Command do
   def parse_cmd("p=" <> rest), do: parse_priority(rest)
   def parse_cmd("retry" <> _), do: [:retry]
   def parse_cmd("cancel" <> _), do: [:deactivate]
-  def parse_cmd("unlink" <> _), do: [:unlink]
-  def parse_cmd("link-" <> _), do: [:unlink]
-  def parse_cmd("link" <> arguments), do: [{:link, parse_pr_refs(arguments)}]
-  def parse_cmd("stack" <> arguments), do: [{:stack, parse_pr_refs(arguments)}]
+  def parse_cmd("unlink" <> arguments), do: parse_unlink(arguments)
+  def parse_cmd("link-" <> arguments), do: parse_unlink(arguments)
+  def parse_cmd("link" <> arguments), do: parse_bundle_refs(:link, arguments)
+  def parse_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
   def parse_cmd(_), do: []
+
+  # unlink dissolves the whole bundle; naming pull requests suggests the
+  # user expects to remove just those, so refuse rather than surprise.
+  defp parse_unlink(arguments) do
+    case parse_pr_refs(arguments) ++ malformed_pr_refs(arguments) do
+      [] -> [:unlink]
+      _ -> [:unlink_with_args]
+    end
+  end
+
+  # A mistyped number silently dropped would link the wrong set of pull
+  # requests, so any argument that was plausibly meant as a reference (or
+  # as another bors command) refuses the whole command.
+  defp parse_bundle_refs(cmd, arguments) do
+    case malformed_pr_refs(arguments) do
+      [] -> [{cmd, parse_pr_refs(arguments)}]
+      bad -> [{:link_malformed, cmd, bad}]
+    end
+  end
 
   @doc ~S"""
   The arguments of a link or stack command are pull request numbers,
@@ -244,12 +265,39 @@ defmodule BorsNG.Command do
   """
   def parse_pr_refs(arguments) do
     arguments
-    |> String.split("\n", parts: 2)
-    |> List.first()
-    |> String.split(~r/[\s,=]+/, trim: true)
+    |> ref_tokens()
     |> Enum.map(&String.replace_prefix(&1, "#", ""))
     |> Enum.filter(&String.match?(&1, ~r/^\d+$/))
     |> Enum.map(&String.to_integer/1)
+  end
+
+  @doc ~S"""
+  Tokens that were plausibly meant as a pull request reference — they
+  start with `#` or a digit but do not read as a number — or as another
+  bors command on the same line. Connective words are tolerated:
+
+      iex> alias BorsNG.Command
+      iex> Command.malformed_pr_refs(" #12abc #13")
+      ["#12abc"]
+      iex> Command.malformed_pr_refs(" on #13")
+      []
+      iex> Command.malformed_pr_refs(" #13 r+")
+      ["r+"]
+  """
+  def malformed_pr_refs(arguments) do
+    arguments
+    |> ref_tokens()
+    |> Enum.filter(fn token ->
+      ref_like = String.match?(token, ~r/^[#\d]/) and not String.match?(token, ~r/^#?\d+$/)
+      ref_like or token in ["r+", "r-", "merge", "merge-", "try", "try-", "cancel"]
+    end)
+  end
+
+  defp ref_tokens(arguments) do
+    arguments
+    |> String.split("\n", parts: 2)
+    |> List.first()
+    |> String.split(~r/[\s,=]+/, trim: true)
   end
 
   @doc ~S"""
@@ -587,6 +635,14 @@ defmodule BorsNG.Command do
     :member
   end
 
+  def required_permission_level_cmd({:link_malformed, _, _}) do
+    :member
+  end
+
+  def required_permission_level_cmd(:unlink_with_args) do
+    :member
+  end
+
   def required_permission_level_cmd(_) do
     :reviewer
   end
@@ -693,6 +749,24 @@ defmodule BorsNG.Command do
   def run(c, :unlink) do
     batcher = Batcher.Registry.get(c.project.id)
     Batcher.unlink(batcher, c.patch.id)
+  end
+
+  def run(c, {:link_malformed, cmd, tokens}) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:link_error, {:malformed_refs, cmd, tokens}})
+    )
+  end
+
+  def run(c, :unlink_with_args) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:link_error, :unlink_args})
+    )
   end
 
   def run(c, {:try, arguments}) do

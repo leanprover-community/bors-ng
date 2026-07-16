@@ -172,6 +172,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     "This pull request is no longer linked; it will merge on its own."
   end
 
+  def generate_message({:unlinked, :fresh_approval_needed}) do
+    "This pull request is no longer linked. The approval it held for the bundle was discarded, so it needs a fresh `bors r+` to merge on its own."
+  end
+
   def generate_message({:stacked, child_xref, parent_xref, compare_url}) do
     "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. ##{child_xref} lands as a separate commit directly after ##{parent_xref} ([##{child_xref}'s own changes](#{compare_url})). Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
   end
@@ -186,11 +190,24 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":clock1: Waiting on ##{xref} before the bundle can queue; see that pull request for details."
   end
 
+  def generate_message({:bundle_last_unapproved, :awaiting_review}) do
+    "The rest of the bundle is approved; it enters the queue once this pull request gets `bors r+`."
+  end
+
+  def generate_message({:bundle_last_unapproved, :draft}) do
+    "The rest of the bundle is approved; it enters the queue once this pull request leaves draft and gets a fresh `bors r+`."
+  end
+
+  def generate_message({:bundle_last_unapproved, :closed}) do
+    "The rest of the bundle is approved, but this pull request is closed. Reopen it and run `bors r+`, or `bors unlink` from any member to let the others merge without it."
+  end
+
   def generate_message({:bundle_pulled, xref, reason}) do
     what =
       case reason do
         :closed -> "was closed"
         :push -> "was pushed to"
+        :draft -> "was converted to draft"
         _ -> "was canceled"
       end
 
@@ -227,6 +244,20 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def generate_message({:link_error, {:not_rebased, parent_xref}}) do
     ":-1: Cannot stack: this pull request's branch does not contain the current head of ##{parent_xref}. Rebase it onto ##{parent_xref} and run `bors stack` again."
+  end
+
+  def generate_message({:link_error, {:stack_reversed, target_xref, child_xref}}) do
+    ":-1: Cannot stack: ##{target_xref} contains this pull request's head, so the stack appears to go the other way. Comment `bors stack ##{child_xref}` on ##{target_xref} instead."
+  end
+
+  def generate_message({:link_error, {:malformed_refs, cmd, tokens}}) do
+    list = Enum.map_join(tokens, ", ", &"`#{&1}`")
+
+    ":-1: Could not read #{list} in `bors #{cmd}`. Give pull request numbers, like `bors #{cmd} #123`; any other bors command goes on its own line."
+  end
+
+  def generate_message({:link_error, :unlink_args}) do
+    ":-1: `bors unlink` takes no pull request numbers: it dissolves this pull request's whole bundle. To drop one member, `bors unlink` and then `bors link` the ones that still belong together."
   end
 
   def generate_message({:stack_stale, child_xref, parent_xref}) do

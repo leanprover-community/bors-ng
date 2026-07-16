@@ -341,8 +341,13 @@ defmodule BorsNG.Worker.Batcher do
           {:error, :in_batch} ->
             send_message(repo_conn, [patch], {:link_error, :in_batch})
 
-          {:ok, dissolved} ->
-            send_message(repo_conn, dissolved, :unlinked)
+          {:ok, _} ->
+            # A member that held an approval for the bundle lost it in the
+            # dissolve; unlike its siblings, it will not merge without a
+            # fresh r+, so it gets told.
+            {held, rest} = Enum.split_with(members, &(&1.bundle_reviewer != nil))
+            send_message(repo_conn, rest, :unlinked)
+            send_message(repo_conn, held, {:unlinked, :fresh_approval_needed})
             restore_retargeted_bases(repo_conn, members)
         end
     end
@@ -480,11 +485,11 @@ defmodule BorsNG.Worker.Batcher do
     repo_conn = get_repo_conn(project)
 
     members = Bundles.members(bundle_id)
-    pending = members |> Bundles.unapproved() |> Enum.map(& &1.pr_xref)
+    pending = Bundles.unapproved(members)
 
     cond do
       pending != [] ->
-        send_message(repo_conn, [patch], {:bundle_waiting, pending})
+        announce_bundle_waiting(repo_conn, patch, pending)
 
       (stale = Bundles.stale_stack_pair(repo_conn, members)) != nil ->
         # A stacked branch went stale (its parent was amended after it was
@@ -511,6 +516,29 @@ defmodule BorsNG.Worker.Batcher do
         end
     end
   end
+
+  # Tell the approver what the bundle still waits on, and — when exactly
+  # one member is left — tell that member it alone holds the bundle, with
+  # what to do about it.
+  defp announce_bundle_waiting(repo_conn, patch, pending) do
+    others = Enum.reject(pending, &(&1.id == patch.id))
+
+    if others != [] do
+      send_message(repo_conn, [patch], {:bundle_waiting, Enum.map(others, & &1.pr_xref)})
+    end
+
+    case pending do
+      [last] ->
+        send_message(repo_conn, [last], {:bundle_last_unapproved, approval_blocker(last)})
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp approval_blocker(%Patch{open: false}), do: :closed
+  defp approval_blocker(%Patch{is_draft: true}), do: :draft
+  defp approval_blocker(_), do: :awaiting_review
 
   defp activate_bundle_preflight(repo_conn, project, patch, members, max_batch_size) do
     others = Enum.reject(members, &(&1.id == patch.id))
@@ -596,10 +624,17 @@ defmodule BorsNG.Worker.Batcher do
   # has moved since, or a closed pull request, is left alone.
   defp restore_retargeted_bases(repo_conn, members) do
     Enum.each(members, fn patch ->
-      if patch.retargeted_from != nil and
-           patch.retargeted_from != patch.into_branch and
-           patch.open do
-        restore_base(repo_conn, patch)
+      cond do
+        is_nil(patch.retargeted_from) or patch.retargeted_from == patch.into_branch ->
+          :ok
+
+        patch.open ->
+          restore_base(repo_conn, patch)
+
+        true ->
+          # A closed pull request's base cannot be edited; if it is ever
+          # reopened, its base is still where the bundle left it, so warn.
+          send_message(repo_conn, [patch], {:base_restore_failed, patch.retargeted_from})
       end
     end)
   end
@@ -696,7 +731,16 @@ defmodule BorsNG.Worker.Batcher do
             send_message(repo_conn, [patch], {:link_error, :cycle})
 
           not Bundles.contains_head?(repo_conn, target, patch) ->
-            send_message(repo_conn, [patch], {:link_error, {:not_rebased, target_xref}})
+            # If the target contains this patch's head instead, the user
+            # most likely commented on the parent: name the fix.
+            message =
+              if Bundles.contains_head?(repo_conn, patch, target) do
+                {:link_error, {:stack_reversed, target_xref, patch.pr_xref}}
+              else
+                {:link_error, {:not_rebased, target_xref}}
+              end
+
+            send_message(repo_conn, [patch], message)
 
           true ->
             members = Bundles.form_stacked(members, patch, target, project.id)

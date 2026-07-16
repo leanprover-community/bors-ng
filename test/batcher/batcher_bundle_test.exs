@@ -270,8 +270,24 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = Repo.get!(Patch, p2.id)
       assert p1.bundle_id == nil and p2.bundle_id == nil
       assert p1.bundle_reviewer == nil
+
+      # The member whose approval was discarded is told it needs a fresh
+      # r+; the other is told it merges on its own.
       assert Enum.any?(comments_for(1), &(&1 =~ "no longer linked"))
-      assert Enum.any?(comments_for(2), &(&1 =~ "no longer linked"))
+      assert Enum.any?(comments_for(1), &(&1 =~ "needs a fresh `bors r+`"))
+      assert Enum.any?(comments_for(2), &(&1 =~ "merge on its own"))
+    end
+
+    test "unlink warns when a closed member keeps a moved base", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{open: false, retargeted_from: "feature-a"})
+      p2 = insert_patch(proj, 2)
+      {_bundle, [_p1, _p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:unlink, p2.id}, proj.id)
+
+      assert Repo.get!(Patch, p1.id).bundle_id == nil
+      assert Enum.any?(comments_for(1), &(&1 =~ "could not restore"))
     end
 
     test "unlink is refused while a member is queued", %{proj: proj} do
@@ -623,6 +639,29 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Enum.any?(comments_for(1), &(&1 =~ "Rebase it onto #2"))
     end
 
+    test "stack commented on the parent names the fix", %{proj: proj} do
+      # #2 contains #1's head, not the other way around: the user commented
+      # `bors stack #2` on the parent instead of on the child.
+      put_plain_state(
+        %{1 => [], 2 => []},
+        %{
+          compare_status: %{
+            {"commit-2", "commit-1"} => :behind,
+            {"commit-1", "commit-2"} => :ahead
+          }
+        }
+      )
+
+      p1 = insert_patch(proj, 1)
+      _p2 = insert_patch(proj, 2)
+
+      Batcher.handle_cast({:stack, p1.id, [2]}, proj.id)
+
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.bundle_id == nil
+      assert Enum.any?(comments_for(1), &(&1 =~ "Comment `bors stack #1` on #2 instead"))
+    end
+
     test "stack fails closed when ancestry cannot be verified", %{proj: proj} do
       # No :compare_status entry at all: the comparison errors, and the
       # command must refuse rather than assume the stack is fresh.
@@ -847,6 +886,10 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert [comment] = comments_for(1)
       assert comment =~ "Waiting for approval"
       assert comment =~ "#2"
+
+      # The one member the bundle still waits on gets a nudge.
+      assert [nudge] = comments_for(2)
+      assert nudge =~ "The rest of the bundle is approved"
 
       Batcher.handle_cast({:reviewed, p2.id, "r2"}, proj.id)
 

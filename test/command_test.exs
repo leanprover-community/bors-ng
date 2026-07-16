@@ -79,7 +79,14 @@ defmodule BorsNG.CommandTest do
   test "accept the stack command" do
     assert [{:stack, [23]}] == Command.parse("bors stack #23")
     assert [{:stack, [23]}] == Command.parse("bors stack= 23")
+    assert [{:stack, [23]}] == Command.parse("bors stack on #23")
     assert [{:stack, []}] == Command.parse("bors stack")
+  end
+
+  test "refuse references that cannot be read instead of dropping them" do
+    assert [{:link_malformed, :link, ["#23abc"]}] == Command.parse("bors link #23abc #55")
+    assert [{:link_malformed, :stack, ["23."]}] == Command.parse("bors stack 23.")
+    assert [{:link_malformed, :link, ["r+"]}] == Command.parse("bors link #23 r+")
   end
 
   test "accept the unlink command" do
@@ -87,10 +94,17 @@ defmodule BorsNG.CommandTest do
     assert [:unlink] == Command.parse("bors link-")
   end
 
+  test "unlink with pull request numbers is refused, not partially obeyed" do
+    assert [:unlink_with_args] == Command.parse("bors unlink #23")
+    assert [:unlink_with_args] == Command.parse("bors link- 23")
+  end
+
   test "link commands require member permission" do
     assert :member == Command.required_permission_level([{:link, [1]}])
     assert :member == Command.required_permission_level([{:stack, [1]}])
     assert :member == Command.required_permission_level([:unlink])
+    assert :member == Command.required_permission_level([{:link_malformed, :link, ["x"]}])
+    assert :member == Command.required_permission_level([:unlink_with_args])
   end
 
   test "accept single patch" do
