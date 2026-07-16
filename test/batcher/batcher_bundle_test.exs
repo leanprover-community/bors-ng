@@ -887,6 +887,23 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Repo.get!(Patch, p1.id).is_single == true
       assert Repo.get!(Patch, p2.id).is_single == true
     end
+
+    test "the prerun poll queues by current bundle membership, not its snapshot",
+         %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      stale = insert_patch(proj, 1)
+      p2 = insert_patch(proj, 2)
+      # The patch was bundled after the poll captured its struct; the poll
+      # must re-read the row, or the patch would queue solo.
+      {_bundle, _members} = insert_bundle(proj, [stale, p2])
+
+      Batcher.handle_info({:prerun_poll, 1, {"r1", stale}}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Repo.get!(Patch, stale.id).bundle_reviewer == "r1"
+      assert [comment] = comments_for(1)
+      assert comment =~ "Waiting for approval"
+    end
   end
 
   describe "get_new_batch capacity" do

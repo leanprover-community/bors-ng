@@ -373,7 +373,10 @@ defmodule BorsNG.Worker.Batcher do
         send_message(repo_conn, [patch], {:preflight, :duplicate})
         Logger.info("Patch #{patch.id} already left prerun, exiting prerun poll loop")
 
-      _ ->
+      # The struct captured when the poll was scheduled is stale: the patch
+      # may have been bundled, retargeted, or pushed to since. Activate with
+      # the current row, not the snapshot.
+      patch ->
         case patch_preflight(repo_conn, patch) do
           {:ok, max_batch_size} ->
             activate(reviewer, patch, max_batch_size)
