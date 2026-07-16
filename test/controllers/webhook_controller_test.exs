@@ -583,6 +583,69 @@ defmodule BorsNG.WebhookControllerTest do
     refute "delegated" in labels
   end
 
+  test "converting a held bundle member to draft revokes its held approval",
+       %{conn: conn, project: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    bundle = Repo.insert!(BorsNG.Database.PatchBundle.new(proj.id))
+
+    # Approved and held for its bundle, but in no batch: the sibling is
+    # not approved yet.
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true,
+        bundle_id: bundle.id,
+        bundle_reviewer: "rvr"
+      })
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 2,
+      commit: "D",
+      into_branch: "master",
+      open: true,
+      bundle_id: bundle.id
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "converted_to_draft",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "draft" => true,
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+
+    assert Repo.get!(Patch, patch.id).bundle_reviewer == nil
+  end
+
   test "ignore pull_request_review_comment commands on draft PR", %{conn: conn} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 31}, 13} => %{

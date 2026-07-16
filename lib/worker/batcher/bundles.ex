@@ -42,12 +42,15 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   def members_or_self(%Patch{bundle_id: bundle_id}), do: members(bundle_id)
 
   @doc """
-  The members whose approval the bundle is still waiting on. A closed
-  member counts: it cannot hold an approval, and the bundle cannot queue
-  until it is reopened or unlinked.
+  The members whose approval the bundle is still waiting on. A closed or
+  draft member counts: it cannot hold an approval, and the bundle cannot
+  queue until it is ready again or unlinked.
   """
   def unapproved(members) do
-    Enum.filter(members, &(is_nil(&1.bundle_reviewer) or &1.open == false))
+    Enum.filter(
+      members,
+      &(is_nil(&1.bundle_reviewer) or &1.open == false or &1.is_draft)
+    )
   end
 
   @doc """

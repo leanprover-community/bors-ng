@@ -904,6 +904,20 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert [comment] = comments_for(1)
       assert comment =~ "Waiting for approval"
     end
+
+    test "a draft member cannot satisfy the bundle's approvals", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1", is_draft: true})
+      p2 = insert_patch(proj, 2)
+      {_bundle, [_p1, p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:reviewed, p2.id, "r2"}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert [comment] = comments_for(2)
+      assert comment =~ "Waiting for approval"
+      assert comment =~ "#1"
+    end
   end
 
   describe "get_new_batch capacity" do

@@ -373,10 +373,11 @@ defmodule BorsNG.WebhookController do
     {delegation_count, _} = Permission.undelegate_patch(patch.id)
     Labeler.reconcile_delegated(patch)
 
-    if had_incomplete_batch do
-      batcher = Batcher.Registry.get(project.id)
-      Batcher.cancel(batcher, patch.id, :draft)
-    end
+    # Cancel unconditionally: even with no batch, a bundled patch may hold
+    # an approval while its siblings catch up, and a draft cannot keep it.
+    # With nothing to revoke this is a no-op.
+    batcher = Batcher.Registry.get(project.id)
+    Batcher.cancel(batcher, patch.id, :draft)
 
     if had_incomplete_attempt do
       attemptor = Attemptor.Registry.get(project.id)
