@@ -29,6 +29,7 @@ defmodule BorsNG.Database.Patch do
     field(:bundle_reviewer, :string)
     belongs_to(:stacked_on, Patch)
     field(:head_ref, :string)
+    field(:retargeted_from, :string)
     timestamps()
   end
 
@@ -54,7 +55,8 @@ defmodule BorsNG.Database.Patch do
       :bundle_id,
       :bundle_reviewer,
       :stacked_on_id,
-      :head_ref
+      :head_ref,
+      :retargeted_from
     ])
     |> unique_constraint(:pr_xref, name: :patches_pr_xref_index, match: :suffix)
   end

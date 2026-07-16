@@ -74,6 +74,33 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     {bundle, patches}
   end
 
+  # A gh-stack pair: PR 1 (child, branch feature-b) opened against PR 2's
+  # branch feature-a and rebased on it, with PR 1 present in the mock so
+  # base updates can be exercised.
+  defp put_gh_stack_state do
+    put_plain_state(
+      %{1 => [], 2 => []},
+      %{
+        compare_status: %{{"commit-2", "commit-1"} => :ahead},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Child",
+            body: "Mess",
+            state: :open,
+            base_ref: "feature-a",
+            head_sha: "commit-1",
+            head_ref: "feature-b",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false,
+            mergeable: true
+          }
+        }
+      }
+    )
+  end
+
   describe "bors link / unlink" do
     test "link creates a bundle and comments on every member", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => []})
@@ -356,6 +383,69 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
       assert Repo.get!(Patch, p1.id).bundle_reviewer == "r1"
       assert Enum.any?(comments_for(1), &(&1 =~ "could not change the base branch"))
+    end
+
+    test "unlink restores a base bors retargeted", %{proj: proj} do
+      put_gh_stack_state()
+
+      p2 = insert_patch(proj, 2, %{head_ref: "feature-a", bundle_reviewer: "r2"})
+      p1 = insert_patch(proj, 1, %{into_branch: "feature-a", head_ref: "feature-b"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      p1 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
+
+      # Queue the bundle (retargeting #1 onto master), then pull it back out.
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+      assert Repo.get!(Patch, p1.id).into_branch == "master"
+      Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
+
+      Batcher.handle_cast({:unlink, p1.id}, proj.id)
+
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.into_branch == "feature-a"
+      assert p1.retargeted_from == nil
+
+      pull =
+        GitHub.ServerMock.get_state()
+        |> get_in([{{:installation, 91}, 14}, :pulls, 1])
+
+      assert pull.base_ref == "feature-a"
+      assert Enum.any?(comments_for(1), &(&1 =~ "restored this pull request's base branch"))
+    end
+
+    test "unlink leaves a hand-moved base alone", %{proj: proj} do
+      put_gh_stack_state()
+
+      p2 = insert_patch(proj, 2, %{head_ref: "feature-a", bundle_reviewer: "r2"})
+      p1 = insert_patch(proj, 1, %{into_branch: "feature-a", head_ref: "feature-b"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      p1 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+      Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
+
+      # Someone moves the base by hand before the unlink.
+      state = GitHub.ServerMock.get_state()
+
+      state =
+        update_in(
+          state,
+          [{{:installation, 91}, 14}, :pulls, 1],
+          &%{&1 | base_ref: "elsewhere"}
+        )
+
+      GitHub.ServerMock.put_state(state)
+
+      Batcher.handle_cast({:unlink, p1.id}, proj.id)
+
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.retargeted_from == nil
+
+      pull =
+        GitHub.ServerMock.get_state()
+        |> get_in([{{:installation, 91}, 14}, :pulls, 1])
+
+      assert pull.base_ref == "elsewhere"
+      refute Enum.any?(comments_for(1), &(&1 =~ "restore"))
     end
 
     test "stack refuses direct and transitive cycles", %{proj: proj} do

@@ -33,6 +33,12 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert Message.generate_message({:stack_retarget_failed, 7}) =~
              "could not change the base branch of #7"
 
+    assert Message.generate_message({:base_restored, "feature-a"}) =~
+             "restored this pull request's base branch to `feature-a`"
+
+    assert Message.generate_message({:base_restore_failed, "feature-a"}) =~
+             "could not restore this pull request's base branch to `feature-a`"
+
     assert Message.generate_message({:bundle_waiting, [7]}) =~
              "Waiting for approval (`bors r+`) of: #7"
 

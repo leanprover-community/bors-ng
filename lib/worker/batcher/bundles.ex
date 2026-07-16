@@ -79,14 +79,16 @@ defmodule BorsNG.Worker.Batcher.Bundles do
 
   @doc """
   Drop the approvals held on these patches, e.g. once their bundle has
-  merged: a future run of the same bundle needs fresh r+'s.
+  merged: a future run of the same bundle needs fresh r+'s. Also forgets
+  any base branch recorded at retargeting — a merged member's base must
+  not be "restored" by a later unlink.
   """
   def drop_held_approvals(patches) do
     from(p in Patch,
       where: p.id in ^Enum.map(patches, & &1.id),
-      where: not is_nil(p.bundle_reviewer)
+      where: not is_nil(p.bundle_reviewer) or not is_nil(p.retargeted_from)
     )
-    |> Repo.update_all(set: [bundle_reviewer: nil])
+    |> Repo.update_all(set: [bundle_reviewer: nil, retargeted_from: nil])
   end
 
   @doc """
@@ -226,7 +228,12 @@ defmodule BorsNG.Worker.Batcher.Bundles do
       members =
         Enum.map(members, fn p ->
           p
-          |> Patch.changeset(%{bundle_id: nil, bundle_reviewer: nil, stacked_on_id: nil})
+          |> Patch.changeset(%{
+            bundle_id: nil,
+            bundle_reviewer: nil,
+            stacked_on_id: nil,
+            retargeted_from: nil
+          })
           |> Repo.update!()
         end)
 

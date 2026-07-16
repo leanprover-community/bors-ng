@@ -245,6 +245,14 @@ defmodule BorsNG.Worker.Batcher.Message do
     "The bundle was not queued: bors could not change the base branch of ##{xref} to the bundle's target branch. Run `bors r+` again to retry."
   end
 
+  def generate_message({:base_restored, branch}) do
+    "bors restored this pull request's base branch to `#{branch}`, undoing the change made when its bundle was queued."
+  end
+
+  def generate_message({:base_restore_failed, branch}) do
+    "bors could not restore this pull request's base branch to `#{branch}` (it was changed when its bundle was queued). Please check the base branch."
+  end
+
   def generate_message({state, statuses}) do
     is_new_year = get_is_new_year()
     is_public = get_is_public()

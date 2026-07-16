@@ -333,12 +333,17 @@ defmodule BorsNG.Worker.Batcher do
         project = Repo.get!(Project, project_id)
         repo_conn = get_repo_conn(project)
 
+        # Read the members before dissolving: dissolve clears the
+        # retargeted_from bookkeeping the base restore needs.
+        members = Bundles.members(bundle_id)
+
         case Bundles.dissolve(bundle_id) do
           {:error, :in_batch} ->
             send_message(repo_conn, [patch], {:link_error, :in_batch})
 
-          {:ok, members} ->
-            send_message(repo_conn, members, :unlinked)
+          {:ok, dissolved} ->
+            send_message(repo_conn, dissolved, :unlinked)
+            restore_retargeted_bases(repo_conn, members)
         end
     end
   end
@@ -540,10 +545,10 @@ defmodule BorsNG.Worker.Batcher do
   # Bring every member's base branch onto the bundle's final target before
   # queueing; members still in gh-stack shape (base = parent's branch) are
   # retargeted via the GitHub API. Fails closed: any API failure holds the
-  # bundle. Retargeting is one-way: if the bundle later leaves the queue
-  # without merging, bases stay on the final branch — the stored stack edges
-  # still order any future merge, and restoring bases could clobber pushes
-  # made in the meantime.
+  # bundle. While the bundle exists the move is not undone — the stored
+  # stack edges still order any future merge — but the original base is
+  # recorded so that dissolving the bundle can restore it
+  # (restore_retargeted_bases/2).
   defp normalize_bundle_bases(repo_conn, members) do
     case Bundles.final_target(members) do
       {:ok, final} ->
@@ -570,16 +575,51 @@ defmodule BorsNG.Worker.Batcher do
     with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref),
          {:ok, _} <- GitHub.update_pr_base(repo_conn, %{pr | base_ref: final}) do
       # The "edited" webhook will echo this update; writing it now keeps the
-      # rest of activation working with the normalized base.
+      # rest of activation working with the normalized base. The old base is
+      # kept so dissolving the bundle can restore it.
       patch =
         patch
-        |> Patch.changeset(%{into_branch: final})
+        |> Patch.changeset(%{into_branch: final, retargeted_from: patch.into_branch})
         |> Repo.update!()
 
       send_message(repo_conn, [patch], {:retargeted, final})
       {:ok, patch}
     else
       _ -> :error
+    end
+  end
+
+  # Undo queue-time retargeting when a bundle dissolves without merging:
+  # a member whose base bors moved — and which still points where bors
+  # left it — is retargeted back, so an unlinked gh-stack child does not
+  # keep showing (and squash-merging) its parent's changes. A base a human
+  # has moved since, or a closed pull request, is left alone.
+  defp restore_retargeted_bases(repo_conn, members) do
+    Enum.each(members, fn patch ->
+      if patch.retargeted_from != nil and
+           patch.retargeted_from != patch.into_branch and
+           patch.open do
+        restore_base(repo_conn, patch)
+      end
+    end)
+  end
+
+  defp restore_base(repo_conn, patch) do
+    with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref),
+         %{base_ref: current} when current == patch.into_branch <- pr,
+         {:ok, _} <- GitHub.update_pr_base(repo_conn, %{pr | base_ref: patch.retargeted_from}) do
+      patch
+      |> Patch.changeset(%{into_branch: patch.retargeted_from})
+      |> Repo.update!()
+
+      send_message(repo_conn, [patch], {:base_restored, patch.retargeted_from})
+    else
+      %BorsNG.GitHub.Pr{} ->
+        # The base was moved by hand after bors retargeted it; respect that.
+        :ok
+
+      _ ->
+        send_message(repo_conn, [patch], {:base_restore_failed, patch.retargeted_from})
     end
   end
 
