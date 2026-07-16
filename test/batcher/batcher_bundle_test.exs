@@ -74,6 +74,69 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     {bundle, patches}
   end
 
+  # Mock state for running a whole batch: master at "ini", a bors.toml on
+  # the staging branch, and one open PR (with its head sha) per entry. The
+  # mock composes merged shas by concatenation, so the staging sha and the
+  # merge commit message both record the merge order.
+  defp put_merge_state(heads, extra \\ %{}) do
+    pulls =
+      Map.new(heads, fn {xref, sha} ->
+        {xref,
+         %Pr{
+           number: xref,
+           title: "PR #{xref}",
+           body: "Mess",
+           state: :open,
+           base_ref: "master",
+           head_sha: sha,
+           head_ref: "branch-#{xref}",
+           base_repo_id: 14,
+           head_repo_id: 14,
+           merged: false,
+           mergeable: true
+         }}
+      end)
+
+    pr_commits =
+      Map.new(heads, fn {xref, _sha} ->
+        {xref, [%GitHub.Commit{sha: "c#{xref}", author_name: "a", author_email: "e"}]}
+      end)
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} =>
+        Map.merge(
+          %{
+            branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+            commits: %{},
+            comments: Map.new(heads, fn {xref, _} -> {xref, []} end),
+            statuses: %{},
+            files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+            pulls: pulls,
+            pr_commits: pr_commits
+          },
+          extra
+        )
+    })
+  end
+
+  defp insert_waiting_batch(proj, patches) do
+    batch =
+      %Batch{
+        project_id: proj.id,
+        state: :waiting,
+        into_branch: "master",
+        last_polled: 0
+      }
+      |> Repo.insert!()
+
+    Enum.each(patches, fn p ->
+      %LinkPatchBatch{patch_id: p.id, batch_id: batch.id, reviewer: "r"}
+      |> Repo.insert!()
+    end)
+
+    batch
+  end
+
   # A gh-stack pair: PR 1 (child, branch feature-b) opened against PR 2's
   # branch feature-a and rebased on it, with PR 1 present in the mock so
   # base updates can be exercised.
@@ -448,6 +511,72 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       refute Enum.any?(comments_for(1), &(&1 =~ "restore"))
     end
 
+    test "a partial retarget holds the bundle, and unlink restores the moved base",
+         %{proj: proj} do
+      # Chain 3 -> 2 -> 1 in gh-stack shape. PR 2 is present in the mock, so
+      # its retarget succeeds; PR 3 is not, so its retarget fails and the
+      # bundle is held with only #2 moved.
+      put_plain_state(
+        %{1 => [], 2 => [], 3 => []},
+        %{
+          compare_status: %{
+            {"commit-1", "commit-2"} => :ahead,
+            {"commit-2", "commit-3"} => :ahead
+          },
+          pulls: %{
+            2 => %Pr{
+              number: 2,
+              title: "Mid",
+              body: "Mess",
+              state: :open,
+              base_ref: "feature-1",
+              head_sha: "commit-2",
+              head_ref: "feature-2",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: true
+            }
+          }
+        }
+      )
+
+      p1 = insert_patch(proj, 1, %{head_ref: "feature-1", bundle_reviewer: "r1"})
+
+      p2 =
+        insert_patch(proj, 2, %{
+          into_branch: "feature-1",
+          head_ref: "feature-2",
+          bundle_reviewer: "r2"
+        })
+
+      p3 = insert_patch(proj, 3, %{into_branch: "feature-2", head_ref: "feature-3"})
+      {_bundle, [p1, p2, p3]} = insert_bundle(proj, [p1, p2, p3])
+      p2 |> Patch.changeset(%{stacked_on_id: p1.id}) |> Repo.update!()
+      p3 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
+
+      Batcher.handle_cast({:reviewed, p3.id, "r3"}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      p2 = Repo.get!(Patch, p2.id)
+      assert p2.into_branch == "master"
+      assert p2.retargeted_from == "feature-1"
+      assert Enum.any?(comments_for(3), &(&1 =~ "could not change the base branch of #3"))
+
+      Batcher.handle_cast({:unlink, p1.id}, proj.id)
+
+      p2 = Repo.get!(Patch, p2.id)
+      assert p2.into_branch == "feature-1"
+      assert p2.retargeted_from == nil
+
+      pull =
+        GitHub.ServerMock.get_state()
+        |> get_in([{{:installation, 91}, 14}, :pulls, 2])
+
+      assert pull.base_ref == "feature-1"
+      assert Enum.any?(comments_for(2), &(&1 =~ "restored this pull request's base branch"))
+    end
+
     test "stack refuses direct and transitive cycles", %{proj: proj} do
       put_plain_state(
         %{1 => [], 2 => [], 3 => []},
@@ -645,6 +774,62 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       staging_sha = state.branches["staging"]
       %{commit_message: message} = state.commits[staging_sha]
       assert message =~ ~r/\AMerge #2 #1/
+    end
+
+    test "a three-deep stack merges root-first as adjacent commits", %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}, {3, "P"}], %{statuses: %{"iniOPN" => %{}}})
+
+      p1 = insert_patch(proj, 1, %{commit: "N"})
+      p2 = insert_patch(proj, 2, %{commit: "O"})
+      p3 = insert_patch(proj, 3, %{commit: "P"})
+      {_bundle, [p1, p2, p3]} = insert_bundle(proj, [p1, p2, p3])
+      # 2 is the root: 3 stacks on 2, and 1 stacks on 3.
+      p3 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
+      p1 |> Patch.changeset(%{stacked_on_id: p3.id}) |> Repo.update!()
+
+      batch = insert_waiting_batch(proj, [p1, p2, p3])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      state =
+        GitHub.ServerMock.get_state()
+        |> Map.get({{:installation, 91}, 14})
+
+      staging_sha = state.branches["staging"]
+      %{commit_message: message} = state.commits[staging_sha]
+      assert message =~ ~r/\AMerge #2 #3 #1/
+    end
+
+    test "two bundles in one batch merge contiguously", %{proj: proj} do
+      put_merge_state(
+        [{1, "N"}, {2, "O"}, {3, "P"}, {4, "Q"}],
+        %{statuses: %{"iniNQOP" => %{}}}
+      )
+
+      p1 = insert_patch(proj, 1, %{commit: "N"})
+      p2 = insert_patch(proj, 2, %{commit: "O"})
+      p3 = insert_patch(proj, 3, %{commit: "P"})
+      p4 = insert_patch(proj, 4, %{commit: "Q"})
+      {_b1, [p1, p4]} = insert_bundle(proj, [p1, p4])
+      {_b2, [p2, p3]} = insert_bundle(proj, [p2, p3])
+
+      batch = insert_waiting_batch(proj, [p1, p2, p3, p4])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      state =
+        GitHub.ServerMock.get_state()
+        |> Map.get({{:installation, 91}, 14})
+
+      # Bundle {1, 4} stays contiguous even though 2 and 3 sit between
+      # its members in PR-number order.
+      staging_sha = state.branches["staging"]
+      %{commit_message: message} = state.commits[staging_sha]
+      assert message =~ ~r/\AMerge #1 #4 #2 #3/
     end
   end
 
@@ -1007,6 +1192,72 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert [comment] = comments_for(2)
       assert comment =~ "Waiting for approval"
       assert comment =~ "#1"
+    end
+
+    test "r- before the bundle queues is silent", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1"})
+      p2 = insert_patch(proj, 2)
+      {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
+
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert comments_for(1) == []
+      assert comments_for(2) == []
+    end
+
+    test "canceling a queued member drops only its own held approval", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1"})
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "r2"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+      assert [_batch] = proj.id |> Batch.all_for_project() |> Repo.all()
+
+      Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
+
+      # The whole bundle left the queue, but only the canceled member's
+      # approval was revoked: one fresh r+ on #1 requeues the bundle.
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == "r2"
+    end
+
+    test "a bundle that fills max_batch_size gets a batch of its own", %{proj: proj} do
+      toml = ~s/status = [ "ci" ]\nmax_batch_size = 2/
+
+      put_plain_state(
+        %{1 => [], 2 => [], 9 => []},
+        %{
+          statuses: %{"commit-1" => %{}},
+          files: %{"commit-1" => %{"bors.toml" => toml}}
+        }
+      )
+
+      p9 = insert_patch(proj, 9)
+      existing = insert_waiting_batch(proj, [p9])
+
+      p1 = insert_patch(proj, 1)
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "r2"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+
+      batches = proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Enum.count(batches) == 2
+
+      bundle_batch = Enum.find(batches, &(&1.id != existing.id))
+
+      member_ids =
+        bundle_batch.id
+        |> LinkPatchBatch.from_batch()
+        |> Repo.all()
+        |> Enum.map(& &1.patch_id)
+        |> Enum.sort()
+
+      assert member_ids == Enum.sort([p1.id, p2.id])
     end
   end
 
