@@ -56,6 +56,24 @@ defmodule BorsNG.Database.Context.PermissionTest do
     assert Permission.permission?(:member, user, patch)
   end
 
+  test "delegation never satisfies the project-standing levels", params do
+    %{patch: patch, user: user} = params
+    Repo.insert!(%UserPatchDelegation{user: user, patch: patch})
+    refute Permission.permission?(:project_member, user, patch)
+    refute Permission.permission?(:project_reviewer, user, patch)
+  end
+
+  test "reviewers and members satisfy the project-standing levels", params do
+    %{project: project, patch: patch, user: user} = params
+    Repo.insert!(%LinkMemberProject{user: user, project: project})
+    assert Permission.permission?(:project_member, user, patch)
+    refute Permission.permission?(:project_reviewer, user, patch)
+
+    Repo.insert!(%LinkUserProject{user: user, project: project})
+    assert Permission.permission?(:project_member, user, patch)
+    assert Permission.permission?(:project_reviewer, user, patch)
+  end
+
   test "delegated users keep permission while expires_at is in the future", params do
     %{patch: patch, user: user} = params
 

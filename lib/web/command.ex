@@ -623,24 +623,27 @@ defmodule BorsNG.Command do
     :member
   end
 
+  # link/stack/unlink write state onto pull requests other than the
+  # commented one, so a per-patch delegation (`bors delegate+`) must not
+  # satisfy them: they require standing on the project itself.
   def required_permission_level_cmd({:link, _}) do
-    :member
+    :project_member
   end
 
   def required_permission_level_cmd({:stack, _}) do
-    :member
+    :project_member
   end
 
   def required_permission_level_cmd(:unlink) do
-    :member
+    :project_member
   end
 
   def required_permission_level_cmd({:link_malformed, _, _}) do
-    :member
+    :project_member
   end
 
   def required_permission_level_cmd(:unlink_with_args) do
-    :member
+    :project_member
   end
 
   def required_permission_level_cmd(_) do
@@ -650,17 +653,26 @@ defmodule BorsNG.Command do
   def required_permission_level(cmd_list) do
     cmd_list
     |> Enum.reduce(:none, fn cmd, perm ->
-      new_perm = cmd |> required_permission_level_cmd()
-
-      case {perm, new_perm} do
-        {:none, new_perm} -> new_perm
-        {perm, :none} -> perm
-        {_, :reviewer} -> :reviewer
-        {:reviewer, _} -> :reviewer
-        {p, p} -> p
-      end
+      combine_permission_levels(perm, required_permission_level_cmd(cmd))
     end)
   end
+
+  # :project_member / :project_reviewer are the delegation-free levels: a
+  # per-patch delegate satisfies :member and :reviewer on their own pull
+  # request but not these. Combining a delegation-free command with a
+  # reviewer-level one in the same comment must keep both requirements,
+  # which is :project_reviewer.
+  defp combine_permission_levels(:none, new), do: new
+  defp combine_permission_levels(perm, :none), do: perm
+  defp combine_permission_levels(p, p), do: p
+  defp combine_permission_levels(:project_reviewer, _), do: :project_reviewer
+  defp combine_permission_levels(_, :project_reviewer), do: :project_reviewer
+  defp combine_permission_levels(:project_member, :reviewer), do: :project_reviewer
+  defp combine_permission_levels(:reviewer, :project_member), do: :project_reviewer
+  defp combine_permission_levels(:project_member, :member), do: :project_member
+  defp combine_permission_levels(:member, :project_member), do: :project_member
+  defp combine_permission_levels(_, :reviewer), do: :reviewer
+  defp combine_permission_levels(:reviewer, _), do: :reviewer
 
   def permission_denied(c) do
     login = c.commenter.login

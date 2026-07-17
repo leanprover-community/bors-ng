@@ -66,4 +66,32 @@ defmodule BorsNG.CleanupTest do
 
     assert Repo.get(Patch, old_closed.id)
   end
+
+  test "sweeps bundles orphaned by pruned patches", %{proj: proj} do
+    alias BorsNG.Database.PatchBundle
+
+    # Both members old and closed: pruning them orphans the bundle.
+    orphaned = Repo.insert!(PatchBundle.new(proj.id))
+    old_a = insert_patch(proj, false, 12)
+    old_b = insert_patch(proj, false, 12)
+
+    Repo.update_all(from(p in Patch, where: p.id in ^[old_a.id, old_b.id]),
+      set: [bundle_id: orphaned.id]
+    )
+
+    # One member still open: this bundle stays referenced.
+    kept = Repo.insert!(PatchBundle.new(proj.id))
+    old_member = insert_patch(proj, false, 12)
+    open_member = insert_patch(proj, true, 12)
+
+    Repo.update_all(from(p in Patch, where: p.id in ^[old_member.id, open_member.id]),
+      set: [bundle_id: kept.id]
+    )
+
+    Mix.Tasks.Bors.Cleanup.run(["--months", "6"])
+
+    refute Repo.get(PatchBundle, orphaned.id)
+    assert Repo.get(PatchBundle, kept.id)
+    assert Repo.get(Patch, open_member.id).bundle_id == kept.id
+  end
 end

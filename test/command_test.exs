@@ -99,12 +99,20 @@ defmodule BorsNG.CommandTest do
     assert [:unlink_with_args] == Command.parse("bors link- 23")
   end
 
-  test "link commands require member permission" do
-    assert :member == Command.required_permission_level([{:link, [1]}])
-    assert :member == Command.required_permission_level([{:stack, [1]}])
-    assert :member == Command.required_permission_level([:unlink])
-    assert :member == Command.required_permission_level([{:link_malformed, :link, ["x"]}])
-    assert :member == Command.required_permission_level([:unlink_with_args])
+  test "link commands require project membership, not delegation" do
+    assert :project_member == Command.required_permission_level([{:link, [1]}])
+    assert :project_member == Command.required_permission_level([{:stack, [1]}])
+    assert :project_member == Command.required_permission_level([:unlink])
+
+    assert :project_member ==
+             Command.required_permission_level([{:link_malformed, :link, ["x"]}])
+
+    assert :project_member == Command.required_permission_level([:unlink_with_args])
+
+    # Combined with a reviewer-level command, both requirements must hold.
+    assert :project_reviewer == Command.required_permission_level([{:link, [1]}, :activate])
+    assert :project_reviewer == Command.required_permission_level([:activate, :unlink])
+    assert :project_member == Command.required_permission_level([{:link, [1]}, {:try, ""}])
   end
 
   test "accept single patch" do

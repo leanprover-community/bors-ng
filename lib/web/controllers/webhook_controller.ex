@@ -376,6 +376,7 @@ defmodule BorsNG.WebhookController do
     # Cancel unconditionally: even with no batch, a bundled patch may hold
     # an approval while its siblings catch up, and a draft cannot keep it.
     # With nothing to revoke this is a no-op.
+    had_held_bundle_approval = patch.bundle_reviewer != nil
     batcher = Batcher.Registry.get(project.id)
     Batcher.cancel(batcher, patch.id, :draft)
 
@@ -385,12 +386,17 @@ defmodule BorsNG.WebhookController do
     end
 
     if action == "converted_to_draft" or had_incomplete_batch or had_incomplete_attempt or
-         delegation_count > 0 do
+         had_held_bundle_approval or delegation_count > 0 do
       project.repo_xref
       |> Project.installation_connection(Repo)
       |> GitHub.post_comment!(
         patch.pr_xref,
-        draft_mode_message(had_incomplete_batch, had_incomplete_attempt, delegation_count)
+        draft_mode_message(
+          had_incomplete_batch,
+          had_incomplete_attempt,
+          had_held_bundle_approval,
+          delegation_count
+        )
       )
     end
   end
@@ -488,11 +494,20 @@ defmodule BorsNG.WebhookController do
     Logger.info(["WebhookController: Got unknown action: ", action])
   end
 
-  defp draft_mode_message(had_incomplete_batch, had_incomplete_attempt, delegation_count) do
+  defp draft_mode_message(
+         had_incomplete_batch,
+         had_incomplete_attempt,
+         had_held_bundle_approval,
+         delegation_count
+       ) do
     action_summary =
       []
       |> maybe_prepend_action(had_incomplete_batch, "removed this PR from the merge queue")
       |> maybe_prepend_action(had_incomplete_attempt, "canceled active try jobs")
+      |> maybe_prepend_action(
+        had_held_bundle_approval,
+        "discarded the approval it held for its linked bundle"
+      )
       |> maybe_prepend_action(delegation_count > 0, "removed existing delegations")
       |> Enum.reverse()
       |> case do

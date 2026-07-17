@@ -644,6 +644,15 @@ defmodule BorsNG.WebhookControllerTest do
     _ = :sys.get_state(batcher)
 
     assert Repo.get!(Patch, patch.id).bundle_reviewer == nil
+
+    comments =
+      GitHub.ServerMock.get_state()
+      |> get_in([{{:installation, 31}, 13}, :comments, 1])
+
+    assert Enum.any?(
+             comments,
+             &String.contains?(&1, "discarded the approval it held for its linked bundle")
+           )
   end
 
   test "ignore pull_request_review_comment commands on draft PR", %{conn: conn} do
