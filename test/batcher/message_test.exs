@@ -40,6 +40,9 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert Message.generate_message({:unlinked, :fresh_approval_needed}) =~
              "no longer linked. The approval it held"
 
+    assert Message.generate_message(:try_ignores_bundle) =~
+             "without the rest of its bundle"
+
     assert Message.generate_message({:bundle_last_unapproved, :awaiting_review}) =~
              "once this pull request gets `bors r+`"
 

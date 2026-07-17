@@ -788,6 +788,17 @@ defmodule BorsNG.Command do
       DelegationInvalidator.lint_for_patch(c.patch.id)
     end)
 
+    # try knows nothing about bundles: it builds this patch's branch alone.
+    # Say so, or a green try on one member overstates what the batch will do.
+    if c.patch.bundle_id != nil do
+      c.project.repo_xref
+      |> Project.installation_connection(Repo)
+      |> GitHub.post_comment!(
+        c.pr_xref,
+        Batcher.Message.generate_message(:try_ignores_bundle)
+      )
+    end
+
     attemptor = Attemptor.Registry.get(c.project.id)
     Attemptor.tried(attemptor, c.patch.id, arguments)
   end
