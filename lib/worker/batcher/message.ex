@@ -203,7 +203,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:bundle_last_unapproved, :closed}) do
-    "The rest of the bundle is approved, but this pull request is closed. Reopen it and run `bors r+`, or `bors unlink` from any member to let the others merge without it."
+    "The rest of the bundle is approved, but this pull request is closed. Reopen it and run `bors r+`, or `bors unlink` from any linked pull request to let the others merge without it."
   end
 
   def generate_message({:bundle_pulled, xref, reason}) do

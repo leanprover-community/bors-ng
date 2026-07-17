@@ -649,7 +649,7 @@ defmodule BorsNG.Worker.Batcher do
 
       send_message(repo_conn, [patch], {:base_restored, patch.retargeted_from})
     else
-      %BorsNG.GitHub.Pr{} ->
+      %GitHub.Pr{} ->
         # The base was moved by hand after bors retargeted it; respect that.
         :ok
 
