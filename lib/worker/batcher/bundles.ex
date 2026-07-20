@@ -166,34 +166,40 @@ defmodule BorsNG.Worker.Batcher.Bundles do
 
   @doc """
   Put every member on one bundle (creating it if none exists), and delete
-  any bundles emptied by the union. Returns the updated members.
+  any bundles emptied by the union. Runs in a transaction: the bundle
+  forms completely or not at all. Returns the updated members.
   """
   def form(members, project_id) do
-    old_bundle_ids =
-      members |> Enum.map(& &1.bundle_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+    {:ok, members} =
+      Repo.transaction(fn ->
+        old_bundle_ids =
+          members |> Enum.map(& &1.bundle_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
-    bundle_id =
-      case old_bundle_ids do
-        [] -> Repo.insert!(PatchBundle.new(project_id)).id
-        [first | _] -> first
-      end
+        bundle_id =
+          case old_bundle_ids do
+            [] -> Repo.insert!(PatchBundle.new(project_id)).id
+            [first | _] -> first
+          end
 
-    members =
-      Enum.map(members, fn p ->
-        if p.bundle_id == bundle_id do
-          p
-        else
-          p |> Patch.changeset(%{bundle_id: bundle_id}) |> Repo.update!()
+        members =
+          Enum.map(members, fn p ->
+            if p.bundle_id == bundle_id do
+              p
+            else
+              p |> Patch.changeset(%{bundle_id: bundle_id}) |> Repo.update!()
+            end
+          end)
+
+        emptied = old_bundle_ids -- [bundle_id]
+
+        if emptied != [] do
+          PatchBundle
+          |> where([b], b.id in ^emptied)
+          |> Repo.delete_all()
         end
+
+        members
       end)
-
-    emptied = old_bundle_ids -- [bundle_id]
-
-    if emptied != [] do
-      PatchBundle
-      |> where([b], b.id in ^emptied)
-      |> Repo.delete_all()
-    end
 
     members
   end
@@ -203,15 +209,20 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   as `form/2` plus a stack edge. Returns the updated members.
   """
   def form_stacked(members, child, parent, project_id) do
-    members = form(members, project_id)
+    {:ok, members} =
+      Repo.transaction(fn ->
+        members = form(members, project_id)
 
-    child =
-      members
-      |> Enum.find(&(&1.id == child.id))
-      |> Patch.changeset(%{stacked_on_id: parent.id})
-      |> Repo.update!()
+        child =
+          members
+          |> Enum.find(&(&1.id == child.id))
+          |> Patch.changeset(%{stacked_on_id: parent.id})
+          |> Repo.update!()
 
-    Enum.map(members, &if(&1.id == child.id, do: child, else: &1))
+        Enum.map(members, &if(&1.id == child.id, do: child, else: &1))
+      end)
+
+    members
   end
 
   @doc """
