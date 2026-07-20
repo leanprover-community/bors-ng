@@ -27,9 +27,9 @@ defmodule BorsNG.Command do
   `bors link-`) dissolves the bundle.
 
   `bors stack #123` (commented on another PR) additionally records an
-  order: this PR joins #123's bundle and merges after it, as a separate
-  commit. Use it when the changes must not only land together but also
-  appear in history in a fixed order, as distinct adjacent commits.
+  order: this PR joins #123's bundle with #123's changes applied first
+  (a separate commit directly after it under squash merges). Use it when
+  the changes must not only land together but in a fixed order.
 
   Bare `bors stack` infers the parent from the base-branch chain (the
   gh-stack convention, where a stacked PR's base is its parent's branch);
