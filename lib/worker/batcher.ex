@@ -617,7 +617,10 @@ defmodule BorsNG.Worker.Batcher do
          {:ok, _} <- GitHub.update_pr_base(repo_conn, %{pr | base_ref: final}) do
       # The "edited" webhook will echo this update; writing it now keeps the
       # rest of activation working with the normalized base. The old base is
-      # kept so dissolving the bundle can restore it.
+      # kept so dissolving the bundle can restore it. Should the echo outrun
+      # this write, the syncer treats it as a base bors didn't record and
+      # clears the bookkeeping — the retarget stands, and a later unlink
+      # simply leaves the base in place.
       patch =
         patch
         |> Patch.changeset(%{into_branch: final, retargeted_from: patch.into_branch})
