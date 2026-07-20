@@ -93,6 +93,7 @@ defmodule BorsNG.CommandTest do
     assert [{:link_malformed, :link, ["p=5"]}] == Command.parse("bors link #23 p=5")
     assert [{:link_malformed, :stack, ["r=me"]}] == Command.parse("bors stack #2 r=me")
     assert [{:link_malformed, :link, ["single"]}] == Command.parse("bors link #23 single on")
+    assert [{:link_malformed, :link, ["stack"]}] == Command.parse("bors link #1 stack #2")
   end
 
   test "accept the unlink command" do

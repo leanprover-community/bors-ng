@@ -298,7 +298,7 @@ defmodule BorsNG.Command do
   # Words that read as another bors command (or its argument) on the same
   # line: refuse rather than guess which pull requests were meant.
   defp other_command?(token) do
-    token in ~w(r+ r- merge merge- try try- cancel retry ping single unlink link-) or
+    token in ~w(r+ r- merge merge- try try- cancel retry ping single link stack unlink link-) or
       String.match?(token, ~r/^(p|priority|r|merge)=/) or
       String.starts_with?(token, "delegate")
   end
