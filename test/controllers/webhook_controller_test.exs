@@ -79,6 +79,54 @@ defmodule BorsNG.WebhookControllerTest do
     assert "OTHER_BRANCH" == patch2.into_branch
   end
 
+  # Editing the base by hand takes precedence over the bundle's base-restore
+  # bookkeeping; edits that keep the base leave it in place.
+  test "a hand retarget clears retargeted_from", %{conn: conn, project: project} do
+    patch =
+      Repo.insert!(%Patch{
+        title: "T",
+        body: "B",
+        pr_xref: 1,
+        project_id: project.id,
+        into_branch: "master",
+        retargeted_from: "feature-a"
+      })
+
+    edited = fn base ->
+      %{
+        "repository" => %{"id" => 13},
+        "action" => "edited",
+        "pull_request" => %{
+          "number" => 1,
+          "title" => "T",
+          "body" => "B",
+          "state" => "open",
+          "base" => %{"ref" => base, "repo" => %{"id" => 456}},
+          "head" => %{"sha" => "S", "ref" => "BAR_BRANCH", "repo" => %{"id" => 345}},
+          "merged_at" => nil,
+          "mergeable" => true,
+          "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+        }
+      }
+    end
+
+    # A title/body edit keeps the base: the bookkeeping stays.
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), edited.("master"))
+
+    assert Repo.get!(Patch, patch.id).retargeted_from == "feature-a"
+
+    # A base change bors did not write is a human retarget: forget it.
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), edited.("release"))
+
+    patch2 = Repo.get!(Patch, patch.id)
+    assert patch2.into_branch == "release"
+    assert patch2.retargeted_from == nil
+  end
+
   test "sync PR on reopen", %{conn: conn, project: project} do
     patch =
       Repo.insert!(%Patch{

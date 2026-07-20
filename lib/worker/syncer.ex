@@ -186,16 +186,29 @@ defmodule BorsNG.Worker.Syncer do
             # makes the loser raise; update the now-existing row instead of
             # crashing the request — a crash just 500s the webhook and GitHub
             # redelivers it.
-            Patch
-            |> Repo.get_by!(project_id: project_id, pr_xref: number)
-            |> Patch.changeset(data)
+            patch = Repo.get_by!(Patch, project_id: project_id, pr_xref: number)
+
+            patch
+            |> Patch.changeset(forget_stale_retarget(data, patch, pr))
             |> Repo.update!()
         end
 
       patch ->
         patch
-        |> Patch.changeset(data)
+        |> Patch.changeset(forget_stale_retarget(data, patch, pr))
         |> Repo.update!()
+    end
+  end
+
+  # bors records its own base edits in into_branch before they sync back,
+  # so a base that differs here was retargeted by a person. Honor that
+  # choice: forget the bundle's base-restore bookkeeping (retargeted_from),
+  # and unlink will leave the person's base as they set it.
+  defp forget_stale_retarget(data, %Patch{} = patch, pr) do
+    if patch.into_branch != pr.base_ref do
+      Map.put(data, :retargeted_from, nil)
+    else
+      data
     end
   end
 
