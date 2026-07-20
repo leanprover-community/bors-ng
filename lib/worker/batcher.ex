@@ -389,7 +389,13 @@ defmodule BorsNG.Worker.Batcher do
       patch ->
         case patch_preflight(repo_conn, patch) do
           {:ok, max_batch_size} ->
-            activate(reviewer, patch, max_batch_size)
+            case resolve_prerun_reviewer(reviewer, patch) do
+              nil ->
+                Logger.info("Patch #{patch.id} no longer holds an approval, exiting prerun poll")
+
+              resolved ->
+                activate(resolved, patch, max_batch_size)
+            end
 
           {:waiting, toml} ->
             handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml)
@@ -550,8 +556,10 @@ defmodule BorsNG.Worker.Batcher do
       {:waiting, failed, toml} ->
         # That member's statuses are still pending; its prerun poll loop
         # re-enters activate/3 once they settle, and the held approvals
-        # make this whole check idempotent.
-        handle_waiting_preflight(repo_conn, failed.bundle_reviewer, failed, 0, toml)
+        # make this whole check idempotent. The poll carries a marker, not
+        # the reviewer's name, so it picks up the approval as it stands
+        # when it fires (see resolve_prerun_reviewer/2).
+        handle_waiting_preflight(repo_conn, :held_approval, failed, 0, toml)
 
         repo_conn
         |> send_message(
@@ -1756,6 +1764,12 @@ defmodule BorsNG.Worker.Batcher do
       {:ok, nil}
     end
   end
+
+  # A poll armed for a member with a held approval (:held_approval) reads
+  # the approval back from the row when it fires, so an r- during the wait
+  # simply ends the loop.
+  defp resolve_prerun_reviewer(:held_approval, patch), do: patch.bundle_reviewer
+  defp resolve_prerun_reviewer(reviewer, _patch), do: reviewer
 
   defp handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml \\ nil) do
     prerun_timeout_sec =

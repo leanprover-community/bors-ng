@@ -1223,6 +1223,24 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert comment =~ "Waiting for approval"
     end
 
+    test "an r- during the prerun wait ends the poll instead of re-holding",
+         %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1"})
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "r2"})
+      {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
+
+      # The approval held on p1 is revoked while p1's poll waits on CI; the
+      # poll carries :held_approval, so it reads the revocation when it fires.
+      Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+
+      Batcher.handle_info({:prerun_poll, 1, {:held_approval, p1}}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+    end
+
     test "a draft member cannot satisfy the bundle's approvals", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => []})
       p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1", is_draft: true})
