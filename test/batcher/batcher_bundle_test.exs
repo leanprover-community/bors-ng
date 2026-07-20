@@ -337,6 +337,17 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Enum.any?(comments_for(1), &(&1 =~ "/compare/commit-2...commit-1"))
     end
 
+    test "stack is refused for this pull request's own number", %{proj: proj} do
+      put_plain_state(%{1 => []})
+      p1 = insert_patch(proj, 1)
+
+      Batcher.handle_cast({:stack, p1.id, [1]}, proj.id)
+
+      assert Repo.get!(Patch, p1.id).bundle_id == nil
+      assert [comment] = comments_for(1)
+      assert comment =~ "on itself"
+    end
+
     test "stack requires exactly one target", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => [], 3 => []})
       p1 = insert_patch(proj, 1)

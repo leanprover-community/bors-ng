@@ -302,8 +302,8 @@ defmodule BorsNG.Worker.Batcher do
       |> Enum.uniq()
       |> Enum.reject(&(&1 == patch.pr_xref))
 
-    case target_xrefs do
-      [] ->
+    case {pr_xrefs, target_xrefs} do
+      {[], []} ->
         # Bare `bors stack`: infer the parent from the base-branch chain
         # (gh-stack convention: a stacked PR's base is its parent's branch).
         case Bundles.infer_stack_parent(patch, project_id) do
@@ -314,7 +314,12 @@ defmodule BorsNG.Worker.Batcher do
             send_message(repo_conn, [patch], {:link_error, :cannot_infer})
         end
 
-      [target_xref] ->
+      {_, []} ->
+        # Only this pull request's own number was given: refuse, so a typo
+        # is not read as the bare, inferring form.
+        send_message(repo_conn, [patch], {:link_error, :self_stack})
+
+      {_, [target_xref]} ->
         do_stack(repo_conn, patch, target_xref, project)
 
       _ ->

@@ -242,6 +242,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: `bors stack` takes exactly one pull request number, e.g. `bors stack #123`."
   end
 
+  def generate_message({:link_error, :self_stack}) do
+    ":-1: Cannot stack this pull request on itself. Name the pull request it builds on, e.g. `bors stack #123`."
+  end
+
   def generate_message({:link_error, :cycle}) do
     ":-1: Cannot stack: that would create a cycle in the stacking order."
   end

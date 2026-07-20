@@ -85,6 +85,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
           :branch_mismatch,
           :in_batch,
           :stack_usage,
+          :self_stack,
           :cycle,
           :cannot_infer
         ] do
