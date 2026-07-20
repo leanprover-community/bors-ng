@@ -89,6 +89,12 @@ defmodule BorsNG.CommandTest do
     assert [{:link_malformed, :link, ["r+"]}] == Command.parse("bors link #23 r+")
   end
 
+  test "refuse other commands' arguments instead of reading numbers out of them" do
+    assert [{:link_malformed, :link, ["p=5"]}] == Command.parse("bors link #23 p=5")
+    assert [{:link_malformed, :stack, ["r=me"]}] == Command.parse("bors stack #2 r=me")
+    assert [{:link_malformed, :link, ["single"]}] == Command.parse("bors link #23 single on")
+  end
+
   test "accept the unlink command" do
     assert [:unlink] == Command.parse("bors unlink")
     assert [:unlink] == Command.parse("bors link-")

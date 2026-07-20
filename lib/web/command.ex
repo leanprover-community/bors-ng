@@ -283,21 +283,35 @@ defmodule BorsNG.Command do
       []
       iex> Command.malformed_pr_refs(" #13 r+")
       ["r+"]
+      iex> Command.malformed_pr_refs(" #13 p=5")
+      ["p=5"]
   """
   def malformed_pr_refs(arguments) do
     arguments
     |> ref_tokens()
     |> Enum.filter(fn token ->
       ref_like = String.match?(token, ~r/^[#\d]/) and not String.match?(token, ~r/^#?\d+$/)
-      ref_like or token in ["r+", "r-", "merge", "merge-", "try", "try-", "cancel"]
+      ref_like or other_command?(token)
     end)
+  end
+
+  # Words that read as another bors command (or its argument) on the same
+  # line: refuse rather than guess which pull requests were meant.
+  defp other_command?(token) do
+    token in ~w(r+ r- merge merge- try try- cancel retry ping single unlink link-) or
+      String.match?(token, ~r/^(p|priority|r|merge)=/) or
+      String.starts_with?(token, "delegate")
   end
 
   defp ref_tokens(arguments) do
     arguments
     |> String.split("\n", parts: 2)
     |> List.first()
-    |> String.split(~r/[\s,=]+/, trim: true)
+    |> String.trim_leading()
+    # `=` is only the optional `link=`/`stack=` sugar: strip one leading `=`
+    # and split on whitespace and commas, so `p=5` stays a single token.
+    |> String.replace_prefix("=", "")
+    |> String.split(~r/[\s,]+/, trim: true)
   end
 
   @doc ~S"""
