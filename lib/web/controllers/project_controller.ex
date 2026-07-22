@@ -82,7 +82,17 @@ defmodule BorsNG.ProjectController do
   end
 
   defp index_(conn, filter) do
-    projects = Dashboard.my_projects(conn.assigns.user.id, filter)
+    user = conn.assigns.user
+
+    projects =
+      if user.is_admin do
+        # Admins can access any repo, so surface all of them in the listing
+        # too, not just the ones they're a member/reviewer of.
+        Dashboard.all_projects()
+      else
+        Dashboard.my_projects(user.id, filter)
+      end
+
     render(conn, "index.html", projects: projects, filter: filter)
   end
 

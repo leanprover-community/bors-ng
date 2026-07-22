@@ -72,6 +72,13 @@ defmodule BorsNG.ProjectControllerTest do
     assert html_response(conn, 200) =~ "example/project"
   end
 
+  test "admin lists all projects, even unlinked ones", %{conn: conn, user: user} do
+    conn = login(conn)
+    Repo.update!(Ecto.Changeset.change(user, is_admin: true))
+    conn = get(conn, project_path(conn, :index))
+    assert html_response(conn, 200) =~ "example/project"
+  end
+
   test "show an unbatched patch", %{conn: conn, project: project, user: user} do
     conn = login(conn)
     Repo.insert!(%Batch{project_id: project.id})
