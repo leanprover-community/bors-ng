@@ -162,6 +162,136 @@ defmodule BorsNG.Worker.Batcher.Message do
     """
   end
 
+  def generate_message({:linked, xrefs}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+
+    "This pull request is part of a linked bundle: #{prs}.\n\nLinked pull requests merge in the same batch, or not at all. Each one still needs its own `bors r+`; `bors unlink` removes the link."
+  end
+
+  def generate_message(:unlinked) do
+    "This pull request is no longer linked; it will merge on its own."
+  end
+
+  def generate_message({:unlinked, :fresh_approval_needed}) do
+    "This pull request is no longer linked. The approval it held for the bundle was discarded, so it needs a fresh `bors r+` to merge on its own."
+  end
+
+  def generate_message(:try_ignores_bundle) do
+    "Note: `bors try` builds this pull request without the rest of its bundle, so its result may differ from the bundle's batch."
+  end
+
+  def generate_message({:stacked, child_xref, parent_xref, compare_url}) do
+    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. The batch applies ##{parent_xref}'s changes first ([##{child_xref}'s own changes](#{compare_url})). Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
+  end
+
+  def generate_message({:bundle_waiting, xrefs}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+
+    ":clock1: Waiting for approval (`bors r+`) of: #{prs}. The bundle enters the queue once every linked pull request is approved."
+  end
+
+  def generate_message({:bundle_held, xref}) do
+    ":clock1: Waiting on ##{xref} before the bundle can queue; see that pull request for details."
+  end
+
+  def generate_message({:bundle_last_unapproved, :awaiting_review}) do
+    "The rest of the bundle is approved; it enters the queue once this pull request gets `bors r+`."
+  end
+
+  def generate_message({:bundle_last_unapproved, :draft}) do
+    "The rest of the bundle is approved; it enters the queue once this pull request leaves draft and gets a fresh `bors r+`."
+  end
+
+  def generate_message({:bundle_last_unapproved, :closed}) do
+    "The rest of the bundle is approved, but this pull request is closed. Reopen it and run `bors r+`, or `bors unlink` from any linked pull request to let the others merge without it."
+  end
+
+  def generate_message({:bundle_pulled, xref, reason}) do
+    what =
+      case reason do
+        :closed -> "was closed"
+        :push -> "was pushed to"
+        :draft -> "was converted to draft"
+        _ -> "was canceled"
+      end
+
+    "This pull request left the queue because it is linked with ##{xref}, which #{what}.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
+  end
+
+  def generate_message({:link_error, :nothing_to_link}) do
+    ":-1: Nothing to link: give at least one other pull request number, e.g. `bors link #123`."
+  end
+
+  def generate_message({:link_error, :not_found}) do
+    ":-1: Cannot link: some of those pull request numbers are unknown to bors for this repository."
+  end
+
+  def generate_message({:link_error, :closed}) do
+    ":-1: Cannot link: all linked pull requests must be open."
+  end
+
+  def generate_message({:link_error, :branch_mismatch}) do
+    ":-1: Cannot link: all linked pull requests must target the same base branch."
+  end
+
+  def generate_message({:link_error, :in_batch}) do
+    ":-1: Cannot change links while an affected pull request is queued or running. Cancel it first with `bors r-`."
+  end
+
+  def generate_message({:link_error, :stack_usage}) do
+    ":-1: `bors stack` takes exactly one pull request number, e.g. `bors stack #123`."
+  end
+
+  def generate_message({:link_error, :self_stack}) do
+    ":-1: Cannot stack this pull request on itself. Name the pull request it builds on, e.g. `bors stack #123`."
+  end
+
+  def generate_message({:link_error, :cycle}) do
+    ":-1: Cannot stack: that would create a cycle in the stacking order."
+  end
+
+  def generate_message({:link_error, {:not_rebased, parent_xref}}) do
+    ":-1: Cannot stack: this pull request's branch does not contain the current head of ##{parent_xref}. Rebase it onto ##{parent_xref} and run `bors stack` again."
+  end
+
+  def generate_message({:link_error, {:stack_reversed, target_xref, child_xref}}) do
+    ":-1: Cannot stack: ##{target_xref} contains this pull request's head, so the stack appears to go the other way. Comment `bors stack ##{child_xref}` on ##{target_xref} instead."
+  end
+
+  def generate_message({:link_error, {:malformed_refs, cmd, tokens}}) do
+    list = Enum.map_join(tokens, ", ", &"`#{&1}`")
+
+    ":-1: Could not read #{list} in `bors #{cmd}`. Give pull request numbers, like `bors #{cmd} #123`; any other bors command goes on its own line."
+  end
+
+  def generate_message({:link_error, :unlink_args}) do
+    ":-1: `bors unlink` takes no pull request numbers: it dissolves this pull request's whole bundle. To drop one member, `bors unlink` and then `bors link` the ones that still belong together."
+  end
+
+  def generate_message({:stack_stale, child_xref, parent_xref}) do
+    "The bundle was not queued: bors could not verify that ##{child_xref} contains the current head of ##{parent_xref}. Rebase ##{child_xref} onto ##{parent_xref} if needed, then run `bors r+` on it again."
+  end
+
+  def generate_message({:link_error, :cannot_infer}) do
+    ":-1: Could not infer which open pull request this one stacks on: the base branch must match the head branch of exactly one open pull request. Pass the number, e.g. `bors stack #123`."
+  end
+
+  def generate_message({:retargeted, branch}) do
+    "bors changed this pull request's base branch to `#{branch}`, the target branch of its bundle."
+  end
+
+  def generate_message({:stack_retarget_failed, xref}) do
+    "The bundle was not queued: bors could not change the base branch of ##{xref} to the bundle's target branch. Run `bors r+` again to retry."
+  end
+
+  def generate_message({:base_restored, branch}) do
+    "bors restored this pull request's base branch to `#{branch}`, undoing the change made when its bundle was queued."
+  end
+
+  def generate_message({:base_restore_failed, branch}) do
+    "bors could not restore this pull request's base branch to `#{branch}` (it was changed when its bundle was queued). Please check the base branch."
+  end
+
   def generate_message({state, statuses}) do
     is_new_year = get_is_new_year()
     is_public = get_is_public()

@@ -68,6 +68,60 @@ defmodule BorsNG.CommandTest do
     assert [:deactivate] == Command.parse("Bors cancel")
   end
 
+  test "accept the link command" do
+    assert [{:link, [23, 55]}] == Command.parse("bors link #23 #55")
+    assert [{:link, [23, 55]}] == Command.parse("bors link= #23, 55")
+    assert [{:link, [23]}] == Command.parse("bors link 23")
+    assert [{:link, []}] == Command.parse("bors link")
+    assert [{:link, []}] == Command.parse("bors link nonsense")
+  end
+
+  test "accept the stack command" do
+    assert [{:stack, [23]}] == Command.parse("bors stack #23")
+    assert [{:stack, [23]}] == Command.parse("bors stack= 23")
+    assert [{:stack, [23]}] == Command.parse("bors stack on #23")
+    assert [{:stack, []}] == Command.parse("bors stack")
+  end
+
+  test "refuse references that cannot be read instead of dropping them" do
+    assert [{:link_malformed, :link, ["#23abc"]}] == Command.parse("bors link #23abc #55")
+    assert [{:link_malformed, :stack, ["23."]}] == Command.parse("bors stack 23.")
+    assert [{:link_malformed, :link, ["r+"]}] == Command.parse("bors link #23 r+")
+  end
+
+  test "refuse other commands' arguments instead of reading numbers out of them" do
+    assert [{:link_malformed, :link, ["p=5"]}] == Command.parse("bors link #23 p=5")
+    assert [{:link_malformed, :stack, ["r=me"]}] == Command.parse("bors stack #2 r=me")
+    assert [{:link_malformed, :link, ["single"]}] == Command.parse("bors link #23 single on")
+    assert [{:link_malformed, :link, ["stack"]}] == Command.parse("bors link #1 stack #2")
+  end
+
+  test "accept the unlink command" do
+    assert [:unlink] == Command.parse("bors unlink")
+    assert [:unlink] == Command.parse("bors link-")
+  end
+
+  test "unlink with pull request numbers is refused, not partially obeyed" do
+    assert [:unlink_with_args] == Command.parse("bors unlink #23")
+    assert [:unlink_with_args] == Command.parse("bors link- 23")
+  end
+
+  test "link commands require project membership, not delegation" do
+    assert :project_member == Command.required_permission_level([{:link, [1]}])
+    assert :project_member == Command.required_permission_level([{:stack, [1]}])
+    assert :project_member == Command.required_permission_level([:unlink])
+
+    assert :project_member ==
+             Command.required_permission_level([{:link_malformed, :link, ["x"]}])
+
+    assert :project_member == Command.required_permission_level([:unlink_with_args])
+
+    # Combined with a reviewer-level command, both requirements must hold.
+    assert :project_reviewer == Command.required_permission_level([{:link, [1]}, :activate])
+    assert :project_reviewer == Command.required_permission_level([:activate, :unlink])
+    assert :project_member == Command.required_permission_level([{:link, [1]}, {:try, ""}])
+  end
+
   test "accept single patch" do
     assert [{:set_is_single, true}, :activate] == Command.parse("bors r+ single on")
     assert [{:set_is_single, false}, :activate] == Command.parse("bors r+ single off")

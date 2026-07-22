@@ -15,6 +15,26 @@ defmodule BorsNG.Command do
 
   Your build scripts should then inspect the commit message
   to pull out the commands.
+
+  # link
+
+  `bors link #456`, commented on a pull request, links it with #456 into
+  a bundle that merges atomically: each member still needs its own
+  `bors r+`, and once every member is approved they all enter the same
+  batch, landing together or not at all. Listing several numbers bundles
+  more than two pull requests at once; the PR the comment is on is always
+  included (listing its own number is harmless). `bors unlink` (or
+  `bors link-`) dissolves the bundle.
+
+  `bors stack #123` (commented on another PR) additionally records an
+  order: this PR joins #123's bundle with #123's changes applied first
+  (a separate commit directly after it under squash merges). Use it when
+  the changes must not only land together but in a fixed order.
+
+  Bare `bors stack` infers the parent from the base-branch chain (the
+  gh-stack convention, where a stacked PR's base is its parent's branch);
+  such bases are retargeted onto the final branch automatically when the
+  bundle is queued.
   """
 
   alias BorsNG.Worker.Attemptor
@@ -134,6 +154,11 @@ defmodule BorsNG.Command do
           | {:autocorrect, binary}
           | :ping
           | :retry
+          | {:link, [pos_integer()]}
+          | {:stack, [pos_integer()]}
+          | {:link_malformed, :link | :stack, [binary]}
+          | :unlink
+          | :unlink_with_args
 
   @delegation_max_duration_sec 90 * 24 * 60 * 60
   def delegation_max_duration_sec, do: @delegation_max_duration_sec
@@ -199,7 +224,95 @@ defmodule BorsNG.Command do
   def parse_cmd("p=" <> rest), do: parse_priority(rest)
   def parse_cmd("retry" <> _), do: [:retry]
   def parse_cmd("cancel" <> _), do: [:deactivate]
+  def parse_cmd("unlink" <> arguments), do: parse_unlink(arguments)
+  def parse_cmd("link-" <> arguments), do: parse_unlink(arguments)
+  def parse_cmd("link" <> arguments), do: parse_bundle_refs(:link, arguments)
+  def parse_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
   def parse_cmd(_), do: []
+
+  # unlink dissolves the whole bundle; naming pull requests suggests the
+  # user expects to remove just those, so refuse rather than surprise.
+  defp parse_unlink(arguments) do
+    case parse_pr_refs(arguments) ++ malformed_pr_refs(arguments) do
+      [] -> [:unlink]
+      _ -> [:unlink_with_args]
+    end
+  end
+
+  # A mistyped number silently dropped would link the wrong set of pull
+  # requests, so any argument that was plausibly meant as a reference (or
+  # as another bors command) refuses the whole command.
+  defp parse_bundle_refs(cmd, arguments) do
+    case malformed_pr_refs(arguments) do
+      [] -> [{cmd, parse_pr_refs(arguments)}]
+      bad -> [{:link_malformed, cmd, bad}]
+    end
+  end
+
+  @doc ~S"""
+  The arguments of a link or stack command are pull request numbers,
+  separated by whitespace or commas, each with an optional leading `#`:
+
+      iex> alias BorsNG.Command
+      iex> Command.parse_pr_refs(" #1 #2")
+      [1, 2]
+      iex> Command.parse_pr_refs("= 1, 2, 3")
+      [1, 2, 3]
+      iex> Command.parse_pr_refs("")
+      []
+      iex> Command.parse_pr_refs(" nonsense")
+      []
+  """
+  def parse_pr_refs(arguments) do
+    arguments
+    |> ref_tokens()
+    |> Enum.map(&String.replace_prefix(&1, "#", ""))
+    |> Enum.filter(&String.match?(&1, ~r/^\d+$/))
+    |> Enum.map(&String.to_integer/1)
+  end
+
+  @doc ~S"""
+  Tokens that were plausibly meant as a pull request reference — they
+  start with `#` or a digit but do not read as a number — or as another
+  bors command on the same line. Connective words are tolerated:
+
+      iex> alias BorsNG.Command
+      iex> Command.malformed_pr_refs(" #12abc #13")
+      ["#12abc"]
+      iex> Command.malformed_pr_refs(" on #13")
+      []
+      iex> Command.malformed_pr_refs(" #13 r+")
+      ["r+"]
+      iex> Command.malformed_pr_refs(" #13 p=5")
+      ["p=5"]
+  """
+  def malformed_pr_refs(arguments) do
+    arguments
+    |> ref_tokens()
+    |> Enum.filter(fn token ->
+      ref_like = String.match?(token, ~r/^[#\d]/) and not String.match?(token, ~r/^#?\d+$/)
+      ref_like or other_command?(token)
+    end)
+  end
+
+  # Words that read as another bors command (or its argument) on the same
+  # line: refuse rather than guess which pull requests were meant.
+  defp other_command?(token) do
+    token in ~w(r+ r- merge merge- try try- cancel retry ping single link stack unlink link-) or
+      String.match?(token, ~r/^(p|priority|r|merge)=/) or
+      String.starts_with?(token, "delegate")
+  end
+
+  defp ref_tokens(arguments) do
+    arguments
+    |> String.split("\n", parts: 2)
+    |> List.first()
+    |> String.trim_leading()
+    # `=` is only the optional `link=`/`stack=` sugar: strip one leading `=`
+    # and split on whitespace and commas, so `p=5` stays a single token.
+    |> String.replace_prefix("=", "")
+    |> String.split(~r/[\s,]+/, trim: true)
+  end
 
   @doc ~S"""
   The username part of an activation-by command is defined like this:
@@ -524,6 +637,29 @@ defmodule BorsNG.Command do
     :member
   end
 
+  # link/stack/unlink write state onto pull requests other than the
+  # commented one, so a per-patch delegation (`bors delegate+`) must not
+  # satisfy them: they require standing on the project itself.
+  def required_permission_level_cmd({:link, _}) do
+    :project_member
+  end
+
+  def required_permission_level_cmd({:stack, _}) do
+    :project_member
+  end
+
+  def required_permission_level_cmd(:unlink) do
+    :project_member
+  end
+
+  def required_permission_level_cmd({:link_malformed, _, _}) do
+    :project_member
+  end
+
+  def required_permission_level_cmd(:unlink_with_args) do
+    :project_member
+  end
+
   def required_permission_level_cmd(_) do
     :reviewer
   end
@@ -531,17 +667,26 @@ defmodule BorsNG.Command do
   def required_permission_level(cmd_list) do
     cmd_list
     |> Enum.reduce(:none, fn cmd, perm ->
-      new_perm = cmd |> required_permission_level_cmd()
-
-      case {perm, new_perm} do
-        {:none, new_perm} -> new_perm
-        {perm, :none} -> perm
-        {_, :reviewer} -> :reviewer
-        {:reviewer, _} -> :reviewer
-        {p, p} -> p
-      end
+      combine_permission_levels(perm, required_permission_level_cmd(cmd))
     end)
   end
+
+  # :project_member / :project_reviewer are the delegation-free levels: a
+  # per-patch delegate satisfies :member and :reviewer on their own pull
+  # request but not these. Combining a delegation-free command with a
+  # reviewer-level one in the same comment must keep both requirements,
+  # which is :project_reviewer.
+  defp combine_permission_levels(:none, new), do: new
+  defp combine_permission_levels(perm, :none), do: perm
+  defp combine_permission_levels(p, p), do: p
+  defp combine_permission_levels(:project_reviewer, _), do: :project_reviewer
+  defp combine_permission_levels(_, :project_reviewer), do: :project_reviewer
+  defp combine_permission_levels(:project_member, :reviewer), do: :project_reviewer
+  defp combine_permission_levels(:reviewer, :project_member), do: :project_reviewer
+  defp combine_permission_levels(:project_member, :member), do: :project_member
+  defp combine_permission_levels(:member, :project_member), do: :project_member
+  defp combine_permission_levels(_, :reviewer), do: :reviewer
+  defp combine_permission_levels(:reviewer, _), do: :reviewer
 
   def permission_denied(c) do
     login = c.commenter.login
@@ -617,12 +762,56 @@ defmodule BorsNG.Command do
     Batcher.cancel(batcher, c.patch.id)
   end
 
+  def run(c, {:link, pr_numbers}) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.link(batcher, c.patch.id, pr_numbers)
+  end
+
+  def run(c, {:stack, pr_numbers}) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.stack(batcher, c.patch.id, pr_numbers)
+  end
+
+  def run(c, :unlink) do
+    batcher = Batcher.Registry.get(c.project.id)
+    Batcher.unlink(batcher, c.patch.id)
+  end
+
+  def run(c, {:link_malformed, cmd, tokens}) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:link_error, {:malformed_refs, cmd, tokens}})
+    )
+  end
+
+  def run(c, :unlink_with_args) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:link_error, :unlink_args})
+    )
+  end
+
   def run(c, {:try, arguments}) do
     c = fetch_patch(c)
 
     Task.Supervisor.start_child(BorsNG.Worker.Syncer.Supervisor, fn ->
       DelegationInvalidator.lint_for_patch(c.patch.id)
     end)
+
+    # try knows nothing about bundles: it builds this patch's branch alone.
+    # Say so, or a green try on one member overstates what the batch will do.
+    if c.patch.bundle_id != nil do
+      c.project.repo_xref
+      |> Project.installation_connection(Repo)
+      |> GitHub.post_comment!(
+        c.pr_xref,
+        Batcher.Message.generate_message(:try_ignores_bundle)
+      )
+    end
 
     attemptor = Attemptor.Registry.get(c.project.id)
     Attemptor.tried(attemptor, c.patch.id, arguments)

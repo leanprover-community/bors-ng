@@ -6,20 +6,26 @@ defmodule BorsNG.Worker.Batcher.Divider do
   alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.GitHub
 
+  # Splitting operates on "units", not individual patches: a linked bundle
+  # (patches sharing a `bundle_id`) is one unit and is never divided, so
+  # bisection and conflict isolation can't separate patches that must merge
+  # together. An unbundled patch is a unit of its own.
+
   def split_batch(patch_links, %Batch{project: project, into_branch: into}) do
-    count = Enum.count(patch_links)
+    units = group_units(patch_links)
 
-    if count > 1 do
-      {single_patch_links, patch_links} =
-        patch_links
-        |> Enum.split_with(fn l ->
-          Repo.get!(Patch, l.patch_id).is_single
-        end)
+    if Enum.count(units) > 1 do
+      {single_units, divisible_units} =
+        Enum.split_with(units, &unit_is_single?/1)
 
-      single_patch_links
-      |> Enum.each(&clone_batch([&1], project.id, into))
+      Enum.each(single_units, &clone_batch(&1, project.id, into))
 
-      bisect(patch_links, project.id, into)
+      case divisible_units do
+        [] -> :ok
+        [unit] -> clone_batch(unit, project.id, into)
+        units -> bisect(units, project.id, into)
+      end
+
       :retrying
     else
       :failed
@@ -30,29 +36,30 @@ defmodule BorsNG.Worker.Batcher.Divider do
     repo_conn = get_repo_conn(project)
 
     # if mergeable 0 and unmergeable = 1 -> fail no retry
-    #              0                   2+  create single batches for unmergeable patches
+    #              0                   2+  create single batches for unmergeable units
     #              1                   0  impossible
     #              1                   1+ create single batches for both
-    #              2+                  0  bisect for mergeable patches
-    #              2+                  1+ one batch for mergeable patches, create single batches for unmergeable patches
-    # Create batches for unmergeable patches first, so they will be picked up first and fail first.
-    case isolate_unmergeable_patch_links(patch_links, repo_conn) do
+    #              2+                  0  bisect for mergeable units
+    #              2+                  1+ one batch for mergeable units, create single batches for unmergeable units
+    # Create batches for unmergeable units first, so they will be picked up first and fail first.
+    # A bundle counts as unmergeable when any of its members is.
+    case isolate_unmergeable_units(group_units(patch_links), repo_conn) do
       {[], [_]} ->
         :failed
 
       {[], multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn patch_link ->
-          clone_batch([patch_link], project.id, into)
+        Enum.each(multiple_unmergeable, fn unit ->
+          clone_batch(unit, project.id, into)
         end)
 
         :retrying
 
       {[single_mergeable], multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn patch_link ->
-          clone_batch([patch_link], project.id, into)
+        Enum.each(multiple_unmergeable, fn unit ->
+          clone_batch(unit, project.id, into)
         end)
 
-        clone_batch([single_mergeable], project.id, into)
+        clone_batch(single_mergeable, project.id, into)
         :retrying
 
       {multiple_mergeable, []} ->
@@ -60,11 +67,11 @@ defmodule BorsNG.Worker.Batcher.Divider do
         :retrying
 
       {multiple_mergeable, multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn patch_link ->
-          clone_batch([patch_link], project.id, into)
+        Enum.each(multiple_unmergeable, fn unit ->
+          clone_batch(unit, project.id, into)
         end)
 
-        clone_batch(multiple_mergeable, project.id, into)
+        clone_batch(Enum.concat(multiple_mergeable), project.id, into)
         :retrying
     end
   end
@@ -86,26 +93,62 @@ defmodule BorsNG.Worker.Batcher.Divider do
     batch
   end
 
-  defp bisect(patch_links, project_id, into) do
-    count = Enum.count(patch_links)
+  @doc """
+  Group patch links into atomic units, preserving the batch's link order:
+  links whose patches share a `bundle_id` form one unit; every other link is
+  a unit by itself.
 
-    {lo, hi} = Enum.split(patch_links, div(count, 2))
-    clone_batch(lo, project_id, into)
-    clone_batch(hi, project_id, into)
+  Links should have `patch` preloaded (`LinkPatchBatch.from_batch/1` does);
+  otherwise each link falls back to its own patch query.
+  """
+  def group_units(patch_links) do
+    patch_links
+    |> Enum.reduce([], fn link, acc ->
+      key = unit_key(link)
+
+      case List.keyfind(acc, key, 0) do
+        nil -> acc ++ [{key, [link]}]
+        {_, links} -> List.keyreplace(acc, key, 0, {key, links ++ [link]})
+      end
+    end)
+    |> Enum.map(fn {_key, links} -> links end)
   end
 
-  defp isolate_unmergeable_patch_links(patch_links, repo_conn) do
-    patch_link_map =
-      patch_links
-      |> Enum.group_by(fn patch_link -> is_patch_mergeable(patch_link.patch, repo_conn) end)
+  defp unit_key(link) do
+    case link_patch(link).bundle_id do
+      nil -> {:solo, link.patch_id}
+      bundle_id -> {:bundle, bundle_id}
+    end
+  end
 
-    {patch_link_map[true] || [], patch_link_map[false] || []}
+  defp unit_is_single?(unit) do
+    Enum.any?(unit, &link_patch(&1).is_single)
+  end
+
+  defp bisect(units, project_id, into) do
+    count = Enum.count(units)
+
+    {lo, hi} = Enum.split(units, div(count, 2))
+    clone_batch(Enum.concat(lo), project_id, into)
+    clone_batch(Enum.concat(hi), project_id, into)
+  end
+
+  defp isolate_unmergeable_units(units, repo_conn) do
+    unit_map =
+      Enum.group_by(units, fn unit ->
+        Enum.all?(unit, &is_patch_mergeable(link_patch(&1), repo_conn))
+      end)
+
+    {unit_map[true] || [], unit_map[false] || []}
   end
 
   defp is_patch_mergeable(patch, repo_conn) do
     pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
     (pr.mergeable == true || pr.mergeable == nil) && pr.draft != true
   end
+
+  defp link_patch(%{patch: %Patch{} = patch}), do: patch
+  defp link_patch(link), do: Repo.get!(Patch, link.patch_id)
 
   @spec get_repo_conn(%Project{}) :: {{:installation, number}, number}
   defp get_repo_conn(project) do

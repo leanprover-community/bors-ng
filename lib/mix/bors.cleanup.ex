@@ -69,5 +69,19 @@ defmodule Mix.Tasks.Bors.Cleanup do
         where: p.updated_at < datetime_add(^NaiveDateTime.utc_now(), ^negative_months, "month")
       )
     )
+
+    # Deleting patches leaves their bundles behind (the membership FK lives
+    # on the patch and nilifies): sweep bundles no patch points at anymore.
+    BorsNG.Database.Repo.delete_all(
+      from(b in BorsNG.Database.PatchBundle,
+        where:
+          b.id not in subquery(
+            from(p in BorsNG.Database.Patch,
+              where: not is_nil(p.bundle_id),
+              select: p.bundle_id
+            )
+          )
+      )
+    )
   end
 end

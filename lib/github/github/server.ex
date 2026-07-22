@@ -120,6 +120,22 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
+  def do_handle_call(:compare_status, repo_conn, {base, head}) do
+    case get!(repo_conn, "compare/#{base}...#{head}") do
+      %{body: raw, status: 200} ->
+        case raw |> Jason.decode!() |> Map.get("status") do
+          "ahead" -> {:ok, :ahead}
+          "behind" -> {:ok, :behind}
+          "identical" -> {:ok, :identical}
+          "diverged" -> {:ok, :diverged}
+          _ -> {:error, :compare_status}
+        end
+
+      e ->
+        {:error, :compare_status, e.status, {base, head}}
+    end
+  end
+
   def do_handle_call(:get_pr, repo_conn, {pr_xref}) do
     case get!(repo_conn, "pulls/#{pr_xref}") do
       %{body: raw, status: 200} ->

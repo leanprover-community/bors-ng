@@ -45,6 +45,16 @@ defmodule BorsNG.GitHub do
     call_with_retry(:get_pr_compare, repo_conn, {base, head}, 500, 4_000)
   end
 
+  @doc """
+  How `head` relates to `base`: `:ahead` / `:identical` mean `head`
+  contains `base`'s current tip (i.e. it is rebased on it).
+  """
+  @spec compare_status(tconn, binary, binary) ::
+          {:ok, :ahead | :behind | :identical | :diverged} | {:error, term}
+  def compare_status(repo_conn, base, head) do
+    call_with_retry(:compare_status, repo_conn, {base, head}, 500, 4_000)
+  end
+
   @spec get_pr!(tconn, integer | bitstring) :: BorsNG.GitHub.Pr.t()
   def get_pr!(repo_conn, pr_xref) do
     {:ok, pr} = get_pr(repo_conn, pr_xref)

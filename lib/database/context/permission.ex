@@ -46,6 +46,23 @@ defmodule BorsNG.Database.Context.Permission do
       patch_delegated_reviewer?(user_id, patch_id)
   end
 
+  # The delegation-free levels: standing on the project itself, never a
+  # per-patch delegation. Commands that write state onto pull requests
+  # other than the commented one (link/stack/unlink) require these.
+  def permission?(:project_member, user, patch) do
+    %User{id: user_id} = user
+    %Patch{project_id: project_id} = patch
+
+    project_member?(user_id, project_id) or project_reviewer?(user_id, project_id)
+  end
+
+  def permission?(:project_reviewer, user, patch) do
+    %User{id: user_id} = user
+    %Patch{project_id: project_id} = patch
+
+    project_reviewer?(user_id, project_id)
+  end
+
   def permission?(:none, _, _) do
     true
   end

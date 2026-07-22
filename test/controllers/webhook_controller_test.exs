@@ -79,6 +79,54 @@ defmodule BorsNG.WebhookControllerTest do
     assert "OTHER_BRANCH" == patch2.into_branch
   end
 
+  # Editing the base by hand takes precedence over the bundle's base-restore
+  # bookkeeping; edits that keep the base leave it in place.
+  test "a hand retarget clears retargeted_from", %{conn: conn, project: project} do
+    patch =
+      Repo.insert!(%Patch{
+        title: "T",
+        body: "B",
+        pr_xref: 1,
+        project_id: project.id,
+        into_branch: "master",
+        retargeted_from: "feature-a"
+      })
+
+    edited = fn base ->
+      %{
+        "repository" => %{"id" => 13},
+        "action" => "edited",
+        "pull_request" => %{
+          "number" => 1,
+          "title" => "T",
+          "body" => "B",
+          "state" => "open",
+          "base" => %{"ref" => base, "repo" => %{"id" => 456}},
+          "head" => %{"sha" => "S", "ref" => "BAR_BRANCH", "repo" => %{"id" => 345}},
+          "merged_at" => nil,
+          "mergeable" => true,
+          "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+        }
+      }
+    end
+
+    # A title/body edit keeps the base: the bookkeeping stays.
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), edited.("master"))
+
+    assert Repo.get!(Patch, patch.id).retargeted_from == "feature-a"
+
+    # A base change bors did not write is a human retarget: forget it.
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), edited.("release"))
+
+    patch2 = Repo.get!(Patch, patch.id)
+    assert patch2.into_branch == "release"
+    assert patch2.retargeted_from == nil
+  end
+
   test "sync PR on reopen", %{conn: conn, project: project} do
     patch =
       Repo.insert!(%Patch{
@@ -581,6 +629,78 @@ defmodule BorsNG.WebhookControllerTest do
       |> get_in([{{:installation, 31}, 13}, :labels, 1])
 
     refute "delegated" in labels
+  end
+
+  test "converting a held bundle member to draft revokes its held approval",
+       %{conn: conn, project: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    bundle = Repo.insert!(BorsNG.Database.PatchBundle.new(proj.id))
+
+    # Approved and held for its bundle, but in no batch: the sibling is
+    # not approved yet.
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true,
+        bundle_id: bundle.id,
+        bundle_reviewer: "rvr"
+      })
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 2,
+      commit: "D",
+      into_branch: "master",
+      open: true,
+      bundle_id: bundle.id
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "converted_to_draft",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "draft" => true,
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+
+    assert Repo.get!(Patch, patch.id).bundle_reviewer == nil
+
+    comments =
+      GitHub.ServerMock.get_state()
+      |> get_in([{{:installation, 31}, 13}, :comments, 1])
+
+    assert Enum.any?(
+             comments,
+             &String.contains?(&1, "discarded the approval it held for its linked bundle")
+           )
   end
 
   test "ignore pull_request_review_comment commands on draft PR", %{conn: conn} do

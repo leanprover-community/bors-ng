@@ -20,6 +20,81 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert expected_message == actual_message
   end
 
+  test "generate bundle messages" do
+    assert Message.generate_message({:linked, [1, 2]}) =~ "linked bundle: #1, #2"
+    assert Message.generate_message(:unlinked) =~ "no longer linked"
+    stacked = Message.generate_message({:stacked, 2, 1, "https://github.com/o/r/compare/a...b"})
+    assert stacked =~ "#2 is now stacked on #1"
+    assert stacked =~ "[#2's own changes](https://github.com/o/r/compare/a...b)"
+    assert Message.generate_message({:link_error, {:not_rebased, 5}}) =~ "Rebase it onto #5"
+
+    assert Message.generate_message({:link_error, {:stack_reversed, 5, 2}}) =~
+             "Comment `bors stack #2` on #5 instead"
+
+    assert Message.generate_message({:link_error, {:malformed_refs, :link, ["#2x"]}}) =~
+             "Could not read `#2x` in `bors link`"
+
+    assert Message.generate_message({:link_error, :unlink_args}) =~
+             "takes no pull request numbers"
+
+    assert Message.generate_message({:unlinked, :fresh_approval_needed}) =~
+             "no longer linked. The approval it held"
+
+    assert Message.generate_message(:try_ignores_bundle) =~
+             "without the rest of its bundle"
+
+    assert Message.generate_message({:bundle_last_unapproved, :awaiting_review}) =~
+             "once this pull request gets `bors r+`"
+
+    assert Message.generate_message({:bundle_last_unapproved, :draft}) =~
+             "leaves draft"
+
+    assert Message.generate_message({:bundle_last_unapproved, :closed}) =~
+             "Reopen it"
+
+    assert Message.generate_message({:stack_stale, 2, 1}) =~ "#2 contains the current head of #1"
+    assert Message.generate_message({:retargeted, "master"}) =~ "base branch to `master`"
+
+    assert Message.generate_message({:stack_retarget_failed, 7}) =~
+             "could not change the base branch of #7"
+
+    assert Message.generate_message({:base_restored, "feature-a"}) =~
+             "restored this pull request's base branch to `feature-a`"
+
+    assert Message.generate_message({:base_restore_failed, "feature-a"}) =~
+             "could not restore this pull request's base branch to `feature-a`"
+
+    assert Message.generate_message({:bundle_waiting, [7]}) =~
+             "Waiting for approval (`bors r+`) of: #7"
+
+    assert Message.generate_message({:bundle_held, 7}) =~
+             "Waiting on #7 before the bundle can queue"
+
+    assert Message.generate_message({:bundle_pulled, 7, :closed}) =~ "#7, which was closed"
+    assert Message.generate_message({:bundle_pulled, 7, :push}) =~ "#7, which was pushed to"
+
+    assert Message.generate_message({:bundle_pulled, 7, :draft}) =~
+             "#7, which was converted to draft"
+
+    assert Message.generate_message({:bundle_pulled, 7, :requested}) =~ "#7, which was canceled"
+
+    for reason <- [
+          :nothing_to_link,
+          :not_found,
+          :closed,
+          :branch_mismatch,
+          :in_batch,
+          :stack_usage,
+          :self_stack,
+          :cycle,
+          :cannot_infer
+        ] do
+      message = Message.generate_message({:link_error, reason})
+      assert is_binary(message)
+      assert message =~ ":-1:"
+    end
+  end
+
   test "every bors.toml error key has an explicit, friendly renderer" do
     # Single source of truth: BorsToml's @type err (introspected below), plus
     # the fetch-layer-only :fetch_failed. Adding a new validation key extends

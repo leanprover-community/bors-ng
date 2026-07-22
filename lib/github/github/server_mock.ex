@@ -263,6 +263,23 @@ defmodule BorsNG.GitHub.ServerMock do
     end
   end
 
+  def do_handle_call(:compare_status, repo_conn, {base, head}, state) do
+    # Tests put a :compare_status map on the repo keyed by `{base, head}`
+    # whose value is :ahead | :behind | :identical | :diverged. A missing
+    # entry is an error (callers are expected to fail closed); setting
+    # :compare_error makes the call fail like a GitHub outage.
+    repo = Map.get(state, repo_conn, %{})
+
+    if Map.get(repo, :compare_error, false) do
+      {{:error, :compare_status, 502, {base, head}}, state}
+    else
+      case repo |> Map.get(:compare_status, %{}) |> Map.fetch({base, head}) do
+        {:ok, status} -> {{:ok, status}, state}
+        :error -> {{:error, :compare_status}, state}
+      end
+    end
+  end
+
   def do_handle_call(:get_pr_commits, repo_conn, {pr_xref}, state) do
     with(
       {:ok, repo} <- Map.fetch(state, repo_conn),
