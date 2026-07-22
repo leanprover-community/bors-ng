@@ -881,6 +881,48 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       %{commit_message: message} = state.commits[staging_sha]
       assert message =~ ~r/\AMerge #1 #4 #2 #3/
     end
+
+    test "a failed bundle drops the whole set's approvals and tells them together",
+         %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}], %{statuses: %{"iniNO" => %{}}})
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      # CI fails on the staging merge commit. The bundle is one indivisible
+      # unit, so the batch fails terminally rather than bisecting.
+      GitHub.ServerMock.put_state(
+        update_in(
+          GitHub.ServerMock.get_state(),
+          [{{:installation, 91}, 14}, :statuses, "iniNO"],
+          &Map.put(&1 || %{}, "ci", :error)
+        )
+      )
+
+      Repo.get!(Batch, batch.id) |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # The whole set's held approvals are dropped: re-running needs a fresh
+      # r+ on every member (so a clean sibling's r+ can't silently re-queue a
+      # still-broken bundle).
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      # Both members get the bundle-aware message naming the set; neither gets
+      # the stock per-PR "run `bors r+` or `bors retry`" failure text.
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "(#1, #2)"
+        assert msg =~ "left the queue"
+        refute msg =~ "`bors r+` or `bors retry`"
+      end
+    end
   end
 
   describe "bundle approval flow" do

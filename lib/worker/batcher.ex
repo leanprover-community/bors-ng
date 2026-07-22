@@ -1498,15 +1498,28 @@ defmodule BorsNG.Worker.Batcher do
 
     if state == :retrying do
       poll_after_delay(project)
+      send_message(repo_conn, patches, {state, erred})
     else
       # Terminal failure (a single-patch batch): the PR is dropped and needs a
       # maintainer to put it back on the queue, so flag it. `ready-to-merge` /
       # `bors-staging` are taken off by maybe_complete_batch once the batch
       # state is committed to :error.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
-    end
 
-    send_message(repo_conn, patches, {state, erred})
+      # A terminally-failed batch is one unit: a lone patch, or one bundle.
+      # A bundle can't be bisected to a culprit, so drop the whole set's held
+      # approvals (like a solo PR loses its r+ on failure) and tell the members
+      # together, instead of the stock per-PR text. Every member then needs a
+      # fresh r+, so re-running requires re-reviewing the fixed pull request.
+      {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
+      send_message(repo_conn, solo, {state, erred})
+
+      if bundled != [] do
+        Bundles.drop_held_approvals(bundled)
+        xrefs = bundled |> Enum.map(& &1.pr_xref) |> Enum.sort()
+        send_message(repo_conn, bundled, {:bundle_failed, xrefs, erred})
+      end
+    end
 
     :error
   end

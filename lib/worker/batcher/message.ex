@@ -218,6 +218,14 @@ defmodule BorsNG.Worker.Batcher.Message do
     "This pull request left the queue because it is linked with ##{xref}, which #{what}.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
   end
 
+  def generate_message({:bundle_failed, xrefs, statuses}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+    body = Enum.join(["Build failed:" | Enum.map(statuses, &"  * #{gen_status_link(&1)}")], "\n")
+
+    body <>
+      "\n\nThe linked bundle (#{prs}) failed to build, and bors can't tell which pull request is at fault. The whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
+  end
+
   def generate_message({:link_error, :nothing_to_link}) do
     ":-1: Nothing to link: give at least one other pull request number, e.g. `bors link #123`."
   end
