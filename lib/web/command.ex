@@ -295,6 +295,8 @@ defmodule BorsNG.Command do
       ["r+"]
       iex> Command.malformed_pr_refs(" #13 p=5")
       ["p=5"]
+      iex> Command.malformed_pr_refs(" #13 d=alice")
+      ["d=alice"]
       iex> Command.malformed_pr_refs(" #99999999999")
       ["#99999999999"]
   """
@@ -307,11 +309,15 @@ defmodule BorsNG.Command do
     end)
   end
 
-  # Words that read as another bors command or its argument on the same line.
-  # Refuse rather than guess which pull requests were meant.
+  # Tokens that read as another bors command or its argument on the same
+  # line. Refuse rather than guess which pull requests were meant. Asking
+  # the real parser keeps this list from drifting as commands are added.
+  # The two extra checks catch tokens the parser alone would not: key=value
+  # fragments whose argument is empty or unreadable (`r=`, `d=`, `for=2w`),
+  # and a bare `delegate`.
   defp other_command?(token) do
-    token in ~w(r+ r- merge merge- try try- cancel retry ping single link stack unlink link-) or
-      String.match?(token, ~r/^(p|priority|r|merge)=/) or
+    parse_cmd(token) != [] or
+      String.contains?(token, "=") or
       String.starts_with?(token, "delegate")
   end
 

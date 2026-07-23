@@ -108,6 +108,14 @@ defmodule BorsNG.CommandTest do
     assert [{:link_malformed, :link, ["stack"]}] == Command.parse("bors link #1 stack #2")
   end
 
+  test "refuse the short delegate forms and other key=value tokens too" do
+    assert [{:link_malformed, :link, ["d=alice"]}] == Command.parse("bors link #1 d=alice")
+    assert [{:link_malformed, :link, ["d+"]}] == Command.parse("bors link #1 d+")
+    assert [{:link_malformed, :stack, ["d-"]}] == Command.parse("bors stack #1 d-")
+    assert [{:link_malformed, :link, ["for=2w"]}] == Command.parse("bors link #1 for=2w")
+    assert [{:link_malformed, :link, ["delegate"]}] == Command.parse("bors link #1 delegate")
+  end
+
   test "accept the unlink command" do
     assert [:unlink] == Command.parse("bors unlink")
     assert [:unlink] == Command.parse("bors link-")
