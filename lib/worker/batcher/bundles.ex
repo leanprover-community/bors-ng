@@ -239,8 +239,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
 
   @doc """
   Dissolve a bundle: clear every member's bundle state and delete the bundle
-  row. Refused while any member is queued or running. Returns `{:ok, members}`
-  or `{:error, :in_batch}`.
+  row. Refused while any member is queued or running. Runs in a transaction,
+  like `form/2`: the bundle dissolves completely or not at all. Returns
+  `{:ok, members}` or `{:error, :in_batch}`.
   """
   def dissolve(bundle_id) do
     members = members(bundle_id)
@@ -248,19 +249,24 @@ defmodule BorsNG.Worker.Batcher.Bundles do
     if Enum.any?(members, &in_incomplete_batch?/1) do
       {:error, :in_batch}
     else
-      members =
-        Enum.map(members, fn p ->
-          p
-          |> Patch.changeset(%{
-            bundle_id: nil,
-            bundle_reviewer: nil,
-            stacked_on_id: nil,
-            retargeted_from: nil
-          })
-          |> Repo.update!()
+      {:ok, members} =
+        Repo.transaction(fn ->
+          members =
+            Enum.map(members, fn p ->
+              p
+              |> Patch.changeset(%{
+                bundle_id: nil,
+                bundle_reviewer: nil,
+                stacked_on_id: nil,
+                retargeted_from: nil
+              })
+              |> Repo.update!()
+            end)
+
+          Repo.delete!(Repo.get!(PatchBundle, bundle_id))
+          members
         end)
 
-      Repo.delete!(Repo.get!(PatchBundle, bundle_id))
       {:ok, members}
     end
   end
