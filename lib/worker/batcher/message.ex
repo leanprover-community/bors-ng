@@ -238,6 +238,14 @@ defmodule BorsNG.Worker.Batcher.Message do
       "\n\nThe linked bundle (#{prs}) failed to build, and bors can't tell which pull request is at fault. The whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
   end
 
+  def generate_message({:malformed_args, :priority}) do
+    ":-1: `p=` takes an integer, e.g. `bors p=10`."
+  end
+
+  def generate_message({:malformed_args, :single}) do
+    ":-1: `single` takes `on` or `off`, e.g. `bors single on`."
+  end
+
   def generate_message({:link_error, :nothing_to_link}) do
     ":-1: Nothing to link: give at least one other pull request number, e.g. `bors link #123`."
   end

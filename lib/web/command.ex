@@ -155,6 +155,7 @@ defmodule BorsNG.Command do
           | {:link, [pos_integer()]}
           | {:stack, [pos_integer()]}
           | {:link_malformed, :link | :stack, [binary]}
+          | {:malformed_args, :priority | :single}
           | :unlink
           | :unlink_with_args
 
@@ -199,13 +200,13 @@ defmodule BorsNG.Command do
   def parse_cmd("try-"), do: [:try_cancel]
   def parse_cmd("try" <> arguments), do: [{:try, arguments}]
   def parse_cmd("single" <> rest), do: parse_single_patch(rest)
-  def parse_cmd("r+ single" <> rest), do: parse_single_patch(rest) ++ [:activate]
-  def parse_cmd("r+ p=" <> rest), do: parse_priority(rest) ++ [:activate]
+  def parse_cmd("r+ single" <> rest), do: with_activation(parse_single_patch(rest))
+  def parse_cmd("r+ p=" <> rest), do: with_activation(parse_priority(rest))
   def parse_cmd("r+" <> _), do: [:activate]
   def parse_cmd("r-" <> _), do: [:deactivate]
   def parse_cmd("r=" <> arguments), do: parse_activation_args(arguments)
   def parse_cmd("merge-" <> _), do: [:deactivate]
-  def parse_cmd("merge p=" <> rest), do: parse_priority(rest) ++ [:activate]
+  def parse_cmd("merge p=" <> rest), do: with_activation(parse_priority(rest))
   def parse_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
   def parse_cmd("merge" <> _), do: [:activate]
   def parse_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
@@ -387,8 +388,10 @@ defmodule BorsNG.Command do
 
     case params do
       ["p", priority_s] ->
-        {priority_i, _} = Integer.parse(priority_s)
-        {mentions, %{p: priority_i}}
+        case Integer.parse(priority_s) do
+          {priority_i, _} -> {mentions, %{p: priority_i}}
+          :error -> :malformed_priority
+        end
 
       _ ->
         mentions
@@ -400,6 +403,7 @@ defmodule BorsNG.Command do
 
     case arguments do
       "" -> []
+      :malformed_priority -> [{:malformed_args, :priority}]
       {mentions, %{p: p}} -> [{:set_priority, p}, {:activate_by, mentions}]
       arguments -> [{:activate_by, arguments}]
     end
@@ -562,9 +566,10 @@ defmodule BorsNG.Command do
   end
 
   def parse_priority(binary) do
-    {p, _} = Integer.parse(binary)
-
-    [{:set_priority, p}]
+    case Integer.parse(binary) do
+      {p, _} -> [{:set_priority, p}]
+      :error -> [{:malformed_args, :priority}]
+    end
   end
 
   def parse_single_patch(binary) do
@@ -574,8 +579,16 @@ defmodule BorsNG.Command do
 
       "off" <> _ ->
         [{:set_is_single, false}]
+
+      _ ->
+        [{:malformed_args, :single}]
     end
   end
+
+  # A modifier that cannot be read swallows its activation: activating
+  # anyway, with the modifier silently dropped, is the surprise being refused.
+  defp with_activation([{:malformed_args, _}] = malformed), do: malformed
+  defp with_activation(cmds), do: cmds ++ [:activate]
 
   @doc """
   Given a populated struct, run everything.
@@ -669,6 +682,13 @@ defmodule BorsNG.Command do
 
   def required_permission_level_cmd(:unlink_with_args) do
     :project_member
+  end
+
+  # The hint about an unreadable argument is gated at :member — enough to
+  # keep outsiders from making bors post comments — and deliberately below
+  # :reviewer, so a typo never trips the delegation merge-time gate.
+  def required_permission_level_cmd({:malformed_args, _}) do
+    :member
   end
 
   def required_permission_level_cmd(_) do
@@ -802,6 +822,15 @@ defmodule BorsNG.Command do
     |> GitHub.post_comment!(
       c.pr_xref,
       Batcher.Message.generate_message({:link_error, :unlink_args})
+    )
+  end
+
+  def run(c, {:malformed_args, kind}) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:malformed_args, kind})
     )
   end
 

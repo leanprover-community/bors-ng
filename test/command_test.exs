@@ -146,6 +146,25 @@ defmodule BorsNG.CommandTest do
     assert [{:try, " single screwy"}] == Command.parse("bors try single screwy")
   end
 
+  test "malformed priority and single arguments parse to a hint, not a crash" do
+    assert [{:malformed_args, :priority}] == Command.parse("bors p=abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors p=")
+    assert [{:malformed_args, :single}] == Command.parse("bors single")
+    assert [{:malformed_args, :single}] == Command.parse("bors single maybe")
+  end
+
+  test "a malformed modifier swallows its activation instead of dropping the modifier" do
+    assert [{:malformed_args, :priority}] == Command.parse("bors r+ p=abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors merge p=abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors r=me p=abc")
+    assert [{:malformed_args, :single}] == Command.parse("bors r+ single maybe")
+  end
+
+  test "the malformed-argument hint is member-gated, below the delegation merge gate" do
+    assert :member == Command.required_permission_level([{:malformed_args, :priority}])
+    assert :member == Command.required_permission_level([{:malformed_args, :single}])
+  end
+
   test "accept priority" do
     assert [{:set_priority, 1}, :activate] == Command.parse("bors r+ p=1")
     assert [{:set_priority, 1}, :activate] == Command.parse("bors merge p=1")
