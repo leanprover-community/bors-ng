@@ -28,6 +28,7 @@ defmodule BorsNG.Worker.Batcher do
   alias BorsNG.Worker.Batcher.Bundles
   alias BorsNG.Worker.Batcher.Divider
   alias BorsNG.Worker.Labeler
+  alias BorsNG.Worker.Syncer
   alias BorsNG.Worker.Zulip
   alias BorsNG.Database.Repo
   alias BorsNG.Database.Batch
@@ -1248,16 +1249,62 @@ defmodule BorsNG.Worker.Batcher do
     {:conflict, nil}
   end
 
+  # At least one member's stored head no longer matches its live pull
+  # request: a push arrived whose synchronize webhook was never processed.
+  # Reconcile every member against GitHub — refresh the stale record and
+  # drop that member's held approval, the two effects the missed webhook
+  # would have had. Without the refresh, a fresh r+ preflights the stale
+  # commit and races again; with it, the next r+ (and the delegation
+  # merge-time gate) evaluates the real head. Members whose records are
+  # accurate are left untouched. The batch stays failed either way:
+  # nothing re-queues without a fresh r+.
   defp start_waiting_merged_batch(batch, patch_links, _base, :race) do
     project = batch.project
     repo_conn = get_repo_conn(project)
     patches = Enum.map(patch_links, & &1.patch)
     poll_after_delay(project)
 
+    Enum.each(patches, &reconcile_raced_patch(repo_conn, project, &1))
+
     send_message(repo_conn, patches, :race)
     send_status(repo_conn, batch, :race)
 
     {:error, nil}
+  end
+
+  defp reconcile_raced_patch(repo_conn, project, patch) do
+    case GitHub.get_pr(repo_conn, patch.pr_xref) do
+      {:ok, %{head_sha: head_sha} = pr} when head_sha != patch.commit ->
+        # A race means webhook delivery failed at least once. Recurring
+        # warnings here mean it is broken; do not let this path heal that
+        # silently.
+        Logger.warning(
+          "race: patch #{patch.id} (PR ##{patch.pr_xref}) had stale commit " <>
+            "#{inspect(patch.commit)}, live head is #{inspect(head_sha)}; re-syncing"
+        )
+
+        Bundles.drop_held_approval(patch.id)
+        resync_raced_patch(project, patch, pr)
+
+      {:ok, _} ->
+        :ok
+
+      error ->
+        Logger.warning(
+          "race: could not reconcile patch #{patch.id} (PR ##{patch.pr_xref}): #{inspect(error)}"
+        )
+    end
+  end
+
+  # sync_patch upserts the author, so it needs the PR's user. A PR payload
+  # without one shouldn't happen (GitHub reports deleted authors as "ghost"),
+  # but do not let the recovery path crash the batcher over it.
+  defp resync_raced_patch(project, _patch, %{user: user} = pr) when not is_nil(user) do
+    Syncer.sync_patch(project.id, pr)
+  end
+
+  defp resync_raced_patch(_project, patch, _pr) do
+    Logger.warning("race: PR ##{patch.pr_xref} has no user; skipping re-sync")
   end
 
   defp get_squash_pr_data(repo_conn, patch, toml) do

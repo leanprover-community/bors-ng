@@ -1042,6 +1042,50 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       end
     end
 
+    test "a race re-syncs the stale member and drops only its approval", %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}])
+
+      # sync_patch upserts the author, so the raced member's PR needs a user.
+      GitHub.ServerMock.put_state(
+        update_in(
+          GitHub.ServerMock.get_state(),
+          [{{:installation, 91}, 14}, :pulls],
+          fn pulls ->
+            Map.new(pulls, fn {xref, pr} ->
+              {xref, %Pr{pr | user: %GitHub.User{id: 23, login: "ghost", avatar_url: ""}}}
+            end)
+          end
+        )
+      )
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+
+      # #2's stored head is stale: the synchronize webhook for its last push
+      # was never processed. Its live head on GitHub is "O".
+      p2 = insert_patch(proj, 2, %{commit: "STALE", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      # The stored-vs-live head check refuses the merge; the batch fails.
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # The stale member is reconciled with GitHub and loses its held
+      # approval — the effects the missed webhook would have had. The next
+      # r+ preflights the real head instead of racing again.
+      p2 = Repo.get!(Patch, p2.id)
+      assert p2.commit == "O"
+      assert p2.bundle_reviewer == nil
+
+      # The member whose record was accurate is left untouched.
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.commit == "N"
+      assert p1.bundle_reviewer == "rvr"
+
+      assert Enum.any?(comments_for(2), &(&1 =~ "Synchronization error"))
+    end
+
     test "a bundle whose final push fails drops the whole set's approvals",
          %{proj: proj} do
       # The batch builds green, but the push to master fails unrecoverably
