@@ -187,7 +187,7 @@ defmodule BorsNG.Worker.SyncerTest do
 
     batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
     attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
-    :ok = BorsNG.Worker.Batcher.set_is_single(batcher, patch.id, false)
+    _ = :sys.get_state(batcher)
     _ = :sys.get_state(attemptor)
 
     refute Repo.get!(Patch, patch.id).open

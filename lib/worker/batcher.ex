@@ -55,12 +55,15 @@ defmodule BorsNG.Worker.Batcher do
     GenServer.cast(pid, {:reviewed, patch_id, reviewer})
   end
 
+  # Casts, not calls: no caller uses a reply, and a call would block the
+  # webhook process for as long as the batcher is busy — bundle activation
+  # can hold it past the 5-second call timeout, crashing the caller.
   def set_is_single(pid, patch_id, is_single) when is_integer(patch_id) do
-    GenServer.call(pid, {:set_is_single, patch_id, is_single})
+    GenServer.cast(pid, {:set_is_single, patch_id, is_single})
   end
 
   def set_priority(pid, patch_id, priority) when is_integer(patch_id) do
-    GenServer.call(pid, {:set_priority, patch_id, priority})
+    GenServer.cast(pid, {:set_priority, patch_id, priority})
   end
 
   def status(pid, stat) do
@@ -111,7 +114,19 @@ defmodule BorsNG.Worker.Batcher do
     {:noreply, project_id}
   end
 
-  def handle_call({:set_is_single, patch_id, is_single}, _from, project_id) do
+  # Deployed callers cast these; the handle_call clauses only serve calls
+  # already in flight across a deploy.
+  def handle_call({:set_is_single, _, _} = args, _from, project_id) do
+    do_handle_cast(args, project_id)
+    {:reply, :ok, project_id}
+  end
+
+  def handle_call({:set_priority, _, _} = args, _from, project_id) do
+    do_handle_cast(args, project_id)
+    {:reply, :ok, project_id}
+  end
+
+  def do_handle_cast({:set_is_single, patch_id, is_single}, _project_id) do
     case Repo.get(Patch, patch_id) do
       nil ->
         nil
@@ -130,13 +145,9 @@ defmodule BorsNG.Worker.Batcher do
           |> Repo.update!()
         end)
     end
-
-    {:reply, :ok, project_id}
   end
 
-  def handle_call({:set_priority, patch_id, priority}, _from, project_id) do
-    check_self(project_id)
-
+  def do_handle_cast({:set_priority, patch_id, priority}, project_id) do
     case Repo.get(Patch, patch_id) do
       nil ->
         nil
@@ -162,8 +173,6 @@ defmodule BorsNG.Worker.Batcher do
 
         Project.ping!(project_id)
     end
-
-    {:reply, :ok, project_id}
   end
 
   def do_handle_cast({:reviewed, patch_id, reviewer}, _project_id) do
@@ -498,6 +507,16 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
+  # Bundle activation makes O(members) GitHub calls inside the batcher
+  # process — a staleness compare per stack edge, a get/update per retargeted
+  # member, and a full preflight per member, each with retry backoff — so a
+  # large bundle blocks this project's batcher for the duration. Accepted for
+  # now: realistic bundles are small, and the messages that arrive meanwhile
+  # are casts that queue up. If it ever hurts, move the read-only checks
+  # (stale_stack_pair, bundle_preflight) into a supervised task, and when it
+  # reports clear, re-validate membership/approvals against the current rows
+  # here before retargeting and queueing — the GitHub writes must stay
+  # serialized in this process so an unlink cannot interleave with them.
   defp activate_bundle(patch, bundle_id, max_batch_size) do
     project = Repo.get!(Project, patch.project_id)
     repo_conn = get_repo_conn(project)

@@ -336,10 +336,11 @@ defmodule BorsNG.WebhookControllerTest do
     |> put_req_header("x-github-event", "pull_request")
     |> post(webhook_path(conn, :webhook, "github"), body_params)
 
-    # Ensure the batcher processed the cancel cast by doing a synchronous call
+    # Ensure the batcher and attemptor processed the cancel casts: a
+    # synchronous :sys.get_state drains everything ahead of it in the mailbox.
     batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
     attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
-    :ok = BorsNG.Worker.Batcher.set_is_single(batcher, patch.id, false)
+    _ = :sys.get_state(batcher)
     _ = :sys.get_state(attemptor)
     flush_branch_deleter()
 

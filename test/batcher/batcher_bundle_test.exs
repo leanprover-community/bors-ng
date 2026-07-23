@@ -1451,7 +1451,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = insert_patch(proj, 2)
       {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
 
-      Batcher.handle_call({:set_priority, p1.id, 7}, nil, proj.id)
+      Batcher.handle_cast({:set_priority, p1.id, 7}, proj.id)
 
       assert Repo.get!(Patch, p1.id).priority == 7
       assert Repo.get!(Patch, p2.id).priority == 7
@@ -1463,10 +1463,22 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = insert_patch(proj, 2)
       {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
 
-      Batcher.handle_call({:set_is_single, p1.id, true}, nil, proj.id)
+      Batcher.handle_cast({:set_is_single, p1.id, true}, proj.id)
 
       assert Repo.get!(Patch, p1.id).is_single == true
       assert Repo.get!(Patch, p2.id).is_single == true
+    end
+
+    test "in-flight calls from before a deploy still apply the setting", %{proj: proj} do
+      put_plain_state(%{1 => []})
+      p1 = insert_patch(proj, 1)
+
+      assert {:reply, :ok, _} = Batcher.handle_call({:set_priority, p1.id, 7}, nil, proj.id)
+      assert {:reply, :ok, _} = Batcher.handle_call({:set_is_single, p1.id, true}, nil, proj.id)
+
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.priority == 7
+      assert p1.is_single == true
     end
 
     test "the prerun poll queues by current bundle membership, not its snapshot",

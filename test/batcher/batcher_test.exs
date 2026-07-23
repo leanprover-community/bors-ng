@@ -4128,7 +4128,7 @@ defmodule BorsNG.Worker.BatcherTest do
            }
 
     # Submit the second one, with a higher priority.
-    Batcher.handle_call({:set_priority, patch2.id, 101}, nil, proj.id)
+    Batcher.handle_cast({:set_priority, patch2.id, 101}, proj.id)
     Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
     # Push the second one's timer, so it'll start now.
     {batch, batch2} =
@@ -4695,7 +4695,7 @@ defmodule BorsNG.Worker.BatcherTest do
     |> Repo.update!()
 
     # Submit the third one, with medium priority.
-    Batcher.handle_call({:set_priority, patch3.id, 10}, nil, proj.id)
+    Batcher.handle_cast({:set_priority, patch3.id, 10}, proj.id)
     Batcher.handle_cast({:reviewed, patch3.id, "rvr"}, proj.id)
     # Push the third one's timer, so it'll start now.
     [batch3] =
@@ -6848,11 +6848,11 @@ defmodule BorsNG.Worker.BatcherTest do
       }
       |> Repo.insert!()
 
-    Batcher.handle_call({:set_is_single, patch.id, true}, nil, nil)
+    Batcher.handle_cast({:set_is_single, patch.id, true}, nil)
     assert Repo.one!(Patch).is_single == true
-    Batcher.handle_call({:set_is_single, patch.id, false}, nil, nil)
+    Batcher.handle_cast({:set_is_single, patch.id, false}, nil)
     assert Repo.one!(Patch).is_single == false
-    Batcher.handle_call({:set_is_single, patch.id, true}, nil, nil)
+    Batcher.handle_cast({:set_is_single, patch.id, true}, nil)
     assert Repo.one!(Patch).is_single == true
   end
 
@@ -6896,7 +6896,7 @@ defmodule BorsNG.Worker.BatcherTest do
     %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id}
     |> Repo.insert!()
 
-    Batcher.handle_call({:set_is_single, patch2.id, true}, nil, proj.id)
+    Batcher.handle_cast({:set_is_single, patch2.id, true}, proj.id)
     Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
 
     projBatches = proj.id |> Batch.all_for_project() |> Repo.all()
@@ -7071,7 +7071,7 @@ defmodule BorsNG.Worker.BatcherTest do
     Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
     Batcher.handle_cast({:reviewed, patch3.id, "rvr"}, proj.id)
     Batcher.handle_cast({:reviewed, patch4.id, "rvr"}, proj.id)
-    Batcher.handle_call({:set_is_single, patch1.id, true}, nil, proj.id)
+    Batcher.handle_cast({:set_is_single, patch1.id, true}, proj.id)
     Batcher.handle_cast({:reviewed, patch1.id, "rvr"}, proj.id)
 
     batch = Repo.get_by!(Batch, project_id: proj.id)
@@ -7173,7 +7173,7 @@ defmodule BorsNG.Worker.BatcherTest do
       }
       |> Repo.insert!()
 
-    Batcher.handle_call({:set_priority, patch.id, 10}, nil, nil)
+    Batcher.handle_cast({:set_priority, patch.id, 10}, nil)
     assert Repo.one!(Patch).priority == 10
   end
 
@@ -7217,7 +7217,7 @@ defmodule BorsNG.Worker.BatcherTest do
     %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id}
     |> Repo.insert!()
 
-    Batcher.handle_call({:set_priority, patch2.id, 10}, nil, proj.id)
+    Batcher.handle_cast({:set_priority, patch2.id, 10}, proj.id)
     Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
 
     assert Repo.one!(
@@ -7272,7 +7272,7 @@ defmodule BorsNG.Worker.BatcherTest do
     |> Repo.insert!()
 
     Batcher.handle_cast({:reviewed, patch2.id, "rvr"}, proj.id)
-    Batcher.handle_call({:set_priority, patch2.id, 10}, nil, nil)
+    Batcher.handle_cast({:set_priority, patch2.id, 10}, nil)
 
     assert Repo.one!(
              from(b in Batch,
