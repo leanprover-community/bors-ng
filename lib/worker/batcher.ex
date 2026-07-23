@@ -1466,6 +1466,11 @@ defmodule BorsNG.Worker.Batcher do
           {:push_failed_unknown_failure, batch.into_branch, status_code, raw_error_content}
         )
 
+        # This is terminal for a bundle too: drop the held approvals so a
+        # sibling's stale approval cannot re-queue the set on one fresh r+.
+        # The diagnostic message above already went to every member.
+        Bundles.drop_held_approvals(patches)
+
         # The build passed but the push to the base branch failed unrecoverably
         # and we don't re-queue, so the PR is dropped and needs a maintainer to
         # put it back on. `ready-to-merge` / `bors-staging` come off in
@@ -1580,14 +1585,20 @@ defmodule BorsNG.Worker.Batcher do
 
     if state == :retrying do
       poll_after_delay(project)
+      send_message(repo_conn, patches, {:timeout, state})
     else
-      # Terminal failure (a single-patch batch): the PR is dropped and needs a
-      # maintainer to put it back on the queue, so flag it before the queue
-      # reconcile below takes `ready-to-merge` / `bors-staging` off.
+      # Terminal failure: the PRs are dropped and need a maintainer to put
+      # them back on the queue, so flag them before the queue reconcile below
+      # takes `ready-to-merge` / `bors-staging` off.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
-    end
 
-    send_message(repo_conn, patches, {:timeout, state})
+      # A timed-out bundle fails as one unit, same as a build failure or
+      # conflict: drop the held approvals so a sibling's stale approval
+      # cannot re-queue the set on one fresh r+.
+      {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
+      send_message(repo_conn, solo, {:timeout, state})
+      fail_bundles(repo_conn, bundled, &{:bundle_timeout, &1})
+    end
 
     batch
     |> Batch.changeset(%{state: :error})

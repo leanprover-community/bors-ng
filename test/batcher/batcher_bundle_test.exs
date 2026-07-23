@@ -972,6 +972,86 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         refute msg =~ "into this PR"
       end
     end
+
+    test "a timed-out bundle drops the whole set's approvals and tells them together",
+         %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}], %{statuses: %{"iniNO" => %{}}})
+
+      p1 =
+        insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      # The batch's deadline passes before CI reports. A bundle is one
+      # indivisible unit, so the timeout is terminal, same as a build failure.
+      Repo.get!(Batch, batch.id)
+      |> Batch.changeset(%{timeout_at: 0, last_polled: 0})
+      |> Repo.update!()
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # The whole set's held approvals are dropped, as on the build-failure
+      # path: one member's fresh r+ must not silently re-queue the set.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      # The retargeting record survives for a later unlink to restore.
+      assert Repo.get!(Patch, p1.id).retargeted_from == "feature-a"
+
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "Timed out"
+        assert msg =~ "(#1, #2)"
+        refute msg =~ "`bors r+` or `bors retry`"
+      end
+    end
+
+    test "a bundle whose final push fails drops the whole set's approvals",
+         %{proj: proj} do
+      # The batch builds green, but the push to master fails unrecoverably
+      # (e.g. branch protection). That is terminal: the batch is not retried.
+      put_merge_state([{1, "N"}, {2, "O"}], %{
+        statuses: %{"iniNO" => %{}},
+        push_errors: %{"master" => %{error_code: 403, response: "protected branch"}}
+      })
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      GitHub.ServerMock.put_state(
+        update_in(
+          GitHub.ServerMock.get_state(),
+          [{{:installation, 91}, 14}, :statuses, "iniNO"],
+          &Map.put(&1 || %{}, "ci", :ok)
+        )
+      )
+
+      Repo.get!(Batch, batch.id) |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # Terminal for the bundle too: held approvals are dropped so a
+      # sibling's stale approval cannot re-queue the set on one fresh r+.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "failed to merge into master"
+        assert msg =~ "It will not be retried"
+      end
+    end
   end
 
   describe "drop_held_approvals / forget_retargeting" do

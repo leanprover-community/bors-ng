@@ -111,6 +111,12 @@ defmodule BorsNG.Worker.Batcher.Message do
     "Merge conflict.\n\nThe linked bundle (#{prs}) can't be merged: its pull requests conflict with each other, and bors merges them as one unit. The whole set left the queue. Rebase one onto the other to resolve the clash, or `bors unlink` to split the bundle, then run `bors r+` on each member to re-queue."
   end
 
+  def generate_message({:bundle_timeout, xrefs}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+
+    "Timed out.\n\nThe linked bundle (#{prs}) merges as one unit, so the whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
+  end
+
   def generate_message({:timeout, :failed}) do
     "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
   end
