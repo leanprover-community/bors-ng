@@ -1,8 +1,10 @@
 defmodule BorsNG.Database.Context.DelegationTest do
   use ExUnit.Case
 
+  alias BorsNG.Database.Batch
   alias BorsNG.Database.Context.Delegation
   alias BorsNG.Database.Installation
+  alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
@@ -106,6 +108,62 @@ defmodule BorsNG.Database.Context.DelegationTest do
       assert [] == Repo.all(UserPatchDelegation)
       assert Enum.any?(comments(), &String.contains?(&1, "Delegation for @alice"))
       assert Enum.any?(comments(), &String.contains?(&1, "expired"))
+      # No standing approval, so no note claiming one survives.
+      refute Enum.any?(comments(), &String.contains?(&1, "still counts"))
+    end
+
+    test "expired notice says a held bundle approval still counts", %{
+      user: user,
+      patch: patch
+    } do
+      patch
+      |> Patch.changeset(%{bundle_reviewer: "alice"})
+      |> Repo.update!()
+
+      past =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: past,
+        delegated_at_commit: "abc"
+      })
+
+      Delegation.sweep()
+
+      assert [] == Repo.all(UserPatchDelegation)
+      assert Enum.any?(comments(), &String.contains?(&1, "expired"))
+      assert Enum.any?(comments(), &String.contains?(&1, "still counts"))
+      assert Enum.any?(comments(), &String.contains?(&1, "bors r-"))
+    end
+
+    test "expired notice has no note when the held approval is someone else's", %{
+      user: user,
+      patch: patch
+    } do
+      patch
+      |> Patch.changeset(%{bundle_reviewer: "bob"})
+      |> Repo.update!()
+
+      past =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(-3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: past,
+        delegated_at_commit: "abc"
+      })
+
+      Delegation.sweep()
+
+      assert Enum.any?(comments(), &String.contains?(&1, "expired"))
+      refute Enum.any?(comments(), &String.contains?(&1, "still counts"))
     end
 
     test "removes the delegated label when the last delegation expires", %{
@@ -219,6 +277,80 @@ defmodule BorsNG.Database.Context.DelegationTest do
 
       assert Enum.any?(comments(), &String.contains?(&1, "expires"))
       assert Enum.any?(comments(), &String.contains?(&1, "@alice"))
+      # No standing approval, so the warning should not mention one.
+      refute Enum.any?(comments(), &String.contains?(&1, "existing approval"))
+    end
+
+    test "24h warning notes a standing approval queued in a batch", %{
+      proj: proj,
+      user: user,
+      patch: patch
+    } do
+      batch =
+        Repo.insert!(%Batch{
+          project_id: proj.id,
+          into_branch: "master",
+          state: :waiting,
+          last_polled: 0
+        })
+
+      Repo.insert!(%LinkPatchBatch{
+        batch_id: batch.id,
+        patch_id: patch.id,
+        reviewer: "alice"
+      })
+
+      soon =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: soon
+      })
+
+      Delegation.sweep()
+
+      assert Enum.any?(comments(), &String.contains?(&1, "existing approval is not affected"))
+      assert Enum.any?(comments(), &String.contains?(&1, "fresh delegation"))
+    end
+
+    test "24h warning has no note when the batch is already complete", %{
+      proj: proj,
+      user: user,
+      patch: patch
+    } do
+      batch =
+        Repo.insert!(%Batch{
+          project_id: proj.id,
+          into_branch: "master",
+          state: :ok,
+          last_polled: 0
+        })
+
+      Repo.insert!(%LinkPatchBatch{
+        batch_id: batch.id,
+        patch_id: patch.id,
+        reviewer: "alice"
+      })
+
+      soon =
+        NaiveDateTime.utc_now()
+        |> NaiveDateTime.add(3600, :second)
+        |> NaiveDateTime.truncate(:second)
+
+      Repo.insert!(%UserPatchDelegation{
+        user_id: user.id,
+        patch_id: patch.id,
+        expires_at: soon
+      })
+
+      Delegation.sweep()
+
+      assert Enum.any?(comments(), &String.contains?(&1, "expires"))
+      refute Enum.any?(comments(), &String.contains?(&1, "existing approval"))
     end
 
     test "does not warn twice on the same delegation", %{user: user, patch: patch} do
