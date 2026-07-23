@@ -31,9 +31,9 @@ defmodule BorsNG.Command do
   (a separate commit directly after it under squash merges). Use it when
   the changes must not only land together but in a fixed order.
 
-  Bare `bors stack` infers the parent from the base-branch chain (the
-  gh-stack convention, where a stacked PR's base is its parent's branch);
-  such bases are retargeted onto the final branch automatically when the
+  Bare `bors stack` infers the parent from the base-branch chain: it
+  works when a stacked PR's base branch is its parent's head branch. Such
+  bases are retargeted onto the final branch automatically when the
   bundle is queued.
   """
 

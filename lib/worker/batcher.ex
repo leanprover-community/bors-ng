@@ -305,7 +305,7 @@ defmodule BorsNG.Worker.Batcher do
     case {pr_xrefs, target_xrefs} do
       {[], []} ->
         # Bare `bors stack`: infer the parent from the base-branch chain
-        # (gh-stack convention: a stacked PR's base is its parent's branch).
+        # (a stacked PR's base branch is its parent's head branch).
         case Bundles.infer_stack_parent(patch, project_id) do
           {:ok, parent} ->
             do_stack(repo_conn, patch, parent.pr_xref, project)
@@ -512,8 +512,8 @@ defmodule BorsNG.Worker.Batcher do
         send_message(repo_conn, members, {:stack_stale, child.pr_xref, parent.pr_xref})
 
       true ->
-        # Everything is approved and fresh: normalize gh-stack-shaped bases
-        # onto the final branch, then preflight the rest of the bundle (the
+        # Everything is approved and fresh: normalize the stacked members'
+        # bases onto the final branch, then preflight the rest of the bundle (the
         # current patch already passed its own preflight).
         case normalize_bundle_bases(repo_conn, members) do
           {:error, :branch_mismatch} ->
@@ -584,8 +584,8 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   # Bring every member's base branch onto the bundle's final target before
-  # queueing; members still in gh-stack shape (base = parent's branch) are
-  # retargeted via the GitHub API. Fails closed: any API failure holds the
+  # queueing; members still based on their parent's branch (rather than the
+  # final branch) are retargeted via the GitHub API. Fails closed: any API failure holds the
   # bundle. While the bundle exists the move is not undone — the stored
   # stack edges still order any future merge — but the original base is
   # recorded so that dissolving the bundle can restore it
@@ -635,7 +635,7 @@ defmodule BorsNG.Worker.Batcher do
 
   # Undo queue-time retargeting when a bundle dissolves without merging:
   # a member whose base bors moved — and which still points where bors
-  # left it — is retargeted back, so an unlinked gh-stack child does not
+  # left it — is retargeted back, so an unlinked stacked child does not
   # keep showing (and squash-merging) its parent's changes. A base a human
   # has moved since, or a closed pull request, is left alone.
   defp restore_retargeted_bases(repo_conn, members) do

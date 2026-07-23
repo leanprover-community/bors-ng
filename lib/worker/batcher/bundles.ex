@@ -146,10 +146,10 @@ defmodule BorsNG.Worker.Batcher.Bundles do
     end
   end
 
-  # `link` requires a common target branch. `stack` also accepts the
-  # gh-stack shape, where the child's base branch is the parent's head
-  # branch; such bases are normalized onto the final branch when the
-  # bundle is queued (Batcher.normalize_bundle_bases/2).
+  # `link` requires a common target branch. `stack` also accepts a stacked
+  # child whose base branch is the parent's head branch; such bases are
+  # normalized onto the final branch when the bundle is queued
+  # (Batcher.normalize_bundle_bases/2).
   defp branch_mismatch?(:link, patch, target) do
     target.into_branch != patch.into_branch
   end
@@ -271,9 +271,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  The single open patch whose head branch is this patch's base branch (the
-  gh-stack convention). Zero or several candidates -> `:error`; the user
-  must name the parent.
+  The single open patch whose head branch is this patch's base branch —
+  i.e. the parent this patch is stacked on. Zero or several candidates ->
+  `:error`; the user must name the parent.
   """
   def infer_stack_parent(%Patch{into_branch: nil}, _project_id), do: :error
 
