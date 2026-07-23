@@ -2,6 +2,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   use BorsNG.Worker.TestCase
 
   alias BorsNG.Worker.Batcher
+  alias BorsNG.Worker.Batcher.Bundles
   alias BorsNG.Database.Batch
   alias BorsNG.Database.Installation
   alias BorsNG.Database.LinkPatchBatch
@@ -886,7 +887,9 @@ defmodule BorsNG.Worker.BatcherBundleTest do
          %{proj: proj} do
       put_merge_state([{1, "N"}, {2, "O"}], %{statuses: %{"iniNO" => %{}}})
 
-      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+      p1 =
+        insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+
       p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
       {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
       batch = insert_waiting_batch(proj, [p1, p2])
@@ -914,6 +917,11 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
       assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
 
+      # The retargeting record survives the failure: the bundle is not
+      # dissolved and its bases stay moved, so a later unlink must still be
+      # able to restore them.
+      assert Repo.get!(Patch, p1.id).retargeted_from == "feature-a"
+
       # Both members get the bundle-aware message naming the set; neither gets
       # the stock per-PR "run `bors r+` or `bors retry`" failure text.
       for pr <- [1, 2] do
@@ -922,6 +930,40 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         assert msg =~ "left the queue"
         refute msg =~ "`bors r+` or `bors retry`"
       end
+    end
+  end
+
+  describe "drop_held_approvals / forget_retargeting" do
+    test "drop_held_approvals clears the held approval but keeps the retarget record",
+         %{proj: proj} do
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+
+      Bundles.drop_held_approvals([p1, p2])
+
+      p1 = Repo.get!(Patch, p1.id)
+      p2 = Repo.get!(Patch, p2.id)
+
+      # Approvals gone (re-running needs a fresh r+ on each) ...
+      assert p1.bundle_reviewer == nil
+      assert p2.bundle_reviewer == nil
+      # ... but the retarget record stays, so a later unlink can still restore
+      # the moved base.
+      assert p1.retargeted_from == "feature-a"
+    end
+
+    test "forget_retargeting clears the retarget record", %{proj: proj} do
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+      {_bundle, [p1]} = insert_bundle(proj, [p1])
+
+      Bundles.forget_retargeting([p1])
+
+      p1 = Repo.get!(Patch, p1.id)
+      # A merged member's base must not be restored, so its record is dropped;
+      # the held approval is left to drop_held_approvals.
+      assert p1.retargeted_from == nil
+      assert p1.bundle_reviewer == "rvr"
     end
   end
 

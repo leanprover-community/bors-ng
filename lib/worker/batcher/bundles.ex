@@ -78,17 +78,34 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Drop the approvals held on these patches, e.g. once their bundle has
-  merged: a future run of the same bundle needs fresh r+'s. Also forgets
-  any base branch recorded at retargeting — a merged member's base must
-  not be "restored" by a later unlink.
+  Drop the approvals held on these patches: after a failed build, or once
+  the bundle has merged, re-queueing needs a fresh r+ on every member.
+
+  Leaves the retargeting record (`retargeted_from`) intact — a bundle that
+  failed still exists with its members' bases moved, so a later unlink must
+  still be able to restore them. The merged case forgets that record
+  separately (`forget_retargeting/1`), since a merged member's changes are
+  already in the base and must not be "restored".
   """
   def drop_held_approvals(patches) do
     from(p in Patch,
       where: p.id in ^Enum.map(patches, & &1.id),
-      where: not is_nil(p.bundle_reviewer) or not is_nil(p.retargeted_from)
+      where: not is_nil(p.bundle_reviewer)
     )
-    |> Repo.update_all(set: [bundle_reviewer: nil, retargeted_from: nil])
+    |> Repo.update_all(set: [bundle_reviewer: nil])
+  end
+
+  @doc """
+  Forget the base branch recorded when these patches were retargeted at
+  queue time. Called once a bundle has merged: the members' changes are now
+  in the base, so a later unlink must not "restore" the pre-merge base.
+  """
+  def forget_retargeting(patches) do
+    from(p in Patch,
+      where: p.id in ^Enum.map(patches, & &1.id),
+      where: not is_nil(p.retargeted_from)
+    )
+    |> Repo.update_all(set: [retargeted_from: nil])
   end
 
   @doc """

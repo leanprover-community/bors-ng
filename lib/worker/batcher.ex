@@ -1426,9 +1426,11 @@ defmodule BorsNG.Worker.Batcher do
 
     case push_status do
       {:success} ->
-        # The bundle (if any) has merged; drop the held approvals so a future
-        # run of the same bundle needs fresh r+'s.
+        # The bundle (if any) has merged: drop the held approvals so a future
+        # run needs fresh r+'s, and forget the retargeting record so a later
+        # unlink won't try to restore a base whose changes are now merged.
         Bundles.drop_held_approvals(patches)
+        Bundles.forget_retargeting(patches)
 
         if toml.use_squash_merge do
           Enum.each(patches, fn patch ->
@@ -1511,6 +1513,8 @@ defmodule BorsNG.Worker.Batcher do
       # approvals (like a solo PR loses its r+ on failure) and tell the members
       # together, instead of the stock per-PR text. Every member then needs a
       # fresh r+, so re-running requires re-reviewing the fixed pull request.
+      # The bundle is not dissolved and its bases stay retargeted, so the
+      # retargeting record is left intact for a later unlink to restore.
       {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
       send_message(repo_conn, solo, {state, erred})
 
