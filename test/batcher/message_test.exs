@@ -78,6 +78,23 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     assert Message.generate_message({:bundle_pulled, 7, :requested}) =~ "#7, which was canceled"
 
+    bundle_failed =
+      Message.generate_message({:bundle_failed, [3, 7], [%{url: nil, identifier: "ci"}]})
+
+    assert bundle_failed =~ "Build failed:"
+    assert bundle_failed =~ "* ci"
+    assert bundle_failed =~ "(#3, #7)"
+    assert bundle_failed =~ "left the queue"
+    assert bundle_failed =~ "run `bors r+` on each member"
+
+    bundle_conflict = Message.generate_message({:bundle_conflict, [3, 7]})
+
+    assert bundle_conflict =~ "Merge conflict."
+    assert bundle_conflict =~ "(#3, #7)"
+    assert bundle_conflict =~ "conflict with each other"
+    assert bundle_conflict =~ "bors unlink"
+    assert bundle_conflict =~ "run `bors r+` on each member"
+
     for reason <- [
           :nothing_to_link,
           :not_found,

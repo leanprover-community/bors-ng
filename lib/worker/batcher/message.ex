@@ -105,6 +105,18 @@ defmodule BorsNG.Worker.Batcher.Message do
     nil
   end
 
+  def generate_message({:bundle_conflict, xrefs}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+
+    "Merge conflict.\n\nThe linked bundle (#{prs}) can't be merged: its pull requests conflict with each other, and bors merges them as one unit. The whole set left the queue. Rebase one onto the other to resolve the clash, or `bors unlink` to split the bundle, then run `bors r+` on each member to re-queue."
+  end
+
+  def generate_message({:bundle_timeout, xrefs}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+
+    "Timed out.\n\nThe linked bundle (#{prs}) merges as one unit, so the whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
+  end
+
   def generate_message({:timeout, :failed}) do
     "Timed out.\n\nFix if necessary, and then someone with permission can run `bors r+` or `bors retry`."
   end
@@ -218,6 +230,22 @@ defmodule BorsNG.Worker.Batcher.Message do
     "This pull request left the queue because it is linked with ##{xref}, which #{what}.\n\nOnce ##{xref} is ready again (or after `bors unlink`), someone with permission can run `bors r+`."
   end
 
+  def generate_message({:bundle_failed, xrefs, statuses}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+    body = Enum.join(["Build failed:" | Enum.map(statuses, &"  * #{gen_status_link(&1)}")], "\n")
+
+    body <>
+      "\n\nThe linked bundle (#{prs}) failed to build, and bors can't tell which pull request is at fault. The whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
+  end
+
+  def generate_message({:malformed_args, :priority}) do
+    ":-1: `p=` takes an integer, e.g. `bors p=10`."
+  end
+
+  def generate_message({:malformed_args, :single}) do
+    ":-1: `single` takes `on` or `off`, e.g. `bors single on`."
+  end
+
   def generate_message({:link_error, :nothing_to_link}) do
     ":-1: Nothing to link: give at least one other pull request number, e.g. `bors link #123`."
   end
@@ -228,6 +256,10 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def generate_message({:link_error, :closed}) do
     ":-1: Cannot link: all linked pull requests must be open."
+  end
+
+  def generate_message({:link_error, :already_merged}) do
+    ":-1: Cannot link: bors has already merged one of these pull requests. A merged pull request cannot be approved again, so its bundle would wait forever."
   end
 
   def generate_message({:link_error, :branch_mismatch}) do

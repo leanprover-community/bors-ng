@@ -89,11 +89,31 @@ defmodule BorsNG.CommandTest do
     assert [{:link_malformed, :link, ["r+"]}] == Command.parse("bors link #23 r+")
   end
 
+  test "refuse references too large for a pull request number" do
+    # pr_xref is a 32-bit column; parsing a bigger number would crash the
+    # patch lookup inside the batcher.
+    assert [{:link_malformed, :link, ["#99999999999"]}] ==
+             Command.parse("bors link #99999999999")
+
+    assert [{:link_malformed, :stack, ["2147483648"]}] ==
+             Command.parse("bors stack 2147483648")
+
+    assert [{:link, [2_147_483_647]}] == Command.parse("bors link #2147483647")
+  end
+
   test "refuse other commands' arguments instead of reading numbers out of them" do
     assert [{:link_malformed, :link, ["p=5"]}] == Command.parse("bors link #23 p=5")
     assert [{:link_malformed, :stack, ["r=me"]}] == Command.parse("bors stack #2 r=me")
     assert [{:link_malformed, :link, ["single"]}] == Command.parse("bors link #23 single on")
     assert [{:link_malformed, :link, ["stack"]}] == Command.parse("bors link #1 stack #2")
+  end
+
+  test "refuse the short delegate forms and other key=value tokens too" do
+    assert [{:link_malformed, :link, ["d=alice"]}] == Command.parse("bors link #1 d=alice")
+    assert [{:link_malformed, :link, ["d+"]}] == Command.parse("bors link #1 d+")
+    assert [{:link_malformed, :stack, ["d-"]}] == Command.parse("bors stack #1 d-")
+    assert [{:link_malformed, :link, ["for=2w"]}] == Command.parse("bors link #1 for=2w")
+    assert [{:link_malformed, :link, ["delegate"]}] == Command.parse("bors link #1 delegate")
   end
 
   test "accept the unlink command" do
@@ -132,6 +152,25 @@ defmodule BorsNG.CommandTest do
   test "do not parse single patch after try command" do
     assert [{:try, " single on"}] == Command.parse("bors try single on")
     assert [{:try, " single screwy"}] == Command.parse("bors try single screwy")
+  end
+
+  test "malformed priority and single arguments parse to a hint, not a crash" do
+    assert [{:malformed_args, :priority}] == Command.parse("bors p=abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors p=")
+    assert [{:malformed_args, :single}] == Command.parse("bors single")
+    assert [{:malformed_args, :single}] == Command.parse("bors single maybe")
+  end
+
+  test "a malformed modifier swallows its activation instead of dropping the modifier" do
+    assert [{:malformed_args, :priority}] == Command.parse("bors r+ p=abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors merge p=abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors r=me p=abc")
+    assert [{:malformed_args, :single}] == Command.parse("bors r+ single maybe")
+  end
+
+  test "the malformed-argument hint is member-gated, below the delegation merge gate" do
+    assert :member == Command.required_permission_level([{:malformed_args, :priority}])
+    assert :member == Command.required_permission_level([{:malformed_args, :single}])
   end
 
   test "accept priority" do

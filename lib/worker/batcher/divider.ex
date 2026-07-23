@@ -6,10 +6,10 @@ defmodule BorsNG.Worker.Batcher.Divider do
   alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.GitHub
 
-  # Splitting operates on "units", not individual patches: a linked bundle
-  # (patches sharing a `bundle_id`) is one unit and is never divided, so
-  # bisection and conflict isolation can't separate patches that must merge
-  # together. An unbundled patch is a unit of its own.
+  # Splitting operates on units, not individual patches. A linked bundle
+  # (patches sharing a `bundle_id`) is one unit and is never divided. Bisection
+  # and conflict isolation cannot separate patches that must merge together.
+  # An unbundled patch is a unit of its own.
 
   def split_batch(patch_links, %Batch{project: project, into_branch: into}) do
     units = group_units(patch_links)
@@ -34,47 +34,62 @@ defmodule BorsNG.Worker.Batcher.Divider do
 
   def split_batch_with_conflicts(patch_links, %Batch{project: project, into_branch: into}) do
     repo_conn = get_repo_conn(project)
+    units = group_units(patch_links)
 
-    # if mergeable 0 and unmergeable = 1 -> fail no retry
-    #              0                   2+  create single batches for unmergeable units
-    #              1                   0  impossible
-    #              1                   1+ create single batches for both
-    #              2+                  0  bisect for mergeable units
-    #              2+                  1+ one batch for mergeable units, create single batches for unmergeable units
-    # Create batches for unmergeable units first, so they will be picked up first and fail first.
-    # A bundle counts as unmergeable when any of its members is.
-    case isolate_unmergeable_units(group_units(patch_links), repo_conn) do
-      {[], [_]} ->
-        :failed
+    # A lone bundle unit that still failed is a member-versus-member conflict.
+    # The bundle is indivisible, and GitHub reports each member mergeable
+    # against the base (not pairwise), so retrying re-conflicts forever. Fail
+    # it terminally rather than re-clone the same unit. A lone patch is left
+    # to the mergeability logic below: an unknown flag is worth a retry.
+    if single_bundle_unit?(units) do
+      :failed
+    else
+      # Mergeable 0, unmergeable 1: fail, no retry.
+      # Mergeable 0, unmergeable 2+: create single batches for unmergeable.
+      # Mergeable 1, unmergeable 0: lone patch of unknown mergeability, retry.
+      # Mergeable 1, unmergeable 1+: create single batches for both.
+      # Mergeable 2+, unmergeable 0: bisect mergeable units.
+      # Mergeable 2+, unmergeable 1+: one batch for mergeable, create for unmergeable.
+      # Create batches for unmergeable units first so they fail first.
+      # A bundle counts as unmergeable if any member is unmergeable.
+      case isolate_unmergeable_units(units, repo_conn) do
+        {[], [_]} ->
+          :failed
 
-      {[], multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn unit ->
-          clone_batch(unit, project.id, into)
-        end)
+        {[], multiple_unmergeable} ->
+          Enum.each(multiple_unmergeable, fn unit ->
+            clone_batch(unit, project.id, into)
+          end)
 
-        :retrying
+          :retrying
 
-      {[single_mergeable], multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn unit ->
-          clone_batch(unit, project.id, into)
-        end)
+        {[single_mergeable], multiple_unmergeable} ->
+          Enum.each(multiple_unmergeable, fn unit ->
+            clone_batch(unit, project.id, into)
+          end)
 
-        clone_batch(single_mergeable, project.id, into)
-        :retrying
+          clone_batch(single_mergeable, project.id, into)
+          :retrying
 
-      {multiple_mergeable, []} ->
-        bisect(multiple_mergeable, project.id, into)
-        :retrying
+        {multiple_mergeable, []} ->
+          bisect(multiple_mergeable, project.id, into)
+          :retrying
 
-      {multiple_mergeable, multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn unit ->
-          clone_batch(unit, project.id, into)
-        end)
+        {multiple_mergeable, multiple_unmergeable} ->
+          Enum.each(multiple_unmergeable, fn unit ->
+            clone_batch(unit, project.id, into)
+          end)
 
-        clone_batch(Enum.concat(multiple_mergeable), project.id, into)
-        :retrying
+          clone_batch(Enum.concat(multiple_mergeable), project.id, into)
+          :retrying
+      end
     end
   end
+
+  # A single unit that is a bundle (patches sharing a `bundle_id`). Such a
+  # unit is indivisible, so a conflict can only be resolved by the user.
+  defp single_bundle_unit?([unit]), do: link_patch(hd(unit)).bundle_id != nil
+  defp single_bundle_unit?(_), do: false
 
   def clone_batch(patch_links, project_id, into_branch) do
     batch = Repo.insert!(Batch.new(project_id, into_branch))
@@ -94,12 +109,12 @@ defmodule BorsNG.Worker.Batcher.Divider do
   end
 
   @doc """
-  Group patch links into atomic units, preserving the batch's link order:
-  links whose patches share a `bundle_id` form one unit; every other link is
+  Group patch links into atomic units, preserving the batch's link order.
+  Links whose patches share a `bundle_id` form one unit. Every other link is
   a unit by itself.
 
-  Links should have `patch` preloaded (`LinkPatchBatch.from_batch/1` does);
-  otherwise each link falls back to its own patch query.
+  Links should have `patch` preloaded (LinkPatchBatch.from_batch/1 does).
+  Otherwise each link falls back to its own patch query.
   """
   def group_units(patch_links) do
     patch_links

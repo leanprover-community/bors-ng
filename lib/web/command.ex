@@ -18,23 +18,21 @@ defmodule BorsNG.Command do
 
   # link
 
-  `bors link #456`, commented on a pull request, links it with #456 into
-  a bundle that merges atomically: each member still needs its own
-  `bors r+`, and once every member is approved they all enter the same
-  batch, landing together or not at all. Listing several numbers bundles
-  more than two pull requests at once; the PR the comment is on is always
-  included (listing its own number is harmless). `bors unlink` (or
-  `bors link-`) dissolves the bundle.
+  `bors link #456`, commented on a pull request, links it with #456 into a
+  bundle that merges atomically. Each member still needs its own `bors r+`. Once
+  every member is approved, they all enter the same batch and land together or
+  not at all. Listing several numbers bundles more than two pull requests at once.
+  The PR the comment is on is always included (listing its own number is harmless).
+  `bors unlink` (or `bors link-`) dissolves the bundle.
 
-  `bors stack #123` (commented on another PR) additionally records an
-  order: this PR joins #123's bundle with #123's changes applied first
-  (a separate commit directly after it under squash merges). Use it when
-  the changes must not only land together but in a fixed order.
+  `bors stack #123`, commented on another PR, additionally records an order.
+  This PR joins #123's bundle with #123's changes applied first (a separate
+  commit directly after it under squash merges). Use it when changes must land
+  together and in a fixed order.
 
-  Bare `bors stack` infers the parent from the base-branch chain (the
-  gh-stack convention, where a stacked PR's base is its parent's branch);
-  such bases are retargeted onto the final branch automatically when the
-  bundle is queued.
+  Bare `bors stack` infers the parent from the base-branch chain. It works when
+  a stacked PR's base branch is its parent's head branch. These bases are
+  retargeted onto the final branch automatically when the bundle is queued.
   """
 
   alias BorsNG.Worker.Attemptor
@@ -157,11 +155,16 @@ defmodule BorsNG.Command do
           | {:link, [pos_integer()]}
           | {:stack, [pos_integer()]}
           | {:link_malformed, :link | :stack, [binary]}
+          | {:malformed_args, :priority | :single}
           | :unlink
           | :unlink_with_args
 
   @delegation_max_duration_sec 90 * 24 * 60 * 60
   def delegation_max_duration_sec, do: @delegation_max_duration_sec
+
+  # `Patch.pr_xref` is a 32-bit database column. A larger number cannot be a
+  # real pull request, and passing one to a lookup crashes the query.
+  @max_pr_xref 2_147_483_647
 
   @doc """
   Parse a comment for bors commands.
@@ -197,13 +200,13 @@ defmodule BorsNG.Command do
   def parse_cmd("try-"), do: [:try_cancel]
   def parse_cmd("try" <> arguments), do: [{:try, arguments}]
   def parse_cmd("single" <> rest), do: parse_single_patch(rest)
-  def parse_cmd("r+ single" <> rest), do: parse_single_patch(rest) ++ [:activate]
-  def parse_cmd("r+ p=" <> rest), do: parse_priority(rest) ++ [:activate]
+  def parse_cmd("r+ single" <> rest), do: with_activation(parse_single_patch(rest))
+  def parse_cmd("r+ p=" <> rest), do: with_activation(parse_priority(rest))
   def parse_cmd("r+" <> _), do: [:activate]
   def parse_cmd("r-" <> _), do: [:deactivate]
   def parse_cmd("r=" <> arguments), do: parse_activation_args(arguments)
   def parse_cmd("merge-" <> _), do: [:deactivate]
-  def parse_cmd("merge p=" <> rest), do: parse_priority(rest) ++ [:activate]
+  def parse_cmd("merge p=" <> rest), do: with_activation(parse_priority(rest))
   def parse_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
   def parse_cmd("merge" <> _), do: [:activate]
   def parse_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
@@ -230,8 +233,8 @@ defmodule BorsNG.Command do
   def parse_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
   def parse_cmd(_), do: []
 
-  # unlink dissolves the whole bundle; naming pull requests suggests the
-  # user expects to remove just those, so refuse rather than surprise.
+  # `unlink` dissolves the whole bundle. Naming pull requests suggests the
+  # user expects to remove just those, so refuse rather than surprise them.
   defp parse_unlink(arguments) do
     case parse_pr_refs(arguments) ++ malformed_pr_refs(arguments) do
       [] -> [:unlink]
@@ -239,9 +242,8 @@ defmodule BorsNG.Command do
     end
   end
 
-  # A mistyped number silently dropped would link the wrong set of pull
-  # requests, so any argument that was plausibly meant as a reference (or
-  # as another bors command) refuses the whole command.
+  # A silent mistype would link the wrong pull requests. Refuse if any
+  # argument was plausibly meant as a reference or another bors command.
   defp parse_bundle_refs(cmd, arguments) do
     case malformed_pr_refs(arguments) do
       [] -> [{cmd, parse_pr_refs(arguments)}]
@@ -250,8 +252,8 @@ defmodule BorsNG.Command do
   end
 
   @doc ~S"""
-  The arguments of a link or stack command are pull request numbers,
-  separated by whitespace or commas, each with an optional leading `#`:
+  Parse the arguments of a link or stack command. Arguments are pull request
+  numbers separated by whitespace or commas, each with an optional leading `#`.
 
       iex> alias BorsNG.Command
       iex> Command.parse_pr_refs(" #1 #2")
@@ -262,19 +264,27 @@ defmodule BorsNG.Command do
       []
       iex> Command.parse_pr_refs(" nonsense")
       []
+      iex> Command.parse_pr_refs(" #99999999999")
+      []
   """
   def parse_pr_refs(arguments) do
     arguments
     |> ref_tokens()
-    |> Enum.map(&String.replace_prefix(&1, "#", ""))
-    |> Enum.filter(&String.match?(&1, ~r/^\d+$/))
-    |> Enum.map(&String.to_integer/1)
+    |> Enum.filter(&pr_ref?/1)
+    |> Enum.map(&(&1 |> String.replace_prefix("#", "") |> String.to_integer()))
+  end
+
+  # A well-formed reference: an optional `#`, then a number small enough to
+  # be a real pull request.
+  defp pr_ref?(token) do
+    String.match?(token, ~r/^#?\d+$/) and
+      token |> String.replace_prefix("#", "") |> String.to_integer() <= @max_pr_xref
   end
 
   @doc ~S"""
-  Tokens that were plausibly meant as a pull request reference — they
-  start with `#` or a digit but do not read as a number — or as another
-  bors command on the same line. Connective words are tolerated:
+  Tokens that were plausibly meant as a pull request reference or another bors
+  command on the same line. Reference tokens start with `#` or a digit but do
+  not parse as a number. Connective words are tolerated.
 
       iex> alias BorsNG.Command
       iex> Command.malformed_pr_refs(" #12abc #13")
@@ -285,21 +295,29 @@ defmodule BorsNG.Command do
       ["r+"]
       iex> Command.malformed_pr_refs(" #13 p=5")
       ["p=5"]
+      iex> Command.malformed_pr_refs(" #13 d=alice")
+      ["d=alice"]
+      iex> Command.malformed_pr_refs(" #99999999999")
+      ["#99999999999"]
   """
   def malformed_pr_refs(arguments) do
     arguments
     |> ref_tokens()
     |> Enum.filter(fn token ->
-      ref_like = String.match?(token, ~r/^[#\d]/) and not String.match?(token, ~r/^#?\d+$/)
+      ref_like = String.match?(token, ~r/^[#\d]/) and not pr_ref?(token)
       ref_like or other_command?(token)
     end)
   end
 
-  # Words that read as another bors command (or its argument) on the same
-  # line: refuse rather than guess which pull requests were meant.
+  # Tokens that read as another bors command or its argument on the same
+  # line. Refuse rather than guess which pull requests were meant. Asking
+  # the real parser keeps this list from drifting as commands are added.
+  # The two extra checks catch tokens the parser alone would not: key=value
+  # fragments whose argument is empty or unreadable (`r=`, `d=`, `for=2w`),
+  # and a bare `delegate`.
   defp other_command?(token) do
-    token in ~w(r+ r- merge merge- try try- cancel retry ping single link stack unlink link-) or
-      String.match?(token, ~r/^(p|priority|r|merge)=/) or
+    parse_cmd(token) != [] or
+      String.contains?(token, "=") or
       String.starts_with?(token, "delegate")
   end
 
@@ -308,8 +326,8 @@ defmodule BorsNG.Command do
     |> String.split("\n", parts: 2)
     |> List.first()
     |> String.trim_leading()
-    # `=` is only the optional `link=`/`stack=` sugar: strip one leading `=`
-    # and split on whitespace and commas, so `p=5` stays a single token.
+    # `=` is optional `link=` or `stack=` sugar. Strip one leading `=` and
+    # split on whitespace and commas so `p=5` stays a single token.
     |> String.replace_prefix("=", "")
     |> String.split(~r/[\s,]+/, trim: true)
   end
@@ -376,8 +394,10 @@ defmodule BorsNG.Command do
 
     case params do
       ["p", priority_s] ->
-        {priority_i, _} = Integer.parse(priority_s)
-        {mentions, %{p: priority_i}}
+        case Integer.parse(priority_s) do
+          {priority_i, _} -> {mentions, %{p: priority_i}}
+          :error -> :malformed_priority
+        end
 
       _ ->
         mentions
@@ -389,6 +409,7 @@ defmodule BorsNG.Command do
 
     case arguments do
       "" -> []
+      :malformed_priority -> [{:malformed_args, :priority}]
       {mentions, %{p: p}} -> [{:set_priority, p}, {:activate_by, mentions}]
       arguments -> [{:activate_by, arguments}]
     end
@@ -551,9 +572,10 @@ defmodule BorsNG.Command do
   end
 
   def parse_priority(binary) do
-    {p, _} = Integer.parse(binary)
-
-    [{:set_priority, p}]
+    case Integer.parse(binary) do
+      {p, _} -> [{:set_priority, p}]
+      :error -> [{:malformed_args, :priority}]
+    end
   end
 
   def parse_single_patch(binary) do
@@ -563,8 +585,16 @@ defmodule BorsNG.Command do
 
       "off" <> _ ->
         [{:set_is_single, false}]
+
+      _ ->
+        [{:malformed_args, :single}]
     end
   end
+
+  # A modifier that cannot be read swallows its activation: activating
+  # anyway, with the modifier silently dropped, is the surprise being refused.
+  defp with_activation([{:malformed_args, _}] = malformed), do: malformed
+  defp with_activation(cmds), do: cmds ++ [:activate]
 
   @doc """
   Given a populated struct, run everything.
@@ -637,9 +667,9 @@ defmodule BorsNG.Command do
     :member
   end
 
-  # link/stack/unlink write state onto pull requests other than the
-  # commented one, so a per-patch delegation (`bors delegate+`) must not
-  # satisfy them: they require standing on the project itself.
+  # link/stack/unlink write state to pull requests other than the commented one.
+  # A per-patch delegation must not satisfy them: they require project-level
+  # standing.
   def required_permission_level_cmd({:link, _}) do
     :project_member
   end
@@ -660,6 +690,13 @@ defmodule BorsNG.Command do
     :project_member
   end
 
+  # The hint about an unreadable argument is gated at :member — enough to
+  # keep outsiders from making bors post comments — and deliberately below
+  # :reviewer, so a typo never trips the delegation merge-time gate.
+  def required_permission_level_cmd({:malformed_args, _}) do
+    :member
+  end
+
   def required_permission_level_cmd(_) do
     :reviewer
   end
@@ -671,11 +708,10 @@ defmodule BorsNG.Command do
     end)
   end
 
-  # :project_member / :project_reviewer are the delegation-free levels: a
+  # :project_member and :project_reviewer are delegation-free levels. A
   # per-patch delegate satisfies :member and :reviewer on their own pull
   # request but not these. Combining a delegation-free command with a
-  # reviewer-level one in the same comment must keep both requirements,
-  # which is :project_reviewer.
+  # reviewer-level one keeps both requirements (:project_reviewer).
   defp combine_permission_levels(:none, new), do: new
   defp combine_permission_levels(perm, :none), do: perm
   defp combine_permission_levels(p, p), do: p
@@ -795,6 +831,15 @@ defmodule BorsNG.Command do
     )
   end
 
+  def run(c, {:malformed_args, kind}) do
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:malformed_args, kind})
+    )
+  end
+
   def run(c, {:try, arguments}) do
     c = fetch_patch(c)
 
@@ -802,8 +847,8 @@ defmodule BorsNG.Command do
       DelegationInvalidator.lint_for_patch(c.patch.id)
     end)
 
-    # try knows nothing about bundles: it builds this patch's branch alone.
-    # Say so, or a green try on one member overstates what the batch will do.
+    # `try` knows nothing about bundles: it builds this patch's branch alone.
+    # Say so, or a green result overstates what the batch will do.
     if c.patch.bundle_id != nil do
       c.project.repo_xref
       |> Project.installation_connection(Repo)

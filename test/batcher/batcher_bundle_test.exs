@@ -2,6 +2,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   use BorsNG.Worker.TestCase
 
   alias BorsNG.Worker.Batcher
+  alias BorsNG.Worker.Batcher.Bundles
   alias BorsNG.Database.Batch
   alias BorsNG.Database.Installation
   alias BorsNG.Database.LinkPatchBatch
@@ -74,10 +75,10 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     {bundle, patches}
   end
 
-  # Mock state for running a whole batch: master at "ini", a bors.toml on
-  # the staging branch, and one open PR (with its head sha) per entry. The
-  # mock composes merged shas by concatenation, so the staging sha and the
-  # merge commit message both record the merge order.
+  # Mock state for running a whole batch. Master at "ini", a bors.toml on
+  # the staging branch, one open PR per entry (with its head sha). The mock
+  # composes merged SHAs by concatenation, so staging SHA and commit message
+  # both record merge order.
   defp put_merge_state(heads, extra \\ %{}) do
     pulls =
       Map.new(heads, fn {xref, sha} ->
@@ -138,8 +139,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   end
 
   # A gh-stack pair: PR 1 (child, branch feature-b) opened against PR 2's
-  # branch feature-a and rebased on it, with PR 1 present in the mock so
-  # base updates can be exercised.
+  # branch feature-a and rebased on it. PR 1 is in the mock so base updates
+  # can be exercised.
   defp put_gh_stack_state do
     put_plain_state(
       %{1 => [], 2 => []},
@@ -224,6 +225,36 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert comment =~ "Nothing to link"
     end
 
+    test "link is refused for a pull request bors already merged", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1)
+      # #2 merged through bors (its batch is :ok) but still shows as open:
+      # the close is asynchronous and can fail. It can never be approved
+      # again, so bundling it would leave the bundle waiting forever.
+      p2 = insert_patch(proj, 2)
+
+      batch =
+        %Batch{
+          project_id: proj.id,
+          commit: "ini",
+          state: :ok,
+          last_polled: 0,
+          into_branch: "master"
+        }
+        |> Repo.insert!()
+
+      %LinkPatchBatch{}
+      |> LinkPatchBatch.changeset(%{batch_id: batch.id, patch_id: p2.id, reviewer: "rvr"})
+      |> Repo.insert!()
+
+      Batcher.handle_cast({:link, p1.id, [2]}, proj.id)
+
+      assert Repo.get!(Patch, p1.id).bundle_id == nil
+      assert Repo.get!(Patch, p2.id).bundle_id == nil
+      assert [comment] = comments_for(1)
+      assert comment =~ "already merged"
+    end
+
     test "link is refused across base branches", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => []})
       patch = insert_patch(proj, 1)
@@ -271,8 +302,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert p1.bundle_id == nil and p2.bundle_id == nil
       assert p1.bundle_reviewer == nil
 
-      # The member whose approval was discarded is told it needs a fresh
-      # r+; the other is told it merges on its own.
+      # The member whose approval was discarded needs a fresh r+. The other
+      # member merges on its own.
       assert Enum.any?(comments_for(1), &(&1 =~ "no longer linked"))
       assert Enum.any?(comments_for(1), &(&1 =~ "needs a fresh `bors r+`"))
       assert Enum.any?(comments_for(2), &(&1 =~ "merge on its own"))
@@ -359,7 +390,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Repo.get!(Patch, p1.id).bundle_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "exactly one"))
 
-      # Bare stack with no inferable parent (nothing has head_ref "master").
+      # Bare stack with no inferable parent (no PR has head_ref "master").
       Batcher.handle_cast({:stack, p1.id, []}, proj.id)
       assert Enum.any?(comments_for(1), &(&1 =~ "Could not infer"))
     end
@@ -370,7 +401,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         %{compare_status: %{{"commit-2", "commit-1"} => :ahead}}
       )
 
-      # gh-stack shape: the child's base branch is the parent's head branch.
+      # gh-stack shape: child's base branch is parent's head branch.
       p2 = insert_patch(proj, 2, %{head_ref: "feature-a"})
       p1 = insert_patch(proj, 1, %{into_branch: "feature-a", head_ref: "feature-b"})
 
@@ -457,7 +488,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
 
     test "a failed retarget holds the bundle", %{proj: proj} do
-      # No :pulls entry, so the get_pr behind the retarget fails.
+      # No :pulls entry, so get_pr behind the retarget fails.
       put_plain_state(
         %{1 => [], 2 => []},
         %{compare_status: %{{"commit-2", "commit-1"} => :ahead}}
@@ -483,7 +514,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
       p1 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
 
-      # Queue the bundle (retargeting #1 onto master), then pull it back out.
+      # Queue the bundle (retarget #1 to master), then pull it back out.
       Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
       assert Repo.get!(Patch, p1.id).into_branch == "master"
       Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
@@ -513,7 +544,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
       Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
 
-      # Someone moves the base by hand before the unlink.
+      # Someone moves the base manually before the unlink.
       state = GitHub.ServerMock.get_state()
 
       state =
@@ -540,9 +571,9 @@ defmodule BorsNG.Worker.BatcherBundleTest do
 
     test "a partial retarget holds the bundle, and unlink restores the moved base",
          %{proj: proj} do
-      # Chain 3 -> 2 -> 1 in gh-stack shape. PR 2 is present in the mock, so
-      # its retarget succeeds; PR 3 is not, so its retarget fails and the
-      # bundle is held with only #2 moved.
+      # Chain 3 -> 2 -> 1 in gh-stack shape. PR 2 is in the mock so its
+      # retarget succeeds. PR 3 is not, so retarget fails and the bundle is
+      # held with only #2 moved.
       put_plain_state(
         %{1 => [], 2 => [], 3 => []},
         %{
@@ -619,16 +650,16 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = insert_patch(proj, 2)
       p3 = insert_patch(proj, 3)
 
-      # Chain: p2 on p1, p3 on p2.
+      # Chain: p2 stacks on p1, p3 stacks on p2.
       Batcher.handle_cast({:stack, p2.id, [1]}, proj.id)
       Batcher.handle_cast({:stack, p3.id, [2]}, proj.id)
 
-      # Direct cycle: p1 on p2 (but p2 is stacked on p1).
+      # Direct cycle: p1 stacks on p2 (but p2 stacks on p1).
       Batcher.handle_cast({:stack, p1.id, [2]}, proj.id)
       assert Repo.get!(Patch, p1.id).stacked_on_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "cycle"))
 
-      # Transitive cycle: p1 on p3 (p3 -> p2 -> p1).
+      # Transitive cycle: p1 stacks on p3 (chain: p3 -> p2 -> p1).
       Batcher.handle_cast({:stack, p1.id, [3]}, proj.id)
       assert Repo.get!(Patch, p1.id).stacked_on_id == nil
     end
@@ -651,7 +682,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
 
     test "stack commented on the parent names the fix", %{proj: proj} do
-      # #2 contains #1's head, not the other way around: the user commented
+      # #2 contains #1's head, not the other way around. The user commented
       # `bors stack #2` on the parent instead of on the child.
       put_plain_state(
         %{1 => [], 2 => []},
@@ -674,7 +705,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
 
     test "stack fails closed when ancestry cannot be verified", %{proj: proj} do
-      # No :compare_status entry at all: the comparison errors, and the
+      # No :compare_status entry at all. The comparison errors, and the
       # command must refuse rather than assume the stack is fresh.
       put_plain_state(%{1 => [], 2 => []})
       p1 = insert_patch(proj, 1)
@@ -700,7 +731,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
 
       assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
-      # The approval is held, so a rebase + fresh r+ re-runs the check.
+      # The approval is held. A rebase plus fresh r+ re-runs the check.
       assert Repo.get!(Patch, p1.id).bundle_reviewer == "r1"
       assert Enum.any?(comments_for(1), &(&1 =~ "was not queued"))
       assert Enum.any?(comments_for(2), &(&1 =~ "was not queued"))
@@ -881,6 +912,254 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       %{commit_message: message} = state.commits[staging_sha]
       assert message =~ ~r/\AMerge #1 #4 #2 #3/
     end
+
+    test "a failed bundle drops the whole set's approvals and tells them together",
+         %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}], %{statuses: %{"iniNO" => %{}}})
+
+      p1 =
+        insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      # CI fails on the staging merge commit. The bundle is one indivisible
+      # unit, so the batch fails terminally rather than bisecting.
+      GitHub.ServerMock.put_state(
+        update_in(
+          GitHub.ServerMock.get_state(),
+          [{{:installation, 91}, 14}, :statuses, "iniNO"],
+          &Map.put(&1 || %{}, "ci", :error)
+        )
+      )
+
+      Repo.get!(Batch, batch.id) |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # The whole set's held approvals are dropped: re-running needs a fresh
+      # r+ on every member (so a clean sibling's r+ can't silently re-queue a
+      # still-broken bundle).
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      # The retargeting record survives the failure: the bundle is not
+      # dissolved and its bases stay moved, so a later unlink must still be
+      # able to restore them.
+      assert Repo.get!(Patch, p1.id).retargeted_from == "feature-a"
+
+      # Both members get the bundle-aware message naming the set; neither gets
+      # the stock per-PR "run `bors r+` or `bors retry`" failure text.
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "(#1, #2)"
+        assert msg =~ "left the queue"
+        refute msg =~ "`bors r+` or `bors retry`"
+      end
+    end
+
+    test "a bundle whose members conflict with each other fails terminally, not in a loop",
+         %{proj: proj} do
+      # Both members are mergeable against master on their own, but conflict
+      # with each other. merge_conflict: 1 lets the first member merge onto
+      # staging and conflicts the second — the member-vs-member clash.
+      put_merge_state([{1, "N"}, {2, "O"}])
+      GitHub.ServerMock.put_state(Map.put(GitHub.ServerMock.get_state(), :merge_conflict, 1))
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      # The batch fails terminally on the conflict rather than reaching CI.
+      # (A conflict persists as :error — see BatchState — same as a build
+      # failure; the message below is what marks it as a conflict.)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # It is not re-queued: no new batch was cloned (the old bug looped here).
+      assert proj.id |> Batch.all_for_project() |> Repo.all() |> Enum.count() == 1
+
+      # The whole set's held approvals are dropped, as on the build-failure
+      # path: re-queueing needs a fresh r+ on every member, so a clean
+      # sibling's r+ can't silently re-queue the still-conflicting set.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      # Both members get the bundle-aware message naming the set and pointing
+      # at the member-vs-member clash; neither gets the solo "rebase master
+      # into this PR" text, which wouldn't help.
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "(#1, #2)"
+        assert msg =~ "conflict with each other"
+        assert msg =~ "run `bors r+` on each member"
+        refute msg =~ "into this PR"
+      end
+    end
+
+    test "a timed-out bundle drops the whole set's approvals and tells them together",
+         %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}], %{statuses: %{"iniNO" => %{}}})
+
+      p1 =
+        insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      # The batch's deadline passes before CI reports. A bundle is one
+      # indivisible unit, so the timeout is terminal, same as a build failure.
+      Repo.get!(Batch, batch.id)
+      |> Batch.changeset(%{timeout_at: 0, last_polled: 0})
+      |> Repo.update!()
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # The whole set's held approvals are dropped, as on the build-failure
+      # path: one member's fresh r+ must not silently re-queue the set.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      # The retargeting record survives for a later unlink to restore.
+      assert Repo.get!(Patch, p1.id).retargeted_from == "feature-a"
+
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "Timed out"
+        assert msg =~ "(#1, #2)"
+        refute msg =~ "`bors r+` or `bors retry`"
+      end
+    end
+
+    test "a race re-syncs the stale member and drops only its approval", %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}])
+
+      # sync_patch upserts the author, so the raced member's PR needs a user.
+      GitHub.ServerMock.put_state(
+        update_in(
+          GitHub.ServerMock.get_state(),
+          [{{:installation, 91}, 14}, :pulls],
+          fn pulls ->
+            Map.new(pulls, fn {xref, pr} ->
+              {xref, %Pr{pr | user: %GitHub.User{id: 23, login: "ghost", avatar_url: ""}}}
+            end)
+          end
+        )
+      )
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+
+      # #2's stored head is stale: the synchronize webhook for its last push
+      # was never processed. Its live head on GitHub is "O".
+      p2 = insert_patch(proj, 2, %{commit: "STALE", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      # The stored-vs-live head check refuses the merge; the batch fails.
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # The stale member is reconciled with GitHub and loses its held
+      # approval — the effects the missed webhook would have had. The next
+      # r+ preflights the real head instead of racing again.
+      p2 = Repo.get!(Patch, p2.id)
+      assert p2.commit == "O"
+      assert p2.bundle_reviewer == nil
+
+      # The member whose record was accurate is left untouched.
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.commit == "N"
+      assert p1.bundle_reviewer == "rvr"
+
+      assert Enum.any?(comments_for(2), &(&1 =~ "Synchronization error"))
+    end
+
+    test "a bundle whose final push fails drops the whole set's approvals",
+         %{proj: proj} do
+      # The batch builds green, but the push to master fails unrecoverably
+      # (e.g. branch protection). That is terminal: the batch is not retried.
+      put_merge_state([{1, "N"}, {2, "O"}], %{
+        statuses: %{"iniNO" => %{}},
+        push_errors: %{"master" => %{error_code: 403, response: "protected branch"}}
+      })
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      GitHub.ServerMock.put_state(
+        update_in(
+          GitHub.ServerMock.get_state(),
+          [{{:installation, 91}, 14}, :statuses, "iniNO"],
+          &Map.put(&1 || %{}, "ci", :ok)
+        )
+      )
+
+      Repo.get!(Batch, batch.id) |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+      Batcher.handle_info({:poll, :once}, proj.id)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # Terminal for the bundle too: held approvals are dropped so a
+      # sibling's stale approval cannot re-queue the set on one fresh r+.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "failed to merge into master"
+        assert msg =~ "It will not be retried"
+      end
+    end
+  end
+
+  describe "drop_held_approvals / forget_retargeting" do
+    test "drop_held_approvals clears the held approval but keeps the retarget record",
+         %{proj: proj} do
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+
+      Bundles.drop_held_approvals([p1, p2])
+
+      p1 = Repo.get!(Patch, p1.id)
+      p2 = Repo.get!(Patch, p2.id)
+
+      # Approvals gone (re-running needs a fresh r+ on each) ...
+      assert p1.bundle_reviewer == nil
+      assert p2.bundle_reviewer == nil
+      # ... but the retarget record stays, so a later unlink can still restore
+      # the moved base.
+      assert p1.retargeted_from == "feature-a"
+    end
+
+    test "forget_retargeting clears the retarget record", %{proj: proj} do
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "rvr", retargeted_from: "feature-a"})
+      {_bundle, [p1]} = insert_bundle(proj, [p1])
+
+      Bundles.forget_retargeting([p1])
+
+      p1 = Repo.get!(Patch, p1.id)
+      # A merged member's base must not be restored, so its record is dropped;
+      # the held approval is left to drop_held_approvals.
+      assert p1.retargeted_from == nil
+      assert p1.bundle_reviewer == "rvr"
+    end
   end
 
   describe "bundle approval flow" do
@@ -1045,6 +1324,23 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   end
 
   describe "bundle cancellation" do
+    test "cancel-all drops held approvals, so one r+ cannot re-queue a bundle", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1"})
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "r2"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_cast({:cancel_all}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project(:incomplete) |> Repo.all()
+
+      # Parity with solo patches, whose approval dies with the batch links:
+      # after an operator empties the queue, everything needs a fresh r+.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+    end
+
     test "canceling one member pulls the bundle from a waiting batch", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => [], 3 => []})
       p1 = insert_patch(proj, 1)
@@ -1199,7 +1495,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = insert_patch(proj, 2)
       {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
 
-      Batcher.handle_call({:set_priority, p1.id, 7}, nil, proj.id)
+      Batcher.handle_cast({:set_priority, p1.id, 7}, proj.id)
 
       assert Repo.get!(Patch, p1.id).priority == 7
       assert Repo.get!(Patch, p2.id).priority == 7
@@ -1211,10 +1507,22 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = insert_patch(proj, 2)
       {_bundle, [p1, _p2]} = insert_bundle(proj, [p1, p2])
 
-      Batcher.handle_call({:set_is_single, p1.id, true}, nil, proj.id)
+      Batcher.handle_cast({:set_is_single, p1.id, true}, proj.id)
 
       assert Repo.get!(Patch, p1.id).is_single == true
       assert Repo.get!(Patch, p2.id).is_single == true
+    end
+
+    test "in-flight calls from before a deploy still apply the setting", %{proj: proj} do
+      put_plain_state(%{1 => []})
+      p1 = insert_patch(proj, 1)
+
+      assert {:reply, :ok, _} = Batcher.handle_call({:set_priority, p1.id, 7}, nil, proj.id)
+      assert {:reply, :ok, _} = Batcher.handle_call({:set_is_single, p1.id, true}, nil, proj.id)
+
+      p1 = Repo.get!(Patch, p1.id)
+      assert p1.priority == 7
+      assert p1.is_single == true
     end
 
     test "the prerun poll queues by current bundle membership, not its snapshot",
