@@ -627,6 +627,13 @@ defmodule BorsNG.Command do
             # is re-checked against the current head and fails closed. If the
             # gate denies, it has already revoked + commented (or explained an
             # unverifiable check), so don't also post the generic denial.
+            #
+            # For a bundled patch this is the only delegation check the
+            # approval ever gets: "merge time" is hold time. The r+ this gate
+            # blesses may be held on the patch (`Bundles.hold_approval/2`)
+            # until the rest of the bundle is approved, and is not re-checked
+            # when the bundle later queues. See DELEGATION_INVALIDATION.md,
+            # "standing approvals".
             required_permission == :reviewer and
                 DelegationInvalidator.verify_for_merge(c.patch, c.commenter) == :deny ->
               :ok
@@ -907,6 +914,14 @@ defmodule BorsNG.Command do
   end
 
   def run(c, :undelegate) do
+    # Checked before the delete: it enumerates the delegations being removed.
+    held_note =
+      if Delegation.standing_approval_by_delegate?(c.patch.id) do
+        ~s{ Note: an approval already given under a removed delegation still counts. A reviewer can retract it with `bors r-`.}
+      else
+        ""
+      end
+
     Permission.undelegate_patch(c.patch.id)
 
     Labeler.reconcile_delegated(c.patch)
@@ -917,12 +932,20 @@ defmodule BorsNG.Command do
     |> Project.installation_connection(Repo)
     |> GitHub.post_comment!(
       c.pr_xref,
-      ~s{:no_entry_sign: All delegations have been removed from this PR. To re-add a delegation, reply with `bors d+` (to delegate the PR author) or `bors d=list,of,github,usernames` to delegate multiple users.}
+      ~s{:no_entry_sign: All delegations have been removed from this PR. To re-add a delegation, reply with `bors d+` (to delegate the PR author) or `bors d=list,of,github,usernames` to delegate multiple users.} <>
+        held_note
     )
   end
 
   def run(c, {:undelegate_to, login}) do
     undelegatee = get_or_insert_user_by_login(c, login)
+
+    held_note =
+      if Delegation.standing_approval?(c.patch.id, undelegatee.login) do
+        ~s{ Note: the approval #{undelegatee.login} already gave still counts. A reviewer can retract it with `bors r-`.}
+      else
+        ""
+      end
 
     Permission.undelegate(undelegatee.id, c.patch.id)
 
@@ -940,7 +963,8 @@ defmodule BorsNG.Command do
     |> Project.installation_connection(Repo)
     |> GitHub.post_comment!(
       c.pr_xref,
-      ~s{:no_entry_sign: This PR is no longer delegated to #{undelegatee.login}. To re-add their delegation, reply with `#{readd_command}`.}
+      ~s{:no_entry_sign: This PR is no longer delegated to #{undelegatee.login}. To re-add their delegation, reply with `#{readd_command}`.} <>
+        held_note
     )
   end
 

@@ -54,6 +54,14 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   Record a reviewer's approval on a bundled patch. The approval is held until
   the rest of the bundle is approved. Returns the updated patch.
 
+  The held approval is not re-validated against delegation state when the
+  bundle later queues: if the reviewer approved under a delegation that has
+  since expired or been revoked, the approval still counts. That is deliberate
+  — the fail-closed delegation gate already ran when the `r+` was issued, and
+  a push to this patch drops the hold via the batcher's cancel path, so
+  re-approval goes back through the gate. See DELEGATION_INVALIDATION.md,
+  "standing approvals".
+
   Invariant: a draft cannot hold an approval. It is enforced only at the
   webhook boundary — every command entry point in `BorsNG.WebhookController`
   (issue_comment, review_comment, review, and the PR-opened body handler)

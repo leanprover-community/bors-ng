@@ -21,6 +21,12 @@ defmodule BorsNG.Worker.DelegationInvalidator do
   ceilings and the resulting truncation policy, the synchronize-time
   (fail-open) versus merge-time (fail-closed) checks, and the user-facing
   messages — lives in `DELEGATION_INVALIDATION.md` at the repo root.
+
+  This module has no bundle awareness, deliberately: the merge-time gate runs
+  when the `r+` is issued, and a *standing approval* that results — a queued
+  batch, or an approval held for a bundle — is not re-checked if the
+  delegation later expires or is revoked. See DELEGATION_INVALIDATION.md,
+  "standing approvals", for why that is safe.
   """
 
   import Ecto.Query

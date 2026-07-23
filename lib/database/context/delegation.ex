@@ -24,6 +24,12 @@ defmodule BorsNG.Database.Context.Delegation do
   `BorsNG.Database.Context.Permission.patch_delegated_reviewer?/2`, which
   ignores delegations whose `expires_at` has passed. The deletes here are
   therefore housekeeping plus notification, not access control.
+
+  Expiry also never withdraws a *standing approval* — an `r+` already queued in
+  a batch or held for a bundle (see `standing_approval?/2` and
+  DELEGATION_INVALIDATION.md, "standing approvals"). When the expiring
+  delegate holds one, the warning and expired notices say so rather than
+  implying the approval is void.
   """
 
   use BorsNG.Database.Context
@@ -119,6 +125,40 @@ defmodule BorsNG.Database.Context.Delegation do
         "following a `default_expiry_sec` setting in `bors.toml`."
 
     safe_post_comment(project, patch.pr_xref, msg)
+  end
+
+  @doc """
+  Whether `login`'s approval on this patch currently stands: queued in an
+  incomplete batch (unbundled), or held on the patch for its bundle. Neither
+  delegation expiry nor `bors delegate-` withdraws such an approval — the
+  merge-time delegation gate already ran, fail-closed, when the `r+` was
+  issued (see DELEGATION_INVALIDATION.md, "standing approvals"). Callers use
+  this to acknowledge the standing approval in comments, not to alter it.
+  """
+  def standing_approval?(patch_id, login) do
+    Repo.exists?(from(p in Patch, where: p.id == ^patch_id and p.bundle_reviewer == ^login)) or
+      Repo.exists?(
+        from(l in LinkPatchBatch,
+          join: b in Batch,
+          on: l.batch_id == b.id,
+          where: l.patch_id == ^patch_id and l.reviewer == ^login,
+          where: b.state == ^:waiting or b.state == ^:running
+        )
+      )
+  end
+
+  @doc """
+  Whether any of the patch's current delegates holds the standing approval.
+  Call *before* deleting the delegations — it enumerates them.
+  """
+  def standing_approval_by_delegate?(patch_id) do
+    from(d in UserPatchDelegation,
+      join: u in assoc(d, :user),
+      where: d.patch_id == ^patch_id,
+      select: u.login
+    )
+    |> Repo.all()
+    |> Enum.any?(&standing_approval?(patch_id, &1))
   end
 
   defp expire_delegations do
@@ -255,10 +295,19 @@ defmodule BorsNG.Database.Context.Delegation do
   end
 
   defp post_expired_comment(d) do
+    note =
+      if standing_approval?(d.patch_id, d.user.login) do
+        " Note: the approval @#{d.user.login} already gave still counts — expiry does not " <>
+          "withdraw a standing approval. A reviewer can retract it with `bors r-`."
+      else
+        ""
+      end
+
     msg =
       ":hourglass: Delegation for @#{d.user.login} on this PR has expired " <>
         "(at #{Command.format_expires_at(d.expires_at)}). " <>
-        "Reply with `bors d+` or `bors d=#{d.user.login}` with a `for=` argument to re-delegate."
+        "Reply with `bors d+` or `bors d=#{d.user.login}` with a `for=` argument to re-delegate." <>
+        note
 
     safe_post_comment(d.patch.project, d.patch.pr_xref, msg)
   end
@@ -268,10 +317,23 @@ defmodule BorsNG.Database.Context.Delegation do
     secs_remaining = NaiveDateTime.diff(d.expires_at, now)
     duration_str = Command.format_duration(secs_remaining)
 
+    # The delegate may have approved already; expiry only threatens *future*
+    # approvals, so say which situation they are in rather than implying the
+    # standing approval is at risk.
+    note =
+      if standing_approval?(d.patch_id, d.user.login) do
+        " Your existing approval is not affected — but if it is dropped (a new push, " <>
+          "`bors r-`, or a failed build), approving again after the delegation expires " <>
+          "will need a fresh delegation."
+      else
+        ""
+      end
+
     msg =
       ":hourglass_flowing_sand: @#{d.user.login}, your delegation on this PR expires " <>
         "in less than #{label} " <>
-        "(approximately #{duration_str}, at #{Command.format_expires_at(d.expires_at)})."
+        "(approximately #{duration_str}, at #{Command.format_expires_at(d.expires_at)})." <>
+        note
 
     safe_post_comment(d.patch.project, d.patch.pr_xref, msg)
   end

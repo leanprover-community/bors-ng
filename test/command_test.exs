@@ -792,6 +792,109 @@ defmodule BorsNG.CommandTest do
     ]
   end
 
+  # Removing a delegation never withdraws a standing approval (here: one held
+  # for a bundle); the acknowledgment has to say so instead of implying the
+  # approval is gone.
+  defp undelegate_note_setup(proj) do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => delegation_toml()}}
+      }
+    })
+
+    {:ok, user} =
+      Repo.insert(%BorsNG.Database.User{user_xref: 1, is_admin: true, login: "repo_owner"})
+
+    {:ok, delegate} =
+      Repo.insert(%BorsNG.Database.User{user_xref: 2, is_admin: false, login: "pr_author"})
+
+    {:ok, patch} =
+      Repo.insert(%BorsNG.Database.Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        open: true,
+        bundle_reviewer: "pr_author"
+      })
+
+    Repo.insert(%BorsNG.Database.LinkUserProject{
+      user_id: user.id,
+      project_id: proj.id
+    })
+
+    Repo.insert!(%BorsNG.Database.UserPatchDelegation{
+      user_id: delegate.id,
+      patch_id: patch.id
+    })
+
+    user
+  end
+
+  defp mock_comments(pr_xref) do
+    GitHub.ServerMock.get_state()
+    |> get_in([{{:installation, 91}, 14}, :comments, pr_xref])
+  end
+
+  test "delegate- notes a held approval by a removed delegate", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    c = %Command{
+      project: proj,
+      commenter: user,
+      comment: "bors delegate-",
+      pr_xref: 1
+    }
+
+    Command.run(c)
+
+    assert [] == Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "All delegations have been removed"))
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "still counts"))
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "bors r-"))
+  end
+
+  test "delegate-= notes the removed delegate's held approval", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    c = %Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d-=pr_author",
+      pr_xref: 1
+    }
+
+    Command.run(c)
+
+    assert [] == Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "no longer delegated to pr_author"))
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "still counts"))
+  end
+
+  test "delegate- has no held-approval note when nothing is held", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    # Clear the held approval; the delegation alone must not trigger the note.
+    Repo.get_by!(BorsNG.Database.Patch, pr_xref: 1, project_id: proj.id)
+    |> BorsNG.Database.Patch.changeset(%{bundle_reviewer: nil})
+    |> Repo.update!()
+
+    c = %Command{
+      project: proj,
+      commenter: user,
+      comment: "bors delegate-",
+      pr_xref: 1
+    }
+
+    Command.run(c)
+
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "All delegations have been removed"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "still counts"))
+  end
+
   test "retry fails for non-members", %{proj: proj} do
     pr = %BorsNG.GitHub.Pr{
       number: 1,

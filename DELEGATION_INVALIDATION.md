@@ -173,6 +173,41 @@ rationale. The advisory `invalidate_on_paths` lint deliberately stays on the
 short budget: its reads (`get_repo_tree`, `get_pr_comments`) only gate a
 cosmetic warning, so a failure just skips it.
 
+### After approval — standing approvals are not re-checked
+
+The merge-time gate runs when the `r+` is issued. What that `r+` produces is a
+**standing approval**: for an unbundled patch, membership in a waiting or
+running batch; for a bundled patch, an approval held on the patch row
+(`Bundles.hold_approval/2`) until the rest of the bundle is approved. If the
+delegation that authorized it later expires or is removed with
+`bors delegate-`, the standing approval still counts — the batch stays queued,
+the held approval still lets the bundle queue once its last member is
+approved, and nothing re-validates delegation state at that point.
+
+This is deliberate:
+
+- The approval was verified fail-closed at the moment it was given. Queueing
+  or holding it is bookkeeping, not a new grant of trust.
+- The *security-motivated* invalidation path cannot race a standing approval:
+  path-based revocation only triggers on a push, and a push already cancels
+  the in-flight batch (the `synchronize` handler) or drops the held bundle
+  approval (the batcher's cancel path), so re-approval after the push goes
+  back through the fail-closed gate.
+- Any reviewer can retract a standing approval at any time with `bors r-`.
+- The residual cases — manual `delegate-`, timed expiry — are administrative:
+  the delegate was entitled when they approved.
+
+The user-facing messages acknowledge this rather than contradict it. When a
+delegation expires or is removed while its holder's approval stands, the
+expiry notice and the `delegate-` acknowledgment add that the approval still
+counts and how to retract it; the pre-expiry warnings tell an
+already-approved delegate that only *future* approvals need the delegation
+(their approval can still be dropped by a push, `bors r-`, or a failed build,
+after which re-approving requires a fresh delegation). The rule, in one line:
+**expiry or revocation never voids a standing approval; it only blocks future
+approvals.** The standing-approval check backing these messages is
+`BorsNG.Database.Context.Delegation.standing_approval?/2`.
+
 ### On close or convert-to-draft (full wipe)
 
 Two lifecycle events drop a PR's delegations outright, independent of the
