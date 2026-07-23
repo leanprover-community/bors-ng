@@ -1176,6 +1176,44 @@ defmodule BorsNG.Worker.BatcherTest do
     assert [] == Repo.all(Batch)
   end
 
+  test "a still-waiting prerun poll re-arms silently", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"Z" => %{"cn" => :running}},
+        files: %{"Z" => %{"bors.toml" => ~s/status = [ "ci" ]\npr_status = [ "cn" ]/}}
+      }
+    })
+
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "Z",
+        into_branch: "master"
+      }
+      |> Repo.insert!()
+
+    # The first arm announces the wait once.
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    waiting_comment =
+      ":clock1: Waiting for PR status (GitHub check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."
+
+    assert %{comments: %{1 => [^waiting_comment]}} =
+             GitHub.ServerMock.get_state()[{{:installation, 91}, 14}]
+
+    # Later iterations that are still waiting must not comment again: at one
+    # poll per minute, a comment per iteration is spam.
+    Batcher.handle_info({:prerun_poll, 1, {"rvr", patch}}, proj.id)
+    Batcher.handle_info({:prerun_poll, 2, {"rvr", patch}}, proj.id)
+
+    assert %{comments: %{1 => [^waiting_comment]}} =
+             GitHub.ServerMock.get_state()[{{:installation, 91}, 14}]
+  end
+
   test "Poll on a pending (waiting) PR status. Then reject after that CI fails.", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

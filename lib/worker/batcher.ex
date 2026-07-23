@@ -1814,7 +1814,12 @@ defmodule BorsNG.Worker.Batcher do
         send_message(repo_conn, [patch], {:preflight, :timeout})
 
       true ->
-        send_message(repo_conn, [patch], {:preflight, :waiting})
+        # Tell the user once, when the poll loop is armed. Later iterations
+        # re-poll silently: one comment per minute until the timeout is spam.
+        if try_num == 0 do
+          send_message(repo_conn, [patch], {:preflight, :waiting})
+        end
+
         Logger.info("Start Poll Patch #{patch.id} prerun")
 
         Process.send_after(
