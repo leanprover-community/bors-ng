@@ -256,6 +256,14 @@ defmodule BorsNG.Worker.Batcher do
         {b.into_branch, b.id |> Patch.all_for_batch() |> Repo.all()}
       end)
 
+    # An emptied queue needs fresh review everywhere. A solo patch's approval
+    # dies with its batch links; a bundle member's held approval must die
+    # with them too, or one member's later r+ would silently re-queue its
+    # whole bundle.
+    affected
+    |> Enum.flat_map(fn {_branch, patches} -> patches end)
+    |> Bundles.drop_held_approvals()
+
     Enum.each(waiting, &Repo.delete!/1)
 
     Enum.map(running, &Batch.changeset(&1, %{state: :canceled}))

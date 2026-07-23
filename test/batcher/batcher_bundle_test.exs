@@ -1250,6 +1250,23 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   end
 
   describe "bundle cancellation" do
+    test "cancel-all drops held approvals, so one r+ cannot re-queue a bundle", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1, %{bundle_reviewer: "r1"})
+      p2 = insert_patch(proj, 2, %{bundle_reviewer: "r2"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_cast({:cancel_all}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project(:incomplete) |> Repo.all()
+
+      # Parity with solo patches, whose approval dies with the batch links:
+      # after an operator empties the queue, everything needs a fresh r+.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+    end
+
     test "canceling one member pulls the bundle from a waiting batch", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => [], 3 => []})
       p1 = insert_patch(proj, 1)
