@@ -7,6 +7,7 @@ defmodule BorsNG.ProjectControllerTest do
   alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.LinkUserProject
   alias BorsNG.Database.Patch
+  alias BorsNG.Database.PatchBundle
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.Database.User
@@ -117,6 +118,123 @@ defmodule BorsNG.ProjectControllerTest do
 
     conn = get(conn, project_path(conn, :show, project))
     assert html_response(conn, 200) =~ "Delegated"
+  end
+
+  test "show a stacked bundle in its own group", %{conn: conn, project: project, user: user} do
+    conn = login(conn)
+    Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+
+    bundle = Repo.insert!(%PatchBundle{project_id: project.id})
+
+    base =
+      Repo.insert!(%Patch{
+        project_id: project.id,
+        pr_xref: 43,
+        title: "base patch",
+        bundle_id: bundle.id,
+        bundle_reviewer: "reviewer"
+      })
+
+    Repo.insert!(%Patch{
+      project_id: project.id,
+      pr_xref: 44,
+      title: "stacked patch",
+      bundle_id: bundle.id,
+      stacked_on_id: base.id
+    })
+
+    conn = get(conn, project_path(conn, :show, project))
+    html = html_response(conn, 200)
+
+    assert html =~ "Stacked"
+    assert html =~ "Bundle #{bundle.id}"
+    assert html =~ "Waiting for approval of"
+    assert html =~ "✓ held"
+    assert html =~ "Stacked on #43"
+    # base first, then the PR stacked on it
+    assert html =~ ~r/base patch.*stacked patch/s
+    # bundled patches leave the plain sections
+    refute html =~ "Awaiting review"
+    refute html =~ "Delegated"
+  end
+
+  test "show a linked bundle blocked by a draft", %{conn: conn, project: project, user: user} do
+    conn = login(conn)
+    Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+
+    bundle = Repo.insert!(%PatchBundle{project_id: project.id})
+
+    Repo.insert!(%Patch{
+      project_id: project.id,
+      pr_xref: 43,
+      title: "ready patch",
+      bundle_id: bundle.id,
+      bundle_reviewer: "reviewer"
+    })
+
+    Repo.insert!(%Patch{
+      project_id: project.id,
+      pr_xref: 44,
+      title: "draft patch",
+      bundle_id: bundle.id,
+      is_draft: true
+    })
+
+    conn = get(conn, project_path(conn, :show, project))
+    html = html_response(conn, 200)
+
+    assert html =~ "Linked"
+    refute html =~ "Stacked"
+    assert html =~ "Blocked"
+    assert html =~ "is a draft"
+    # no stack order: plain descending PR order
+    assert html =~ ~r/draft patch.*ready patch/s
+  end
+
+  test "mark bundled patches inside a batch", %{conn: conn, project: project, user: user} do
+    conn = login(conn)
+    Repo.insert!(%LinkUserProject{user_id: user.id, project_id: project.id})
+
+    batch =
+      Repo.insert!(%Batch{
+        project_id: project.id,
+        commit: "BC",
+        state: :running
+      })
+
+    bundle = Repo.insert!(%PatchBundle{project_id: project.id})
+
+    base =
+      Repo.insert!(%Patch{
+        project_id: project.id,
+        pr_xref: 43,
+        title: "base patch",
+        bundle_id: bundle.id
+      })
+
+    stacked =
+      Repo.insert!(%Patch{
+        project_id: project.id,
+        pr_xref: 44,
+        title: "stacked patch",
+        bundle_id: bundle.id,
+        stacked_on_id: base.id
+      })
+
+    for patch <- [base, stacked] do
+      Repo.insert!(%LinkPatchBatch{patch_id: patch.id, batch_id: batch.id})
+    end
+
+    conn = get(conn, project_path(conn, :show, project))
+    html = html_response(conn, 200)
+
+    assert html =~ "Running"
+    assert html =~ "bundle-chip"
+    assert html =~ "⛓ #{bundle.id}"
+    assert html =~ "row--bundled"
+    assert html =~ "Stacked on #43"
+    # base first inside the batch, too
+    assert html =~ ~r/base patch.*stacked patch/s
   end
 
   test "show trying and waiting attempts", %{conn: conn, project: project, user: user} do

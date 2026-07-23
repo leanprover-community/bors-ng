@@ -1,0 +1,8 @@
+<%= case @state do %>
+<% {:blocked, blocker} -> %>
+<span class=span--error>Blocked</span>: <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= blocker.pr_xref %>">#<%= blocker.pr_xref %></a> is <%= BorsNG.BundleDisplay.blocker_reason(blocker) %>
+<% {:waiting_on, pending} -> %>
+Waiting for approval of <%= for {patch, i} <- Enum.with_index(pending) do %><%= if i > 0 do %>, <% end %><a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>">#<%= patch.pr_xref %></a><% end %>
+<% :ready -> %>
+Waiting to run
+<% end %>
