@@ -1217,11 +1217,16 @@ defmodule BorsNG.Worker.Batcher do
       # A terminally-failed conflict batch is one unit: a lone patch, or one
       # bundle whose members conflict with each other. A bundle can't be
       # bisected, and rebasing the base won't resolve a member-vs-member
-      # clash, so tell the members together instead of the solo per-PR text.
+      # clash, so — as on the build-failure path — drop the whole set's held
+      # approvals and tell the members together instead of the solo per-PR
+      # text. Re-queueing then needs a fresh r+ on every member, so an r+ on a
+      # clean sibling can't silently re-queue the still-conflicting set. The
+      # retarget record is left intact for a later unlink to restore.
       {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
       send_message(repo_conn, solo, {:conflict, :failed, batch.into_branch})
 
       if bundled != [] do
+        Bundles.drop_held_approvals(bundled)
         xrefs = bundled |> Enum.map(& &1.pr_xref) |> Enum.sort()
         send_message(repo_conn, bundled, {:bundle_conflict, xrefs})
       end

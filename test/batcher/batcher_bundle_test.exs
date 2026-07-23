@@ -955,6 +955,12 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       # It is not re-queued: no new batch was cloned (the old bug looped here).
       assert proj.id |> Batch.all_for_project() |> Repo.all() |> Enum.count() == 1
 
+      # The whole set's held approvals are dropped, as on the build-failure
+      # path: re-queueing needs a fresh r+ on every member, so a clean
+      # sibling's r+ can't silently re-queue the still-conflicting set.
+      assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+
       # Both members get the bundle-aware message naming the set and pointing
       # at the member-vs-member clash; neither gets the solo "rebase master
       # into this PR" text, which wouldn't help.
@@ -962,6 +968,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         msg = List.last(comments_for(pr))
         assert msg =~ "(#1, #2)"
         assert msg =~ "conflict with each other"
+        assert msg =~ "run `bors r+` on each member"
         refute msg =~ "into this PR"
       end
     end

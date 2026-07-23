@@ -93,6 +93,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert bundle_conflict =~ "(#3, #7)"
     assert bundle_conflict =~ "conflict with each other"
     assert bundle_conflict =~ "bors unlink"
+    assert bundle_conflict =~ "run `bors r+` on each member"
 
     for reason <- [
           :nothing_to_link,
