@@ -53,6 +53,13 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   @doc """
   Record a reviewer's approval on a bundled patch. The approval is held until
   the rest of the bundle is approved. Returns the updated patch.
+
+  Invariant: a draft cannot hold an approval. It is enforced only at the
+  webhook boundary — every command entry point in `BorsNG.WebhookController`
+  (issue_comment, review_comment, review, and the PR-opened body handler)
+  drops commands on drafts before `Command.run/1`, and converting an approved
+  patch to draft revokes what it held. There is no draft guard here or in
+  `patch_preflight`, so a new command entry point must gate drafts itself.
   """
   def hold_approval(patch, reviewer) do
     patch
