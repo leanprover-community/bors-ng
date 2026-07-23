@@ -1213,15 +1213,21 @@ defmodule BorsNG.Worker.Batcher do
       # `bors-staging`) come off in start_waiting_batch's reconcile once the
       # batch is committed to :conflict.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
-    end
 
-    conflict_msg =
-      case state do
-        :failed -> {:conflict, :failed, batch.into_branch}
-        other -> {:conflict, other}
+      # A terminally-failed conflict batch is one unit: a lone patch, or one
+      # bundle whose members conflict with each other. A bundle can't be
+      # bisected, and rebasing the base won't resolve a member-vs-member
+      # clash, so tell the members together instead of the solo per-PR text.
+      {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
+      send_message(repo_conn, solo, {:conflict, :failed, batch.into_branch})
+
+      if bundled != [] do
+        xrefs = bundled |> Enum.map(& &1.pr_xref) |> Enum.sort()
+        send_message(repo_conn, bundled, {:bundle_conflict, xrefs})
       end
-
-    send_message(repo_conn, patches, conflict_msg)
+    else
+      send_message(repo_conn, patches, {:conflict, state})
+    end
 
     {:conflict, nil}
   end

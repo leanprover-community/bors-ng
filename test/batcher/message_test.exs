@@ -87,6 +87,13 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert bundle_failed =~ "left the queue"
     assert bundle_failed =~ "run `bors r+` on each member"
 
+    bundle_conflict = Message.generate_message({:bundle_conflict, [3, 7]})
+
+    assert bundle_conflict =~ "Merge conflict."
+    assert bundle_conflict =~ "(#3, #7)"
+    assert bundle_conflict =~ "conflict with each other"
+    assert bundle_conflict =~ "bors unlink"
+
     for reason <- [
           :nothing_to_link,
           :not_found,

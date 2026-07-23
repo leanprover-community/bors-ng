@@ -778,6 +778,66 @@ defmodule BorsNG.Worker.Batcher.DividerTest do
 
       assert Enum.map(links_for_solo, & &1.patch_id) == [patch3.id]
     end
+
+    test "a self-conflicting bundle fails terminally instead of re-cloning forever", %{
+      proj: proj,
+      batch: batch,
+      patch1: patch1,
+      patch2: patch2
+    } do
+      # Two PRs that each merge cleanly into master (mergeable: true) but
+      # conflict with *each other*. Bundled, they are one indivisible unit,
+      # and the batch-level octopus merge already hit their mutual conflict —
+      # that is why we are in the conflict splitter. GitHub still reports both
+      # mergeable (each is fine against master alone), so the bundle is
+      # classified mergeable. But it is the only unit: there is nothing to
+      # bisect against, and a bundle can't be split, so re-cloning it would
+      # just re-conflict forever. It must fail terminally instead.
+      GitHub.ServerMock.put_state(%{
+        {{:installation, 91}, 14} => %{
+          branches: %{"master" => "ini"},
+          commits: %{},
+          comments: %{1 => [], 2 => []},
+          statuses: %{},
+          pulls: %{
+            1 => %Pr{
+              number: 1,
+              state: :open,
+              base_ref: "master",
+              head_sha: "N",
+              head_ref: "update",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: true
+            },
+            2 => %Pr{
+              number: 2,
+              state: :open,
+              base_ref: "master",
+              head_sha: "N",
+              head_ref: "update2",
+              base_repo_id: 14,
+              head_repo_id: 14,
+              merged: false,
+              mergeable: true
+            }
+          }
+        }
+      })
+
+      [patch1, patch2] = bundle_up(proj, [patch1, patch2])
+      links = Enum.map([patch1, patch2], &create_link(&1, batch))
+
+      result = Divider.split_batch_with_conflicts(links, batch)
+
+      assert result == :failed
+
+      # No new batch was cloned: the bundle left the queue rather than being
+      # re-queued to conflict again.
+      batches = Repo.all(from(b in Batch, where: b.project_id == ^proj.id))
+      assert Enum.count(batches) == 1
+    end
   end
 
   describe "clone_batch" do

@@ -931,6 +931,40 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         refute msg =~ "`bors r+` or `bors retry`"
       end
     end
+
+    test "a bundle whose members conflict with each other fails terminally, not in a loop",
+         %{proj: proj} do
+      # Both members are mergeable against master on their own, but conflict
+      # with each other. merge_conflict: 1 lets the first member merge onto
+      # staging and conflicts the second — the member-vs-member clash.
+      put_merge_state([{1, "N"}, {2, "O"}])
+      GitHub.ServerMock.put_state(Map.put(GitHub.ServerMock.get_state(), :merge_conflict, 1))
+
+      p1 = insert_patch(proj, 1, %{commit: "N", bundle_reviewer: "rvr"})
+      p2 = insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "rvr"})
+      {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      # The batch fails terminally on the conflict rather than reaching CI.
+      # (A conflict persists as :error — see BatchState — same as a build
+      # failure; the message below is what marks it as a conflict.)
+      assert Repo.get!(Batch, batch.id).state == :error
+
+      # It is not re-queued: no new batch was cloned (the old bug looped here).
+      assert proj.id |> Batch.all_for_project() |> Repo.all() |> Enum.count() == 1
+
+      # Both members get the bundle-aware message naming the set and pointing
+      # at the member-vs-member clash; neither gets the solo "rebase master
+      # into this PR" text, which wouldn't help.
+      for pr <- [1, 2] do
+        msg = List.last(comments_for(pr))
+        assert msg =~ "(#1, #2)"
+        assert msg =~ "conflict with each other"
+        refute msg =~ "into this PR"
+      end
+    end
   end
 
   describe "drop_held_approvals / forget_retargeting" do

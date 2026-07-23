@@ -34,47 +34,63 @@ defmodule BorsNG.Worker.Batcher.Divider do
 
   def split_batch_with_conflicts(patch_links, %Batch{project: project, into_branch: into}) do
     repo_conn = get_repo_conn(project)
+    units = group_units(patch_links)
 
-    # if mergeable 0 and unmergeable = 1 -> fail no retry
-    #              0                   2+  create single batches for unmergeable units
-    #              1                   0  impossible
-    #              1                   1+ create single batches for both
-    #              2+                  0  bisect for mergeable units
-    #              2+                  1+ one batch for mergeable units, create single batches for unmergeable units
-    # Create batches for unmergeable units first, so they will be picked up first and fail first.
-    # A bundle counts as unmergeable when any of its members is.
-    case isolate_unmergeable_units(group_units(patch_links), repo_conn) do
-      {[], [_]} ->
-        :failed
+    # A lone bundle unit that still failed to merge is a member-vs-member
+    # conflict: the bundle is indivisible, and GitHub reports each member
+    # mergeable against the base (it never evaluates them pairwise), so
+    # retrying would re-conflict forever. Fail it terminally rather than
+    # re-cloning the same unit. A lone *patch* is left to the mergeability
+    # logic below — an unknown flag is worth a retry.
+    if single_bundle_unit?(units) do
+      :failed
+    else
+      # if mergeable 0 and unmergeable = 1 -> fail no retry
+      #              0                   2+  create single batches for unmergeable units
+      #              1                   0  a lone patch of unknown mergeability: retry
+      #              1                   1+ create single batches for both
+      #              2+                  0  bisect for mergeable units
+      #              2+                  1+ one batch for mergeable units, create single batches for unmergeable units
+      # Create batches for unmergeable units first, so they will be picked up first and fail first.
+      # A bundle counts as unmergeable when any of its members is.
+      case isolate_unmergeable_units(units, repo_conn) do
+        {[], [_]} ->
+          :failed
 
-      {[], multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn unit ->
-          clone_batch(unit, project.id, into)
-        end)
+        {[], multiple_unmergeable} ->
+          Enum.each(multiple_unmergeable, fn unit ->
+            clone_batch(unit, project.id, into)
+          end)
 
-        :retrying
+          :retrying
 
-      {[single_mergeable], multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn unit ->
-          clone_batch(unit, project.id, into)
-        end)
+        {[single_mergeable], multiple_unmergeable} ->
+          Enum.each(multiple_unmergeable, fn unit ->
+            clone_batch(unit, project.id, into)
+          end)
 
-        clone_batch(single_mergeable, project.id, into)
-        :retrying
+          clone_batch(single_mergeable, project.id, into)
+          :retrying
 
-      {multiple_mergeable, []} ->
-        bisect(multiple_mergeable, project.id, into)
-        :retrying
+        {multiple_mergeable, []} ->
+          bisect(multiple_mergeable, project.id, into)
+          :retrying
 
-      {multiple_mergeable, multiple_unmergeable} ->
-        Enum.each(multiple_unmergeable, fn unit ->
-          clone_batch(unit, project.id, into)
-        end)
+        {multiple_mergeable, multiple_unmergeable} ->
+          Enum.each(multiple_unmergeable, fn unit ->
+            clone_batch(unit, project.id, into)
+          end)
 
-        clone_batch(Enum.concat(multiple_mergeable), project.id, into)
-        :retrying
+          clone_batch(Enum.concat(multiple_mergeable), project.id, into)
+          :retrying
+      end
     end
   end
+
+  # A single unit that is a bundle (its patches share a `bundle_id`). Such a
+  # unit is indivisible, so a conflict in it can only be resolved by the user.
+  defp single_bundle_unit?([unit]), do: link_patch(hd(unit)).bundle_id != nil
+  defp single_bundle_unit?(_), do: false
 
   def clone_batch(patch_links, project_id, into_branch) do
     batch = Repo.insert!(Batch.new(project_id, into_branch))
