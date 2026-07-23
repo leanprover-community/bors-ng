@@ -161,6 +161,10 @@ defmodule BorsNG.Command do
   @delegation_max_duration_sec 90 * 24 * 60 * 60
   def delegation_max_duration_sec, do: @delegation_max_duration_sec
 
+  # `Patch.pr_xref` is a 32-bit database column. A larger number cannot be a
+  # real pull request, and passing one to a lookup crashes the query.
+  @max_pr_xref 2_147_483_647
+
   @doc """
   Parse a comment for bors commands.
   """
@@ -259,13 +263,21 @@ defmodule BorsNG.Command do
       []
       iex> Command.parse_pr_refs(" nonsense")
       []
+      iex> Command.parse_pr_refs(" #99999999999")
+      []
   """
   def parse_pr_refs(arguments) do
     arguments
     |> ref_tokens()
-    |> Enum.map(&String.replace_prefix(&1, "#", ""))
-    |> Enum.filter(&String.match?(&1, ~r/^\d+$/))
-    |> Enum.map(&String.to_integer/1)
+    |> Enum.filter(&pr_ref?/1)
+    |> Enum.map(&(&1 |> String.replace_prefix("#", "") |> String.to_integer()))
+  end
+
+  # A well-formed reference: an optional `#`, then a number small enough to
+  # be a real pull request.
+  defp pr_ref?(token) do
+    String.match?(token, ~r/^#?\d+$/) and
+      token |> String.replace_prefix("#", "") |> String.to_integer() <= @max_pr_xref
   end
 
   @doc ~S"""
@@ -282,12 +294,14 @@ defmodule BorsNG.Command do
       ["r+"]
       iex> Command.malformed_pr_refs(" #13 p=5")
       ["p=5"]
+      iex> Command.malformed_pr_refs(" #99999999999")
+      ["#99999999999"]
   """
   def malformed_pr_refs(arguments) do
     arguments
     |> ref_tokens()
     |> Enum.filter(fn token ->
-      ref_like = String.match?(token, ~r/^[#\d]/) and not String.match?(token, ~r/^#?\d+$/)
+      ref_like = String.match?(token, ~r/^[#\d]/) and not pr_ref?(token)
       ref_like or other_command?(token)
     end)
   end

@@ -89,6 +89,18 @@ defmodule BorsNG.CommandTest do
     assert [{:link_malformed, :link, ["r+"]}] == Command.parse("bors link #23 r+")
   end
 
+  test "refuse references too large for a pull request number" do
+    # pr_xref is a 32-bit column; parsing a bigger number would crash the
+    # patch lookup inside the batcher.
+    assert [{:link_malformed, :link, ["#99999999999"]}] ==
+             Command.parse("bors link #99999999999")
+
+    assert [{:link_malformed, :stack, ["2147483648"]}] ==
+             Command.parse("bors stack 2147483648")
+
+    assert [{:link, [2_147_483_647]}] == Command.parse("bors link #2147483647")
+  end
+
   test "refuse other commands' arguments instead of reading numbers out of them" do
     assert [{:link_malformed, :link, ["p=5"]}] == Command.parse("bors link #23 p=5")
     assert [{:link_malformed, :stack, ["r=me"]}] == Command.parse("bors stack #2 r=me")
