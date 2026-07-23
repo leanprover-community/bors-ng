@@ -39,6 +39,10 @@ defmodule BorsNG.GitHub do
     call_with_retry(:get_pr_files, repo_conn, {pr_xref}, 500, 4_000)
   end
 
+  # Both compare calls interpolate `base` and `head` into the request path
+  # without encoding. Pass commit SHAs, not branch names: a ref containing
+  # `/`, `.`, or `..` would change the path.
+
   @spec get_pr_compare(tconn, binary, binary) ::
           {:ok, [BorsNG.GitHub.File.t()]} | {:error, term}
   def get_pr_compare(repo_conn, base, head) do
@@ -48,6 +52,7 @@ defmodule BorsNG.GitHub do
   @doc """
   How `head` relates to `base`: `:ahead` / `:identical` mean `head`
   contains `base`'s current tip (i.e. it is rebased on it).
+  Like `get_pr_compare/3`, takes commit SHAs, not branch names.
   """
   @spec compare_status(tconn, binary, binary) ::
           {:ok, :ahead | :behind | :identical | :diverged} | {:error, term}
