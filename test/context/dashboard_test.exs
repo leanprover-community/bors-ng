@@ -114,6 +114,19 @@ defmodule BorsNG.Database.DashboardContextTest do
     assert [context.project.id, project2.id] == Enum.sort(ids)
   end
 
+  test "all_projects lists every project regardless of membership", context do
+    project2 =
+      Repo.insert!(%Project{
+        installation_id: context.installation.id,
+        repo_xref: 14,
+        name: "example/project2"
+      })
+
+    projects = Dashboard.all_projects()
+    ids = projects |> Enum.map(& &1.id) |> Enum.sort()
+    assert ids == Enum.sort([context.project.id, project2.id])
+  end
+
   test "grab patches that a particular user has", %{project: project} do
     batch = Repo.insert!(%Batch{project: project, state: 0})
 

@@ -40,6 +40,17 @@ defmodule BorsNG.Database.Context.Dashboard do
     |> Repo.all()
   end
 
+  @doc """
+  List every project, ignoring membership. Used for admins, who can access
+  any repo regardless of the reviewer/member links.
+  """
+  def all_projects do
+    from(p in Project,
+      order_by: [asc: p.name, asc: p.repo_xref]
+    )
+    |> Repo.all()
+  end
+
   def my_patches(user_id, type \\ :all)
 
   def my_patches(user_id, :reviewer) do
