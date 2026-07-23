@@ -1205,21 +1205,15 @@ defmodule BorsNG.Worker.Batcher do
       # re-queue. The queue labels come off once the batch state is :conflict.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
 
-      # A terminal conflict is one unit: a solo patch or a bundle whose
-      # members conflict with each other. A bundle cannot be bisected, and
-      # rebasing will not resolve a member-versus-member clash. Drop the
-      # whole set's held approvals and tell members together, not per-PR.
+      # A terminal conflict cannot be bisected, and rebasing will not
+      # resolve a member-versus-member clash. Drop the bundled patches'
+      # held approvals and tell each bundle's members together, not per-PR.
       # Re-queueing needs a fresh r+ on every member, so a clean sibling's
       # r+ cannot silently re-queue the still-conflicting set. Keep the
       # retarget record intact for a later unlink to restore.
       {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
       send_message(repo_conn, solo, {:conflict, :failed, batch.into_branch})
-
-      if bundled != [] do
-        Bundles.drop_held_approvals(bundled)
-        xrefs = bundled |> Enum.map(& &1.pr_xref) |> Enum.sort()
-        send_message(repo_conn, bundled, {:bundle_conflict, xrefs})
-      end
+      fail_bundles(repo_conn, bundled, &{:bundle_conflict, &1})
     else
       send_message(repo_conn, patches, {:conflict, state})
     end
@@ -1508,24 +1502,37 @@ defmodule BorsNG.Worker.Batcher do
       # state is committed to :error.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
 
-      # A terminal failure is one unit: a solo patch or one bundle. A bundle
-      # cannot be bisected to find a culprit. Drop the whole set's held
-      # approvals (like a solo PR loses its r+) and tell members together,
-      # not per-PR text. Every member then needs a fresh r+. Re-running
-      # requires re-reviewing the fixed pull request. The bundle is not
-      # dissolved and bases stay retargeted, so the retargeting record stays
-      # intact for a later unlink to restore.
+      # A bundle cannot be bisected to find a culprit. Drop the bundled
+      # patches' held approvals (like a solo PR loses its r+) and tell each
+      # bundle's members together, not per-PR text. Every member then needs
+      # a fresh r+. Re-running requires re-reviewing the fixed pull request.
+      # The bundle is not dissolved and bases stay retargeted, so the
+      # retargeting record stays intact for a later unlink to restore.
       {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
       send_message(repo_conn, solo, {state, erred})
-
-      if bundled != [] do
-        Bundles.drop_held_approvals(bundled)
-        xrefs = bundled |> Enum.map(& &1.pr_xref) |> Enum.sort()
-        send_message(repo_conn, bundled, {:bundle_failed, xrefs, erred})
-      end
+      fail_bundles(repo_conn, bundled, &{:bundle_failed, &1, erred})
     end
 
     :error
+  end
+
+  # Terminal-failure handling for the bundled patches of a batch: drop every
+  # member's held approval, so a sibling's stale approval cannot re-queue a
+  # failed set on one fresh r+, and message each bundle's members together.
+  # Grouped by bundle so this stays correct even if a terminally-failed batch
+  # ever holds more than one bundle (today the divider returns a terminal
+  # state only for a single unit).
+  defp fail_bundles(_repo_conn, [], _message_fun), do: :ok
+
+  defp fail_bundles(repo_conn, bundled, message_fun) do
+    Bundles.drop_held_approvals(bundled)
+
+    bundled
+    |> Enum.group_by(& &1.bundle_id)
+    |> Enum.each(fn {_bundle_id, members} ->
+      xrefs = members |> Enum.map(& &1.pr_xref) |> Enum.sort()
+      send_message(repo_conn, members, message_fun.(xrefs))
+    end)
   end
 
   # A delay has been observed between Bors sending the Status change
