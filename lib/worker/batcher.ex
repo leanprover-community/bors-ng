@@ -120,8 +120,8 @@ defmodule BorsNG.Worker.Batcher do
         nil
 
       patch ->
-        # Linked patches batch as one unit, so `single` only means something
-        # applied to the whole bundle.
+        # Bundled patches queue as a unit, so the `single` setting applies
+        # to all members, not just one.
         patch
         |> Bundles.members_or_self()
         |> Enum.each(fn p ->
@@ -150,8 +150,8 @@ defmodule BorsNG.Worker.Batcher do
         |> Repo.one()
         |> raise_batch_priority(priority)
 
-        # Linked patches enter the queue at one priority, so a change to one
-        # member applies to the whole bundle.
+        # Bundled patches enter the queue at one priority level. A priority
+        # change applies to all members.
         patch
         |> Bundles.members_or_self()
         |> Enum.each(fn p ->
@@ -221,9 +221,9 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   def do_handle_cast({:cancel, patch_id, reason}, _project_id) do
-    # A bundled patch may hold an approval while waiting for its siblings;
-    # canceling (r-, close, or a new push) revokes it, so re-queueing the
-    # bundle needs a fresh r+ on this member.
+    # A bundled patch may hold an approval while its siblings await approval.
+    # Canceling (r-, close, or new push) revokes it. Re-queueing the bundle
+    # requires a fresh r+ on this member.
     Bundles.drop_held_approval(patch_id)
 
     patch_id
@@ -304,8 +304,8 @@ defmodule BorsNG.Worker.Batcher do
 
     case {pr_xrefs, target_xrefs} do
       {[], []} ->
-        # Bare `bors stack`: infer the parent from the base-branch chain
-        # (a stacked PR's base branch is its parent's head branch).
+        # Bare `bors stack`: infer the parent from the base branch chain.
+        # A stacked PR's base branch is its parent's head branch.
         case Bundles.infer_stack_parent(patch, project_id) do
           {:ok, parent} ->
             do_stack(repo_conn, patch, parent.pr_xref, project)
@@ -315,8 +315,8 @@ defmodule BorsNG.Worker.Batcher do
         end
 
       {_, []} ->
-        # Only this pull request's own number was given: refuse, so a typo
-        # is not read as the bare, inferring form.
+        # Only this pull request's own number was given: refuse. This prevents
+        # a typo from being read as the bare, inferring form.
         send_message(repo_conn, [patch], {:link_error, :self_stack})
 
       {_, [target_xref]} ->
@@ -338,8 +338,8 @@ defmodule BorsNG.Worker.Batcher do
         project = Repo.get!(Project, project_id)
         repo_conn = get_repo_conn(project)
 
-        # Read the members before dissolving: dissolve clears the
-        # retargeted_from bookkeeping the base restore needs.
+        # Read the members before dissolving. Dissolve clears the
+        # retargeted_from records that base restoration needs.
         members = Bundles.members(bundle_id)
 
         case Bundles.dissolve(bundle_id) do
@@ -347,9 +347,8 @@ defmodule BorsNG.Worker.Batcher do
             send_message(repo_conn, [patch], {:link_error, :in_batch})
 
           {:ok, _} ->
-            # A member that held an approval for the bundle lost it in the
-            # dissolve; unlike its siblings, it will not merge without a
-            # fresh r+, so it gets told.
+            # A member that held an approval for the bundle loses it during
+            # dissolve. Unlike its siblings, it will not merge without a fresh r+.
             {held, rest} = Enum.split_with(members, &(&1.bundle_reviewer != nil))
             send_message(repo_conn, rest, :unlinked)
             send_message(repo_conn, held, {:unlinked, :fresh_approval_needed})
@@ -388,8 +387,8 @@ defmodule BorsNG.Worker.Batcher do
         send_message(repo_conn, [patch], {:preflight, :duplicate})
         Logger.info("Patch #{patch.id} already left prerun, exiting prerun poll loop")
 
-      # The struct captured when the poll was scheduled is stale: the patch
-      # may have been bundled, retargeted, or pushed to since. Activate with
+      # The captured patch struct is stale: it may have been bundled,
+      # retargeted, or pushed to since the poll was scheduled. Activate using
       # the current row, not the snapshot.
       patch ->
         case patch_preflight(repo_conn, patch) do
@@ -503,18 +502,17 @@ defmodule BorsNG.Worker.Batcher do
         announce_bundle_waiting(repo_conn, patch, pending)
 
       (stale = Bundles.stale_stack_pair(repo_conn, members)) != nil ->
-        # A stacked branch went stale (its parent was amended after it was
-        # stacked, or a webhook was missed): hold the bundle rather than
-        # merge stale content. Held approvals survive; rebasing the child
-        # clears its approval via the push webhook, and a fresh r+ re-runs
-        # this check.
+        # A stacked branch has become stale: the parent was amended after
+        # stacking, or a webhook was missed. Hold the bundle instead of
+        # merging stale content. Held approvals survive. A rebase clears
+        # approval via the push webhook; a fresh r+ re-runs this check.
         {child, parent} = stale
         send_message(repo_conn, members, {:stack_stale, child.pr_xref, parent.pr_xref})
 
       true ->
-        # Everything is approved and fresh: normalize the stacked members'
-        # bases onto the final branch, then preflight the rest of the bundle (the
-        # current patch already passed its own preflight).
+        # Everything is approved and fresh. Normalize stacked members' bases
+        # onto the final branch, then run bundle preflight. The current patch
+        # already passed its own preflight.
         case normalize_bundle_bases(repo_conn, members) do
           {:error, :branch_mismatch} ->
             send_message(repo_conn, members, {:link_error, :branch_mismatch})
@@ -528,9 +526,8 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # Tell the approver what the bundle still waits on, and — when exactly
-  # one member is left — tell that member it alone holds the bundle, with
-  # what to do about it.
+  # Tell the approver what the bundle awaits. When exactly one member remains,
+  # tell that member it alone holds the bundle and what to do about it.
   defp announce_bundle_waiting(repo_conn, patch, pending) do
     others = Enum.reject(pending, &(&1.id == patch.id))
 
@@ -559,11 +556,10 @@ defmodule BorsNG.Worker.Batcher do
         run_bundle(project, members, max_batch_size)
 
       {:waiting, failed, toml} ->
-        # That member's statuses are still pending; its prerun poll loop
-        # re-enters activate/3 once they settle, and the held approvals
-        # make this whole check idempotent. The poll carries a marker, not
-        # the reviewer's name, so it picks up the approval as it stands
-        # when it fires (see resolve_prerun_reviewer/2).
+        # That member's statuses are still pending. Its prerun poll re-enters
+        # activate/3 once they settle. Held approvals make this check
+        # idempotent. The poll carries a marker, not the reviewer name, so it
+        # reads the approval as it stands when the poll fires.
         handle_waiting_preflight(repo_conn, :held_approval, failed, 0, toml)
 
         repo_conn
@@ -583,13 +579,11 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # Bring every member's base branch onto the bundle's final target before
-  # queueing; members still based on their parent's branch (rather than the
-  # final branch) are retargeted via the GitHub API. Fails closed: any API failure holds the
-  # bundle. While the bundle exists the move is not undone — the stored
-  # stack edges still order any future merge — but the original base is
-  # recorded so that dissolving the bundle can restore it
-  # (restore_retargeted_bases/2).
+  # Move every member's base branch to the bundle's final target before
+  # queueing. Members based on their parent's branch are retargeted via
+  # GitHub API. Fails closed: any API failure holds the bundle. The move is
+  # not undone while the bundle exists. Stack edges continue to order any
+  # future merge. The original base is recorded so dissolving can restore it.
   defp normalize_bundle_bases(repo_conn, members) do
     case Bundles.final_target(members) do
       {:ok, final} ->
@@ -615,12 +609,11 @@ defmodule BorsNG.Worker.Batcher do
   defp retarget_patch(repo_conn, patch, final) do
     with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref),
          {:ok, _} <- GitHub.update_pr_base(repo_conn, %{pr | base_ref: final}) do
-      # The "edited" webhook will echo this update; writing it now keeps the
-      # rest of activation working with the normalized base. The old base is
-      # kept so dissolving the bundle can restore it. Should the echo outrun
-      # this write, the syncer treats it as a base bors didn't record and
-      # clears the bookkeeping — the retarget stands, and a later unlink
-      # simply leaves the base in place.
+      # The "edited" webhook echoes this update. Writing it now keeps
+      # activation working with the normalized base. The old base is kept so
+      # dissolve can restore it. If the echo outruns this write, the syncer
+      # treats it as a base bors did not record and clears bookkeeping. The
+      # retarget stands. A later unlink leaves the base as is.
       patch =
         patch
         |> Patch.changeset(%{into_branch: final, retargeted_from: patch.into_branch})
@@ -633,11 +626,11 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # Undo queue-time retargeting when a bundle dissolves without merging:
-  # a member whose base bors moved — and which still points where bors
-  # left it — is retargeted back, so an unlinked stacked child does not
-  # keep showing (and squash-merging) its parent's changes. A base a human
-  # has moved since, or a closed pull request, is left alone.
+  # Undo queue-time retargeting when a bundle dissolves without merging. A
+  # member whose base bors moved—and which still points where bors left it—
+  # is retargeted back. This prevents an unlinked child from showing (and
+  # squash-merging) its parent's changes. Bases a human has moved since, or
+  # bases of closed pull requests, are left alone.
   defp restore_retargeted_bases(repo_conn, members) do
     Enum.each(members, fn patch ->
       cond do
@@ -648,8 +641,8 @@ defmodule BorsNG.Worker.Batcher do
           restore_base(repo_conn, patch)
 
         true ->
-          # A closed pull request's base cannot be edited; if it is ever
-          # reopened, its base is still where the bundle left it, so warn.
+          # A closed pull request's base cannot be edited. If it is reopened,
+          # its base is still where the bundle left it. Warn about this.
           send_message(repo_conn, [patch], {:base_restore_failed, patch.retargeted_from})
       end
     end)
@@ -666,7 +659,7 @@ defmodule BorsNG.Worker.Batcher do
       send_message(repo_conn, [patch], {:base_restored, patch.retargeted_from})
     else
       %GitHub.Pr{} ->
-        # The base was moved by hand after bors retargeted it; respect that.
+        # The base was moved by hand after bors retargeted it. Respect that.
         :ok
 
       _ ->
@@ -685,10 +678,10 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # The bundle analogue of run/3: the same queueing sequence, N patches at
-  # once, with each member's reviewer taken from its held approval. Kept
-  # separate so the upstream single-patch path stays untouched — a change to
-  # the sequence in either function must be mirrored in the other.
+  # Bundle equivalent of run/3: the same queueing sequence, N patches at once.
+  # Each member's reviewer comes from its held approval. Kept separate so the
+  # single-patch path stays untouched. Changes to the sequence in either
+  # function must be mirrored in the other.
   defp run_bundle(project, members, max_batch_size) do
     repo_conn = get_repo_conn(project)
     members = Bundles.stack_order(members)
@@ -707,8 +700,8 @@ defmodule BorsNG.Worker.Batcher do
         Enum.count(members)
       )
 
-    # All members join the batch or none do: a crash after a partial insert
-    # would otherwise leave a batch that merges only part of the bundle.
+    # All members join the batch or none do. A crash after a partial insert
+    # would leave a batch that merges only part of the bundle.
     {:ok, _} =
       Repo.transaction(fn ->
         Enum.each(members, fn p ->
@@ -747,8 +740,8 @@ defmodule BorsNG.Worker.Batcher do
             send_message(repo_conn, [patch], {:link_error, :cycle})
 
           not Bundles.contains_head?(repo_conn, target, patch) ->
-            # If the target contains this patch's head instead, the user
-            # most likely commented on the parent: name the fix.
+            # If the target contains this patch's head instead, the user most
+            # likely commented on the parent. Name the fix.
             message =
               if Bundles.contains_head?(repo_conn, patch, target) do
                 {:link_error, {:stack_reversed, target_xref, patch.pr_xref}}
@@ -766,9 +759,9 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # A point-in-time compare view of the child's own changes: exactly the
-  # delta contains_head?/3 verified. Built from SHAs, so it also works when
-  # the branches live in a fork.
+  # A point-in-time compare view of the child's own changes: exactly the delta
+  # that contains_head?/3 verified. Built from SHAs, so it works when branches
+  # live in a fork.
   defp compare_url(project, parent, child) do
     root = Confex.fetch_env!(:bors, :html_github_root)
     "#{root}/#{project.name}/compare/#{parent.commit}...#{child.commit}"
@@ -829,7 +822,7 @@ defmodule BorsNG.Worker.Batcher do
       |> Enum.sort_by(& &1.patch.pr_xref)
       |> Enum.split_with(&(&1.patch.open == false))
 
-    # A closed patch takes its whole bundle with it: linked patches merge
+    # A closed patch takes its whole bundle with it. Linked patches merge
     # together or not at all.
     {pulled_links, patch_links} = Bundles.split_pulled_by_closed(closed_links, patch_links)
 
@@ -853,8 +846,8 @@ defmodule BorsNG.Worker.Batcher do
       Enum.map(closed_links ++ pulled_links, & &1.patch)
     )
 
-    # Stacked patches must merge after the patch they stack on, and bundles
-    # merge contiguously.
+    # Stacked patches merge after the patch they stack on. Bundles merge as
+    # contiguous units.
     patch_links = Bundles.sort_links_for_merge(patch_links)
 
     # If all patches were closed and removed, cancel the batch early
@@ -1208,20 +1201,17 @@ defmodule BorsNG.Worker.Batcher do
     poll_after_delay(project)
 
     if state == :failed do
-      # A single unmergeable PR is dropped terminally, so flag it for a
-      # maintainer to re-queue. The queue labels (`ready-to-merge` /
-      # `bors-staging`) come off in start_waiting_batch's reconcile once the
-      # batch is committed to :conflict.
+      # A single unmergeable PR is dropped. Flag it for a maintainer to
+      # re-queue. The queue labels come off once the batch state is :conflict.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
 
-      # A terminally-failed conflict batch is one unit: a lone patch, or one
-      # bundle whose members conflict with each other. A bundle can't be
-      # bisected, and rebasing the base won't resolve a member-vs-member
-      # clash, so — as on the build-failure path — drop the whole set's held
-      # approvals and tell the members together instead of the solo per-PR
-      # text. Re-queueing then needs a fresh r+ on every member, so an r+ on a
-      # clean sibling can't silently re-queue the still-conflicting set. The
-      # retarget record is left intact for a later unlink to restore.
+      # A terminal conflict is one unit: a solo patch or a bundle whose
+      # members conflict with each other. A bundle cannot be bisected, and
+      # rebasing will not resolve a member-versus-member clash. Drop the
+      # whole set's held approvals and tell members together, not per-PR.
+      # Re-queueing needs a fresh r+ on every member, so a clean sibling's
+      # r+ cannot silently re-queue the still-conflicting set. Keep the
+      # retarget record intact for a later unlink to restore.
       {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
       send_message(repo_conn, solo, {:conflict, :failed, batch.into_branch})
 
@@ -1437,9 +1427,9 @@ defmodule BorsNG.Worker.Batcher do
 
     case push_status do
       {:success} ->
-        # The bundle (if any) has merged: drop the held approvals so a future
-        # run needs fresh r+'s, and forget the retargeting record so a later
-        # unlink won't try to restore a base whose changes are now merged.
+        # The bundle (if any) has merged. Drop held approvals so a future
+        # run needs fresh r+. Forget the retargeting record so a later unlink
+        # does not try to restore a base whose changes are now merged.
         Bundles.drop_held_approvals(patches)
         Bundles.forget_retargeting(patches)
 
@@ -1513,19 +1503,18 @@ defmodule BorsNG.Worker.Batcher do
       poll_after_delay(project)
       send_message(repo_conn, patches, {state, erred})
     else
-      # Terminal failure (a single-patch batch): the PR is dropped and needs a
-      # maintainer to put it back on the queue, so flag it. `ready-to-merge` /
-      # `bors-staging` are taken off by maybe_complete_batch once the batch
+      # Terminal failure: the PR is dropped and needs a maintainer to
+      # re-queue it. Flag it. The queue labels are taken off once the batch
       # state is committed to :error.
       Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
 
-      # A terminally-failed batch is one unit: a lone patch, or one bundle.
-      # A bundle can't be bisected to a culprit, so drop the whole set's held
-      # approvals (like a solo PR loses its r+ on failure) and tell the members
-      # together, instead of the stock per-PR text. Every member then needs a
-      # fresh r+, so re-running requires re-reviewing the fixed pull request.
-      # The bundle is not dissolved and its bases stay retargeted, so the
-      # retargeting record is left intact for a later unlink to restore.
+      # A terminal failure is one unit: a solo patch or one bundle. A bundle
+      # cannot be bisected to find a culprit. Drop the whole set's held
+      # approvals (like a solo PR loses its r+) and tell members together,
+      # not per-PR text. Every member then needs a fresh r+. Re-running
+      # requires re-reviewing the fixed pull request. The bundle is not
+      # dissolved and bases stay retargeted, so the retargeting record stays
+      # intact for a later unlink to restore.
       {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
       send_message(repo_conn, solo, {state, erred})
 
@@ -1626,7 +1615,7 @@ defmodule BorsNG.Worker.Batcher do
 
     patches = Enum.map(patch_links, & &1.patch)
 
-    # Canceling a bundled patch cancels its whole bundle: linked patches
+    # Canceling a bundled patch cancels its whole bundle. Linked patches
     # merge together or not at all.
     canceled_ids = Bundles.member_ids(patch_links, patch_id)
 
@@ -1667,7 +1656,7 @@ defmodule BorsNG.Worker.Batcher do
 
     send_status(repo_conn, batch, :canceled)
 
-    # The canceled patch (and its bundle) leaves the queue; any uncanceled
+    # The canceled patch (and its bundle) leave the queue. Any uncanceled
     # patches were re-queued into a fresh batch above, so reconcile reflects both.
     Labeler.reconcile_queue(repo_conn, batch.into_branch, patches)
   end
@@ -1681,6 +1670,7 @@ defmodule BorsNG.Worker.Batcher do
       |> Repo.all()
 
     # Canceling a bundled patch pulls its whole bundle from the waiting batch.
+    # All members leave together.
     canceled_ids = Bundles.member_ids(patch_links, patch_id)
 
     canceled_links = Enum.filter(patch_links, &(&1.patch_id in canceled_ids))
@@ -1698,7 +1688,7 @@ defmodule BorsNG.Worker.Batcher do
     send_message(repo_conn, [patch], {:canceled, :failed, reason})
     send_message(repo_conn, siblings, {:bundle_pulled, patch.pr_xref, reason})
 
-    # The patches have been removed from their (waiting) batch, so they're off
+    # The patches have been removed from their waiting batch, so they are off
     # the queue.
     Labeler.reconcile_queue(repo_conn, batch.into_branch, canceled_patches)
   end
@@ -1801,9 +1791,8 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # A poll armed for a member with a held approval (:held_approval) reads
-  # the approval back from the row when it fires, so an r- during the wait
-  # simply ends the loop.
+  # A poll armed for a member with a held approval reads the approval back
+  # from the row when it fires. An r- during the wait ends the loop.
   defp resolve_prerun_reviewer(:held_approval, patch), do: patch.bundle_reviewer
   defp resolve_prerun_reviewer(reviewer, _patch), do: reviewer
 
@@ -1958,9 +1947,8 @@ defmodule BorsNG.Worker.Batcher do
 
   @doc """
   Find a waiting batch to add patches to, or create one. `capacity` is the
-  number of patches about to be inserted (1 for a solo patch, the member
-  count for a bundle): a batch is only reused if all of them fit within
-  max_batch_size.
+  number of patches to insert: 1 for a solo patch, the member count for a
+  bundle. A batch is reused only if all patches fit within max_batch_size.
   """
   def get_new_batch(max_batch_size, project_id, into_branch, priority, force) do
     get_new_batch(max_batch_size, project_id, into_branch, priority, force, 1)
@@ -1970,8 +1958,8 @@ defmodule BorsNG.Worker.Batcher do
     {Repo.insert!(Batch.new(project_id, into_branch, priority)), true}
   end
 
-  # A bundle that fills or exceeds max_batch_size can't share a batch with
-  # anything else (and can't be split), so it gets one of its own.
+  # A bundle that fills or exceeds max_batch_size cannot share a batch with
+  # anything else and cannot be split, so it gets its own batch.
   def get_new_batch(max_batch_size, project_id, into_branch, priority, _force, capacity)
       when is_integer(max_batch_size) and capacity >= max_batch_size do
     {Repo.insert!(Batch.new(project_id, into_branch, priority)), true}
@@ -2004,7 +1992,7 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp apply_max_batch_size(query, n, capacity) do
-    # The batch may take `capacity` more patches without exceeding `n`.
+    # The batch may take `capacity` more patches without exceeding the limit.
     room = n - capacity
 
     query

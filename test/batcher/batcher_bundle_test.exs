@@ -75,10 +75,10 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     {bundle, patches}
   end
 
-  # Mock state for running a whole batch: master at "ini", a bors.toml on
-  # the staging branch, and one open PR (with its head sha) per entry. The
-  # mock composes merged shas by concatenation, so the staging sha and the
-  # merge commit message both record the merge order.
+  # Mock state for running a whole batch. Master at "ini", a bors.toml on
+  # the staging branch, one open PR per entry (with its head sha). The mock
+  # composes merged SHAs by concatenation, so staging SHA and commit message
+  # both record merge order.
   defp put_merge_state(heads, extra \\ %{}) do
     pulls =
       Map.new(heads, fn {xref, sha} ->
@@ -139,8 +139,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   end
 
   # A gh-stack pair: PR 1 (child, branch feature-b) opened against PR 2's
-  # branch feature-a and rebased on it, with PR 1 present in the mock so
-  # base updates can be exercised.
+  # branch feature-a and rebased on it. PR 1 is in the mock so base updates
+  # can be exercised.
   defp put_gh_stack_state do
     put_plain_state(
       %{1 => [], 2 => []},
@@ -272,8 +272,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert p1.bundle_id == nil and p2.bundle_id == nil
       assert p1.bundle_reviewer == nil
 
-      # The member whose approval was discarded is told it needs a fresh
-      # r+; the other is told it merges on its own.
+      # The member whose approval was discarded needs a fresh r+. The other
+      # member merges on its own.
       assert Enum.any?(comments_for(1), &(&1 =~ "no longer linked"))
       assert Enum.any?(comments_for(1), &(&1 =~ "needs a fresh `bors r+`"))
       assert Enum.any?(comments_for(2), &(&1 =~ "merge on its own"))
@@ -360,7 +360,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Repo.get!(Patch, p1.id).bundle_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "exactly one"))
 
-      # Bare stack with no inferable parent (nothing has head_ref "master").
+      # Bare stack with no inferable parent (no PR has head_ref "master").
       Batcher.handle_cast({:stack, p1.id, []}, proj.id)
       assert Enum.any?(comments_for(1), &(&1 =~ "Could not infer"))
     end
@@ -371,7 +371,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
         %{compare_status: %{{"commit-2", "commit-1"} => :ahead}}
       )
 
-      # gh-stack shape: the child's base branch is the parent's head branch.
+      # gh-stack shape: child's base branch is parent's head branch.
       p2 = insert_patch(proj, 2, %{head_ref: "feature-a"})
       p1 = insert_patch(proj, 1, %{into_branch: "feature-a", head_ref: "feature-b"})
 
@@ -458,7 +458,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
 
     test "a failed retarget holds the bundle", %{proj: proj} do
-      # No :pulls entry, so the get_pr behind the retarget fails.
+      # No :pulls entry, so get_pr behind the retarget fails.
       put_plain_state(
         %{1 => [], 2 => []},
         %{compare_status: %{{"commit-2", "commit-1"} => :ahead}}
@@ -484,7 +484,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       {_bundle, [p1, p2]} = insert_bundle(proj, [p1, p2])
       p1 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
 
-      # Queue the bundle (retargeting #1 onto master), then pull it back out.
+      # Queue the bundle (retarget #1 to master), then pull it back out.
       Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
       assert Repo.get!(Patch, p1.id).into_branch == "master"
       Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
@@ -514,7 +514,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
       Batcher.handle_cast({:cancel, p1.id, :requested}, proj.id)
 
-      # Someone moves the base by hand before the unlink.
+      # Someone moves the base manually before the unlink.
       state = GitHub.ServerMock.get_state()
 
       state =
@@ -541,9 +541,9 @@ defmodule BorsNG.Worker.BatcherBundleTest do
 
     test "a partial retarget holds the bundle, and unlink restores the moved base",
          %{proj: proj} do
-      # Chain 3 -> 2 -> 1 in gh-stack shape. PR 2 is present in the mock, so
-      # its retarget succeeds; PR 3 is not, so its retarget fails and the
-      # bundle is held with only #2 moved.
+      # Chain 3 -> 2 -> 1 in gh-stack shape. PR 2 is in the mock so its
+      # retarget succeeds. PR 3 is not, so retarget fails and the bundle is
+      # held with only #2 moved.
       put_plain_state(
         %{1 => [], 2 => [], 3 => []},
         %{
@@ -620,16 +620,16 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       p2 = insert_patch(proj, 2)
       p3 = insert_patch(proj, 3)
 
-      # Chain: p2 on p1, p3 on p2.
+      # Chain: p2 stacks on p1, p3 stacks on p2.
       Batcher.handle_cast({:stack, p2.id, [1]}, proj.id)
       Batcher.handle_cast({:stack, p3.id, [2]}, proj.id)
 
-      # Direct cycle: p1 on p2 (but p2 is stacked on p1).
+      # Direct cycle: p1 stacks on p2 (but p2 stacks on p1).
       Batcher.handle_cast({:stack, p1.id, [2]}, proj.id)
       assert Repo.get!(Patch, p1.id).stacked_on_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "cycle"))
 
-      # Transitive cycle: p1 on p3 (p3 -> p2 -> p1).
+      # Transitive cycle: p1 stacks on p3 (chain: p3 -> p2 -> p1).
       Batcher.handle_cast({:stack, p1.id, [3]}, proj.id)
       assert Repo.get!(Patch, p1.id).stacked_on_id == nil
     end
@@ -652,7 +652,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
 
     test "stack commented on the parent names the fix", %{proj: proj} do
-      # #2 contains #1's head, not the other way around: the user commented
+      # #2 contains #1's head, not the other way around. The user commented
       # `bors stack #2` on the parent instead of on the child.
       put_plain_state(
         %{1 => [], 2 => []},
@@ -675,7 +675,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
 
     test "stack fails closed when ancestry cannot be verified", %{proj: proj} do
-      # No :compare_status entry at all: the comparison errors, and the
+      # No :compare_status entry at all. The comparison errors, and the
       # command must refuse rather than assume the stack is fresh.
       put_plain_state(%{1 => [], 2 => []})
       p1 = insert_patch(proj, 1)
@@ -701,7 +701,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
 
       assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
-      # The approval is held, so a rebase + fresh r+ re-runs the check.
+      # The approval is held. A rebase plus fresh r+ re-runs the check.
       assert Repo.get!(Patch, p1.id).bundle_reviewer == "r1"
       assert Enum.any?(comments_for(1), &(&1 =~ "was not queued"))
       assert Enum.any?(comments_for(2), &(&1 =~ "was not queued"))

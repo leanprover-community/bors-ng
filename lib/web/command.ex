@@ -18,23 +18,21 @@ defmodule BorsNG.Command do
 
   # link
 
-  `bors link #456`, commented on a pull request, links it with #456 into
-  a bundle that merges atomically: each member still needs its own
-  `bors r+`, and once every member is approved they all enter the same
-  batch, landing together or not at all. Listing several numbers bundles
-  more than two pull requests at once; the PR the comment is on is always
-  included (listing its own number is harmless). `bors unlink` (or
-  `bors link-`) dissolves the bundle.
+  `bors link #456`, commented on a pull request, links it with #456 into a
+  bundle that merges atomically. Each member still needs its own `bors r+`. Once
+  every member is approved, they all enter the same batch and land together or
+  not at all. Listing several numbers bundles more than two pull requests at once.
+  The PR the comment is on is always included (listing its own number is harmless).
+  `bors unlink` (or `bors link-`) dissolves the bundle.
 
-  `bors stack #123` (commented on another PR) additionally records an
-  order: this PR joins #123's bundle with #123's changes applied first
-  (a separate commit directly after it under squash merges). Use it when
-  the changes must not only land together but in a fixed order.
+  `bors stack #123`, commented on another PR, additionally records an order.
+  This PR joins #123's bundle with #123's changes applied first (a separate
+  commit directly after it under squash merges). Use it when changes must land
+  together and in a fixed order.
 
-  Bare `bors stack` infers the parent from the base-branch chain: it
-  works when a stacked PR's base branch is its parent's head branch. Such
-  bases are retargeted onto the final branch automatically when the
-  bundle is queued.
+  Bare `bors stack` infers the parent from the base-branch chain. It works when
+  a stacked PR's base branch is its parent's head branch. These bases are
+  retargeted onto the final branch automatically when the bundle is queued.
   """
 
   alias BorsNG.Worker.Attemptor
@@ -230,8 +228,8 @@ defmodule BorsNG.Command do
   def parse_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
   def parse_cmd(_), do: []
 
-  # unlink dissolves the whole bundle; naming pull requests suggests the
-  # user expects to remove just those, so refuse rather than surprise.
+  # `unlink` dissolves the whole bundle. Naming pull requests suggests the
+  # user expects to remove just those, so refuse rather than surprise them.
   defp parse_unlink(arguments) do
     case parse_pr_refs(arguments) ++ malformed_pr_refs(arguments) do
       [] -> [:unlink]
@@ -239,9 +237,8 @@ defmodule BorsNG.Command do
     end
   end
 
-  # A mistyped number silently dropped would link the wrong set of pull
-  # requests, so any argument that was plausibly meant as a reference (or
-  # as another bors command) refuses the whole command.
+  # A silent mistype would link the wrong pull requests. Refuse if any
+  # argument was plausibly meant as a reference or another bors command.
   defp parse_bundle_refs(cmd, arguments) do
     case malformed_pr_refs(arguments) do
       [] -> [{cmd, parse_pr_refs(arguments)}]
@@ -250,8 +247,8 @@ defmodule BorsNG.Command do
   end
 
   @doc ~S"""
-  The arguments of a link or stack command are pull request numbers,
-  separated by whitespace or commas, each with an optional leading `#`:
+  Parse the arguments of a link or stack command. Arguments are pull request
+  numbers separated by whitespace or commas, each with an optional leading `#`.
 
       iex> alias BorsNG.Command
       iex> Command.parse_pr_refs(" #1 #2")
@@ -272,9 +269,9 @@ defmodule BorsNG.Command do
   end
 
   @doc ~S"""
-  Tokens that were plausibly meant as a pull request reference — they
-  start with `#` or a digit but do not read as a number — or as another
-  bors command on the same line. Connective words are tolerated:
+  Tokens that were plausibly meant as a pull request reference or another bors
+  command on the same line. Reference tokens start with `#` or a digit but do
+  not parse as a number. Connective words are tolerated.
 
       iex> alias BorsNG.Command
       iex> Command.malformed_pr_refs(" #12abc #13")
@@ -295,8 +292,8 @@ defmodule BorsNG.Command do
     end)
   end
 
-  # Words that read as another bors command (or its argument) on the same
-  # line: refuse rather than guess which pull requests were meant.
+  # Words that read as another bors command or its argument on the same line.
+  # Refuse rather than guess which pull requests were meant.
   defp other_command?(token) do
     token in ~w(r+ r- merge merge- try try- cancel retry ping single link stack unlink link-) or
       String.match?(token, ~r/^(p|priority|r|merge)=/) or
@@ -308,8 +305,8 @@ defmodule BorsNG.Command do
     |> String.split("\n", parts: 2)
     |> List.first()
     |> String.trim_leading()
-    # `=` is only the optional `link=`/`stack=` sugar: strip one leading `=`
-    # and split on whitespace and commas, so `p=5` stays a single token.
+    # `=` is optional `link=` or `stack=` sugar. Strip one leading `=` and
+    # split on whitespace and commas so `p=5` stays a single token.
     |> String.replace_prefix("=", "")
     |> String.split(~r/[\s,]+/, trim: true)
   end
@@ -637,9 +634,9 @@ defmodule BorsNG.Command do
     :member
   end
 
-  # link/stack/unlink write state onto pull requests other than the
-  # commented one, so a per-patch delegation (`bors delegate+`) must not
-  # satisfy them: they require standing on the project itself.
+  # link/stack/unlink write state to pull requests other than the commented one.
+  # A per-patch delegation must not satisfy them: they require project-level
+  # standing.
   def required_permission_level_cmd({:link, _}) do
     :project_member
   end
@@ -671,11 +668,10 @@ defmodule BorsNG.Command do
     end)
   end
 
-  # :project_member / :project_reviewer are the delegation-free levels: a
+  # :project_member and :project_reviewer are delegation-free levels. A
   # per-patch delegate satisfies :member and :reviewer on their own pull
   # request but not these. Combining a delegation-free command with a
-  # reviewer-level one in the same comment must keep both requirements,
-  # which is :project_reviewer.
+  # reviewer-level one keeps both requirements (:project_reviewer).
   defp combine_permission_levels(:none, new), do: new
   defp combine_permission_levels(perm, :none), do: perm
   defp combine_permission_levels(p, p), do: p
@@ -802,8 +798,8 @@ defmodule BorsNG.Command do
       DelegationInvalidator.lint_for_patch(c.patch.id)
     end)
 
-    # try knows nothing about bundles: it builds this patch's branch alone.
-    # Say so, or a green try on one member overstates what the batch will do.
+    # `try` knows nothing about bundles: it builds this patch's branch alone.
+    # Say so, or a green result overstates what the batch will do.
     if c.patch.bundle_id != nil do
       c.project.repo_xref
       |> Project.installation_connection(Repo)

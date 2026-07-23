@@ -2,17 +2,15 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   @moduledoc """
   Bundle membership and structure.
 
-  A bundle is a group of linked patches that merge atomically (see
-  `BorsNG.Database.PatchBundle`). This module owns the bundle state kept on
-  `Patch` rows — `bundle_id` (membership), `bundle_reviewer` (an approval
-  held while the rest of the bundle catches up), and `stacked_on_id`
-  (ordering between members) — and answers the structure questions over it:
-  link validation, stack cycles, staleness of stacked branches, and merge
-  order.
+  A bundle is a group of linked patches that merge atomically. This module owns
+  the bundle state kept on `Patch` rows: `bundle_id` (membership), `bundle_reviewer`
+  (an approval held while the rest catches up), and `stacked_on_id` (member
+  ordering). It answers structural questions: link validation, stack cycles,
+  branch staleness, and merge order.
 
-  It reads from GitHub (branch comparisons) but never writes to it, never
-  posts comments or statuses, and never creates or mutates batches; that
-  orchestration lives in `BorsNG.Worker.Batcher`.
+  It reads from GitHub but never writes to it, never posts comments or statuses,
+  and never creates or mutates batches. That orchestration is in
+  `BorsNG.Worker.Batcher`.
   """
 
   alias BorsNG.Database.Batch
@@ -34,17 +32,16 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  The whole bundle a patch belongs to, or just the patch itself when it is
-  not bundled. Settings that only make sense bundle-wide (priority,
-  `single`) fan out through this.
+  The whole bundle a patch belongs to, or just the patch itself when not bundled.
+  Settings that apply bundle-wide (priority, `single`) fan out through this.
   """
   def members_or_self(%Patch{bundle_id: nil} = patch), do: [patch]
   def members_or_self(%Patch{bundle_id: bundle_id}), do: members(bundle_id)
 
   @doc """
-  The members whose approval the bundle is still waiting on. A closed or
-  draft member counts: it cannot hold an approval, and the bundle cannot
-  queue until it is ready again or unlinked.
+  The members still awaiting approval. A closed or draft member counts: it
+  cannot hold approval, and the bundle cannot queue until it is ready again
+  or unlinked.
   """
   def unapproved(members) do
     Enum.filter(
@@ -54,8 +51,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Record `reviewer`'s approval on a bundled patch, held until the rest of
-  the bundle is approved. Returns the updated patch.
+  Record a reviewer's approval on a bundled patch. The approval is held until
+  the rest of the bundle is approved. Returns the updated patch.
   """
   def hold_approval(patch, reviewer) do
     patch
@@ -64,8 +61,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Drop the approval held on this patch, if any: after an r-, a close, or a
-  new push, re-queueing the bundle needs a fresh r+ on it.
+  Drop the approval held on this patch, if any. After an r-, close, or new
+  push, re-queueing the bundle requires a fresh r+ on it.
   """
   def drop_held_approval(patch_id) do
     case Repo.get(Patch, patch_id) do
@@ -78,14 +75,13 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Drop the approvals held on these patches: after a failed build, or once
-  the bundle has merged, re-queueing needs a fresh r+ on every member.
+  Drop the approvals held on these patches. After a failed build or merge,
+  re-queueing needs a fresh r+ on every member.
 
-  Leaves the retargeting record (`retargeted_from`) intact — a bundle that
-  failed still exists with its members' bases moved, so a later unlink must
-  still be able to restore them. The merged case forgets that record
-  separately (`forget_retargeting/1`), since a merged member's changes are
-  already in the base and must not be "restored".
+  Leaves the retargeting record intact. A failed bundle still has members'
+  bases moved, so a later unlink must restore them. The merged case forgets
+  that record separately (`forget_retargeting/1`) because merged members'
+  changes are already in the base and must not be "restored".
   """
   def drop_held_approvals(patches) do
     from(p in Patch,
@@ -96,9 +92,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Forget the base branch recorded when these patches were retargeted at
-  queue time. Called once a bundle has merged: the members' changes are now
-  in the base, so a later unlink must not "restore" the pre-merge base.
+  Forget the base branch recorded when these patches were retargeted at queue
+  time. Called once a bundle has merged. Members' changes are now in the base,
+  so a later unlink must not "restore" the pre-merge base.
   """
   def forget_retargeting(patches) do
     from(p in Patch,
@@ -109,9 +105,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Check that `patch` may be linked with the given PR numbers. Returns
-  `{:ok, members}` with the full member list (existing bundles expanded),
-  or `{:error, reason}` with a reason `Message.generate_message/1` knows.
+  Check that a patch may be linked with the given PR numbers. Returns
+  `{:ok, members}` with the full member list (existing bundles expanded), or
+  `{:error, reason}` with a reason that `Message.generate_message/1` knows.
   """
   def validate_link(patch, pr_xrefs, project_id, mode \\ :link) do
     target_xrefs =
@@ -147,9 +143,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   # `link` requires a common target branch. `stack` also accepts a stacked
-  # child whose base branch is the parent's head branch; such bases are
-  # normalized onto the final branch when the bundle is queued
-  # (Batcher.normalize_bundle_bases/2).
+  # child whose base branch is the parent's head branch. These bases are
+  # normalized to the final branch when the bundle is queued.
   defp branch_mismatch?(:link, patch, target) do
     target.into_branch != patch.into_branch
   end
@@ -159,7 +154,7 @@ defmodule BorsNG.Worker.Batcher.Bundles do
       (is_nil(target.head_ref) or target.head_ref != patch.into_branch)
   end
 
-  # Linking a patch that is already bundled links its whole bundle: the
+  # Linking a patch that is already bundled links its whole bundle. The
   # member sets are unioned.
   defp expand_bundles(patches) do
     extra =
@@ -182,9 +177,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Put every member on one bundle (creating it if none exists), and delete
-  any bundles emptied by the union. Runs in a transaction: the bundle
-  forms completely or not at all. Returns the updated members.
+  Put all members on one bundle, creating it if needed, and delete any bundles
+  emptied by the union. Runs in a transaction: the bundle forms completely or
+  not at all. Returns the updated members.
   """
   def form(members, project_id) do
     {:ok, members} =
@@ -222,8 +217,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Bundle `members` together and record that `child` merges after `parent`,
-  as `form/2` plus a stack edge. Returns the updated members.
+  Bundle members together and record that the child merges after the parent.
+  This is like `form/2` plus a stack edge. Returns the updated members.
   """
   def form_stacked(members, child, parent, project_id) do
     {:ok, members} =
@@ -243,9 +238,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Dissolve a bundle: clear every member's bundle state and delete the
-  bundle row. Refused while any member is queued or running. Returns
-  `{:ok, members}` or `{:error, :in_batch}`.
+  Dissolve a bundle: clear every member's bundle state and delete the bundle
+  row. Refused while any member is queued or running. Returns `{:ok, members}`
+  or `{:error, :in_batch}`.
   """
   def dissolve(bundle_id) do
     members = members(bundle_id)
@@ -271,9 +266,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  The single open patch whose head branch is this patch's base branch —
-  i.e. the parent this patch is stacked on. Zero or several candidates ->
-  `:error`; the user must name the parent.
+  The single open patch whose head branch is this patch's base branch. That
+  is, the parent this patch is stacked on. Returns `:error` if there are zero
+  or multiple candidates; the user must name the parent.
   """
   def infer_stack_parent(%Patch{into_branch: nil}, _project_id), do: :error
 
@@ -292,8 +287,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Stacking `patch` on `target` is a cycle iff `patch` already appears in
-  `target`'s chain of stacked-on ancestors.
+  Returns true if stacking `patch` on `target` would create a cycle (i.e.,
+  `patch` already appears in `target`'s stacked-on ancestor chain).
   """
   def creates_stack_cycle?(target, patch) do
     walk_stack_chain(target, MapSet.new(), patch.id)
@@ -304,7 +299,7 @@ defmodule BorsNG.Worker.Batcher.Bundles do
 
   defp walk_stack_chain(%Patch{} = p, seen, goal) do
     cond do
-      # A cycle already stored (shouldn't happen): refuse rather than loop.
+      # A cycle already stored (unexpected): refuse rather than loop.
       p.id in seen -> true
       is_nil(p.stacked_on_id) -> false
       true -> walk_stack_chain(Repo.get(Patch, p.stacked_on_id), MapSet.put(seen, p.id), goal)
@@ -312,8 +307,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Whether `child`'s branch contains the current head of `parent`'s, i.e.
-  is rebased on it. A comparison GitHub cannot answer counts as `false`:
+  Returns true if the child's branch contains the current head of the parent's
+  branch (i.e., is rebased on it). An unanswerable comparison counts as `false`:
   callers fail closed.
   """
   def contains_head?(repo_conn, parent, child) do
@@ -324,11 +319,11 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  The first stacked member whose branch does not contain the current head
-  of the patch it stacks on, as `{child, parent}`, or nil if every stack
-  edge is fresh. An unverifiable comparison (GitHub error) counts as
-  stale: this check fails closed, because merging a stale stack can
-  silently reintroduce content its parent has since dropped.
+  The first stacked member whose branch does not contain the current head of
+  the patch it stacks on, returned as `{child, parent}`. Returns nil if every
+  stack edge is fresh. An unverifiable comparison counts as stale: this check
+  fails closed because merging a stale stack can silently reintroduce content
+  its parent has dropped.
   """
   def stale_stack_pair(repo_conn, members) do
     by_id = Map.new(members, &{&1.id, &1})
@@ -343,9 +338,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  The branch a bundle ultimately merges into: the `into_branch` of its
-  stack roots (members not stacked on another member), which must agree.
-  Returns `{:ok, branch}` or `{:error, :branch_mismatch}`.
+  The branch a bundle ultimately merges into: the `into_branch` of its stack
+  roots (members not stacked on another member). These must agree. Returns
+  `{:ok, branch}` or `{:error, :branch_mismatch}`.
   """
   def final_target(members) do
     member_ids = MapSet.new(members, & &1.id)
@@ -362,9 +357,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Order patches for merging: a patch stacked on another (`stacked_on_id`)
-  comes after it, and PR-number order applies otherwise. A stacked-on patch
-  that isn't in the list is ignored (its dependents count as roots).
+  Order patches for merging. A patch stacked on another comes after it. PR
+  number order applies otherwise. A stacked-on patch not in the list is
+  ignored (its dependents count as roots).
   """
   def stack_order(patches) do
     sorted = Enum.sort_by(patches, & &1.pr_xref)
@@ -383,8 +378,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
 
     case ready do
       [] ->
-        # Defensive: a cycle in the stored edges. Fall back to PR-number
-        # order rather than dropping patches or looping.
+        # Defensive: a cycle in the stored edges. Fall back to PR number order
+        # rather than dropping patches or looping.
         acc ++ remaining
 
       _ ->
@@ -398,10 +393,10 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Merge order for a batch's patch links: bundles stay contiguous (units
-  ordered by their lowest PR number), members within a bundle in stack
-  order, everything else by PR number. A stacked pair therefore lands as
-  two adjacent commits, parent first.
+  Merge order for a batch's patch links. Bundles stay contiguous (units
+  ordered by their lowest PR number). Members within a bundle merge in stack
+  order. Everything else merges by PR number. A stacked pair lands as two
+  adjacent commits with the parent first.
   """
   def sort_links_for_merge(patch_links) do
     patch_links
@@ -418,8 +413,8 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  The ids of every patch that must leave a batch when `patch_id` does:
-  just the patch itself, or all of its bundle's members present in the
+  The ids of every patch that must leave a batch when `patch_id` does. This
+  is just the patch itself or all of its bundle's members present in the
   batch's links.
   """
   def member_ids(patch_links, patch_id) do
@@ -437,9 +432,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Split `patch_links` into those pulled out of the batch because a closed
-  patch's link shares their bundle — a closed patch takes its whole bundle
-  with it — and the rest. Returns `{pulled, remaining}`.
+  Split `patch_links` into those pulled out because a closed patch shares
+  their bundle (a closed patch takes its whole bundle) and the rest. Returns
+  `{pulled, remaining}`.
   """
   def split_pulled_by_closed(closed_links, patch_links) do
     closed_bundles =

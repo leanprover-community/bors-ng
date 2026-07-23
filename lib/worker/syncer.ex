@@ -200,10 +200,10 @@ defmodule BorsNG.Worker.Syncer do
     end
   end
 
-  # bors records its own base edits in into_branch before they sync back,
-  # so a base that differs here was retargeted by a person. Honor that
-  # choice: forget the bundle's base-restore bookkeeping (retargeted_from),
-  # and unlink will leave the person's base as they set it.
+  # Bors records its own base edits in into_branch before they sync back, so
+  # a different base was retargeted by a person. Honor that choice: forget the
+  # bundle's base-restore bookkeeping (retargeted_from). A later unlink will
+  # leave the person's base as they set it.
   defp forget_stale_retarget(data, %Patch{} = patch, pr) do
     if patch.into_branch != pr.base_ref do
       Map.put(data, :retargeted_from, nil)
