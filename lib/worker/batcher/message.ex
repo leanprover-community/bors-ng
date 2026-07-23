@@ -258,6 +258,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: Cannot link: all linked pull requests must be open."
   end
 
+  def generate_message({:link_error, :already_merged}) do
+    ":-1: Cannot link: bors has already merged one of these pull requests. A merged pull request cannot be approved again, so its bundle would wait forever."
+  end
+
   def generate_message({:link_error, :branch_mismatch}) do
     ":-1: Cannot link: all linked pull requests must target the same base branch."
   end

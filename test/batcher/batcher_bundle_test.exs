@@ -225,6 +225,36 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert comment =~ "Nothing to link"
     end
 
+    test "link is refused for a pull request bors already merged", %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => []})
+      p1 = insert_patch(proj, 1)
+      # #2 merged through bors (its batch is :ok) but still shows as open:
+      # the close is asynchronous and can fail. It can never be approved
+      # again, so bundling it would leave the bundle waiting forever.
+      p2 = insert_patch(proj, 2)
+
+      batch =
+        %Batch{
+          project_id: proj.id,
+          commit: "ini",
+          state: :ok,
+          last_polled: 0,
+          into_branch: "master"
+        }
+        |> Repo.insert!()
+
+      %LinkPatchBatch{}
+      |> LinkPatchBatch.changeset(%{batch_id: batch.id, patch_id: p2.id, reviewer: "rvr"})
+      |> Repo.insert!()
+
+      Batcher.handle_cast({:link, p1.id, [2]}, proj.id)
+
+      assert Repo.get!(Patch, p1.id).bundle_id == nil
+      assert Repo.get!(Patch, p2.id).bundle_id == nil
+      assert [comment] = comments_for(1)
+      assert comment =~ "already merged"
+    end
+
     test "link is refused across base branches", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => []})
       patch = insert_patch(proj, 1)

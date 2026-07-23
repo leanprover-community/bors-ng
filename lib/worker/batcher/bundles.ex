@@ -135,6 +135,9 @@ defmodule BorsNG.Worker.Batcher.Bundles do
       Enum.any?([patch | targets], &(&1.open == false)) ->
         {:error, :closed}
 
+      Enum.any?([patch | targets], &merged_by_bors?/1) ->
+        {:error, :already_merged}
+
       Enum.any?(targets, &branch_mismatch?(mode, patch, &1)) ->
         {:error, :branch_mismatch}
 
@@ -178,6 +181,21 @@ defmodule BorsNG.Worker.Batcher.Bundles do
     batches =
       patch.id
       |> Batch.all_for_patch(:incomplete)
+      |> Repo.all()
+
+    batches != []
+  end
+
+  # Bors already merged this patch: it is in a batch that pushed to the base
+  # branch. The pull request may still show as open for a moment (the close
+  # is asynchronous, and can fail). Such a patch can never be approved again
+  # — `Patch.all(:awaiting_review)` excludes it for good — so a bundle
+  # containing it would wait forever.
+  defp merged_by_bors?(patch) do
+    batches =
+      patch.id
+      |> Batch.all_for_patch()
+      |> where([b], b.state == ^:ok)
       |> Repo.all()
 
     batches != []
