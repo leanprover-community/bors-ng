@@ -57,6 +57,14 @@ defmodule BorsNG.Router do
     get("/:id", BatchController, :show)
   end
 
+  scope "/bundles", BorsNG do
+    pipe_through(:browser_page)
+    pipe_through(:browser_session)
+    pipe_through(:browser_login)
+
+    get("/:id", BundleController, :show)
+  end
+
   scope "/repositories", BorsNG do
     pipe_through(:browser_page)
     pipe_through(:browser_session)

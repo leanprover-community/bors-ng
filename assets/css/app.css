@@ -406,6 +406,44 @@ table tr.exp:target {
   border-radius: 16px;
   font-size: 16px;
 }
+/* Bundles (bors link / bors stack) */
+.bundle-state {
+  font-size: 16px;
+  font-weight: normal;
+  color: #666;
+  margin-top: 2px;
+}
+.bundle-chip {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 5px;
+  border: 1px solid #3A5883;
+  color: #3A5883;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+a.bundle-chip:hover, a.bundle-chip:focus {
+  background: #3A5883;
+  color: #fff;
+  text-decoration: none;
+}
+/* Continuous stripe bracketing bundle-mates inside a batch */
+tr.row--bundled > td:first-child {
+  box-shadow: inset 3px 0 0 #3A5883;
+}
+/* A stacked pull request points up at its base on the line above,
+   the way a commit points at its parent */
+.stack-mark {
+  color: #666;
+  padding-right: 2px;
+}
+.approval--held {
+  color: #3c763d;
+}
+.approval--waiting {
+  color: #666;
+}
 /* Allow preformatted text to wrap (crash reports) */
 pre {
   white-space: pre-wrap;
@@ -461,5 +499,22 @@ time[title] {
   }
   .header-link {
       color:#aaa;
+  }
+  .bundle-chip {
+      color:#7da2d4;
+      border-color:#7da2d4;
+  }
+  a.bundle-chip:hover, a.bundle-chip:focus {
+      background:#7da2d4;
+      color:#111;
+  }
+  tr.row--bundled > td:first-child {
+      box-shadow:inset 3px 0 0 #7da2d4;
+  }
+  .bundle-state, .stack-mark, .approval--waiting {
+      color:#999;
+  }
+  .approval--held {
+      color:#7bbf82;
   }
 }

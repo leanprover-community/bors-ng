@@ -11,6 +11,7 @@ defmodule BorsNG.ProjectController do
 
   use BorsNG.Web, :controller
 
+  alias BorsNG.BundleDisplay
   alias BorsNG.Worker.Batcher
   alias BorsNG.Database.Context.Dashboard
   alias BorsNG.Database.Context.Permission
@@ -90,10 +91,34 @@ defmodule BorsNG.ProjectController do
     %{
       id: batch.id,
       commit: batch.commit,
-      patches: Repo.all(Patch.all_for_batch(batch.id)),
+      patches:
+        batch.id
+        |> Patch.all_for_batch()
+        |> Repo.all()
+        |> BundleDisplay.batch_display_order(),
       priority: batch.priority,
       state: batch.state
     }
+  end
+
+  # One group per bundle that still has an unbatched member: the full
+  # membership (closed members included, so a blocked bundle can say why),
+  # in display order, with the derived group state.
+  defp bundle_groups([]), do: []
+
+  defp bundle_groups(bundle_ids) do
+    from(p in Patch, where: p.bundle_id in ^bundle_ids)
+    |> Repo.all()
+    |> Enum.group_by(& &1.bundle_id)
+    |> Enum.map(fn {id, members} ->
+      %{
+        id: id,
+        members: BundleDisplay.display_order(members),
+        state: BundleDisplay.state(members),
+        stacked: BundleDisplay.stacked?(members)
+      }
+    end)
+    |> Enum.sort_by(& &1.id, :desc)
   end
 
   def show(conn, mode, project, _params) do
@@ -138,6 +163,17 @@ defmodule BorsNG.ProjectController do
       |> Enum.reject(fn {_patch_id, user, _exp} -> is_nil(user) end)
       |> Enum.group_by(&elem(&1, 0), fn {_pid, u, exp} -> %{user: u, expires_at: exp} end)
 
+    # Bundled patches display in their own per-bundle groups, not in the
+    # Delegated / Awaiting review sections.
+    {bundled_patches, unbatched_patches} =
+      Enum.split_with(unbatched_patches, & &1.bundle_id)
+
+    bundles =
+      bundled_patches
+      |> Enum.map(& &1.bundle_id)
+      |> Enum.uniq()
+      |> bundle_groups()
+
     {delegated_patches, undelegated_patches} =
       unbatched_patches
       |> Enum.split_with(&Map.get(patch_users_map, &1.id))
@@ -151,6 +187,7 @@ defmodule BorsNG.ProjectController do
     render(conn, "show.html",
       project: project,
       batches: batches,
+      bundles: bundles,
       trying_attempts: trying_attempts,
       waiting_attempts: waiting_attempts,
       is_synchronizing: is_synchronizing,

@@ -1,0 +1,61 @@
+<nav>
+
+<div class=wrapper>
+  <%= if @project do %>
+  <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/">
+    <%= @project.name %>
+  </a>
+  ›
+  <a href="<%= project_path(@conn, :show, @project) %>">
+    Pull requests
+  </a>
+  <% end %>
+  <h1>
+  Bundle Details
+  </h1>
+</div>
+
+</nav>
+
+<main role=main><div class=wrapper>
+
+<%= if @bundle do %>
+<p>Date: <%= htmlify_naive_datetime(@bundle.inserted_at) %></p>
+<p>State: <%= render(BorsNG.ProjectView, "_bundle_state.html", state: @state, project: @project) %></p>
+<p>Pull requests<%= if @stacked do %> (stack order)<% end %>:</p>
+<% xrefs = Map.new(@members, &{&1.id, &1.pr_xref}) %>
+<ul>
+  <%= for patch <- @members do %>
+  <li>
+    <%= if patch.stacked_on_id && xrefs[patch.stacked_on_id] do %><span class=stack-mark title="Stacked on #<%= xrefs[patch.stacked_on_id] %>">↰</span><% end %>
+    <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>">#<%= patch.pr_xref %></a>
+    —
+    <%= cond do %>
+    <% not patch.open -> %>
+    <span class=span--error>closed</span>
+    <% patch.is_draft -> %>
+    <span class=span--error>draft</span>
+    <% patch.bundle_reviewer -> %>
+    <span class=approval--held>✓ held (<%= patch.bundle_reviewer %>)</span>
+    <% true -> %>
+    <span class=approval--waiting>waiting<%= if logins = Map.get(@delegations, patch.id) do %> — delegated to <%= Enum.join(logins, ", ") %><% end %></span>
+    <% end %>
+  </li>
+  <% end %>
+</ul>
+<p>Batches:</p>
+<ul>
+  <%= if @batches == [] do %>
+  <li>None</li>
+  <% else %>
+  <%= for batch <- @batches do %>
+  <li><a href="/batches/<%= batch.id %>">Batch <%= batch.id %></a> (<%= stringify_state(batch.state) %>)</li>
+  <% end %>
+  <% end %>
+</ul>
+
+<% else %>
+There is no such bundle
+<% end %>
+
+</div></main>
