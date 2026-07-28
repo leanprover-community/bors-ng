@@ -117,10 +117,11 @@ defmodule BorsNG.BundleControllerTest do
     refute html =~ "None"
   end
 
-  test "says so when there is no such bundle", %{conn: conn} do
+  test "returns 404 when there is no such bundle", %{conn: conn} do
     conn = login(conn)
-    conn = get(conn, "/bundles/0")
 
-    assert html_response(conn, 200) =~ "There is no such bundle"
+    assert_error_sent(404, fn ->
+      get(conn, "/bundles/0")
+    end)
   end
 end

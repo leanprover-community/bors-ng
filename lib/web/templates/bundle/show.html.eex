@@ -19,7 +19,6 @@
 
 <main role=main><div class=wrapper>
 
-<%= if @bundle do %>
 <p>Date: <%= htmlify_naive_datetime(@bundle.inserted_at) %></p>
 <p>State: <%= render(BorsNG.ProjectView, "_bundle_state.html", state: @state, project: @project) %></p>
 <p>Pull requests<%= if @stacked do %> (stack order)<% end %>:</p>
@@ -53,9 +52,5 @@
   <% end %>
   <% end %>
 </ul>
-
-<% else %>
-There is no such bundle
-<% end %>
 
 </div></main>
