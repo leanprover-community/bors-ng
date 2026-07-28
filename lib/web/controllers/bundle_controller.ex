@@ -17,57 +17,44 @@ defmodule BorsNG.BundleController do
   alias BorsNG.Database.UserPatchDelegation
 
   def show(conn, %{"id" => id}) do
-    case Repo.get(PatchBundle, id) do
-      nil ->
-        render(conn, "show.html",
-          bundle: nil,
-          project: nil,
-          members: [],
-          state: nil,
-          stacked: false,
-          batches: [],
-          delegations: %{}
-        )
+    bundle = Repo.get!(PatchBundle, id)
+    project = Repo.get(Project, bundle.project_id)
 
-      bundle ->
-        project = Repo.get(Project, bundle.project_id)
+    members =
+      bundle.id
+      |> Patch.all_for_bundle()
+      |> Repo.all()
 
-        members =
-          bundle.id
-          |> Patch.all_for_bundle()
-          |> Repo.all()
+    batches =
+      from(b in Batch,
+        join: l in LinkPatchBatch,
+        on: l.batch_id == b.id,
+        join: p in Patch,
+        on: p.id == l.patch_id,
+        where: p.bundle_id == ^bundle.id,
+        distinct: true,
+        order_by: [desc: b.id]
+      )
+      |> Repo.all()
 
-        batches =
-          from(b in Batch,
-            join: l in LinkPatchBatch,
-            on: l.batch_id == b.id,
-            join: p in Patch,
-            on: p.id == l.patch_id,
-            where: p.bundle_id == ^bundle.id,
-            distinct: true,
-            order_by: [desc: b.id]
-          )
-          |> Repo.all()
+    delegations =
+      from(upd in UserPatchDelegation,
+        join: u in User,
+        on: u.id == upd.user_id,
+        where: upd.patch_id in ^Enum.map(members, & &1.id),
+        select: {upd.patch_id, u.login}
+      )
+      |> Repo.all()
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
 
-        delegations =
-          from(upd in UserPatchDelegation,
-            join: u in User,
-            on: u.id == upd.user_id,
-            where: upd.patch_id in ^Enum.map(members, & &1.id),
-            select: {upd.patch_id, u.login}
-          )
-          |> Repo.all()
-          |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
-
-        render(conn, "show.html",
-          bundle: bundle,
-          project: project,
-          members: BundleDisplay.display_order(members),
-          state: BundleDisplay.state(members),
-          stacked: BundleDisplay.stacked?(members),
-          batches: batches,
-          delegations: delegations
-        )
-    end
+    render(conn, "show.html",
+      bundle: bundle,
+      project: project,
+      members: BundleDisplay.display_order(members),
+      state: BundleDisplay.state(members),
+      stacked: BundleDisplay.stacked?(members),
+      batches: batches,
+      delegations: delegations
+    )
   end
 end
