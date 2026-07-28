@@ -163,4 +163,12 @@ defmodule BorsNG.BatchControllerTest do
 
     assert html_response(conn, 200) =~ "Batch Details"
   end
+
+  test "returns 404 when there is no such batch", %{conn: conn} do
+    conn = login(conn)
+
+    assert_error_sent(404, fn ->
+      get(conn, "/batches/0")
+    end)
+  end
 end

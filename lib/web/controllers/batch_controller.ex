@@ -14,7 +14,7 @@ defmodule BorsNG.BatchController do
   alias BorsNG.Database.Status
 
   def show(conn, %{"id" => id}) do
-    batch = Repo.get(Batch, id)
+    batch = Repo.get!(Batch, id)
     project = Repo.get(Project, batch.project_id)
 
     patches = Repo.all(Patch.all_for_batch(batch.id))
