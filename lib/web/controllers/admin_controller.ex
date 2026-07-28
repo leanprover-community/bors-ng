@@ -69,15 +69,20 @@ defmodule BorsNG.AdminController do
     redirect(conn, to: admin_path(conn, :index))
   end
 
-  def crashes(conn, %{"days" => days}) do
-    crashes =
-      days
-      |> String.to_integer(10)
-      |> Crash.days()
-      |> preload([c], [:project])
-      |> order_by([c], desc: c.inserted_at)
-      |> Repo.all()
+  def crashes(conn, params) do
+    case Integer.parse(params["days"] || "") do
+      {days, ""} ->
+        crashes =
+          days
+          |> Crash.days()
+          |> preload([c], [:project])
+          |> order_by([c], desc: c.inserted_at)
+          |> Repo.all()
 
-    render(conn, "crashes.html", crashes: crashes, days: days)
+        render(conn, "crashes.html", crashes: crashes, days: days)
+
+      _ ->
+        send_resp(conn, 400, "The days parameter must be an integer.")
+    end
   end
 end
