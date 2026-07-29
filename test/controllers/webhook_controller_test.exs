@@ -4,6 +4,7 @@ defmodule BorsNG.WebhookControllerTest do
   alias BorsNG.Database.Installation
   alias BorsNG.Database.Attempt
   alias BorsNG.Database.Patch
+  alias BorsNG.Database.PatchBundle
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.Database.UserPatchDelegation
@@ -125,6 +126,126 @@ defmodule BorsNG.WebhookControllerTest do
     patch2 = Repo.get!(Patch, patch.id)
     assert patch2.into_branch == "release"
     assert patch2.retargeted_from == nil
+  end
+
+  # A base change that leaves a bundle's stack roots on different target
+  # branches makes the bundle unqueueable. The edit already landed on GitHub
+  # and can't be refused, so warn every member.
+  test "a base edit that splits a bundle's target warns every member",
+       %{conn: conn, project: project} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    bundle = Repo.insert!(PatchBundle.new(project.id))
+
+    Repo.insert!(%Patch{
+      pr_xref: 1,
+      project_id: project.id,
+      into_branch: "master",
+      bundle_id: bundle.id
+    })
+
+    Repo.insert!(%Patch{
+      pr_xref: 2,
+      project_id: project.id,
+      into_branch: "master",
+      bundle_id: bundle.id
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "edited",
+      "changes" => %{"base" => %{"ref" => %{"from" => "master"}}},
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "base" => %{"ref" => "develop", "repo" => %{"id" => 456}},
+        "head" => %{"sha" => "S", "ref" => "BAR_BRANCH", "repo" => %{"id" => 345}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    comments_for = fn pr ->
+      GitHub.ServerMock.get_state() |> get_in([{{:installation, 31}, 13}, :comments, pr]) || []
+    end
+
+    assert Enum.any?(comments_for.(1), &(&1 =~ "no longer resolves to a single target branch"))
+    assert Enum.any?(comments_for.(2), &(&1 =~ "no longer resolves to a single target branch"))
+  end
+
+  # Editing a stacked child's base does not move the bundle's root, so its
+  # single target branch is intact: no warning.
+  test "a base edit that keeps one target does not warn",
+       %{conn: conn, project: project} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+
+    bundle = Repo.insert!(PatchBundle.new(project.id))
+
+    parent =
+      Repo.insert!(%Patch{
+        pr_xref: 2,
+        project_id: project.id,
+        into_branch: "master",
+        head_ref: "feature-a",
+        bundle_id: bundle.id
+      })
+
+    Repo.insert!(%Patch{
+      pr_xref: 1,
+      project_id: project.id,
+      into_branch: "feature-a",
+      stacked_on_id: parent.id,
+      bundle_id: bundle.id
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "edited",
+      "changes" => %{"base" => %{"ref" => %{"from" => "feature-a"}}},
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "T",
+        "body" => "B",
+        "state" => "open",
+        "base" => %{"ref" => "feature-x", "repo" => %{"id" => 456}},
+        "head" => %{"sha" => "S", "ref" => "feature-b", "repo" => %{"id" => 345}},
+        "merged_at" => nil,
+        "mergeable" => true,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    comments_for = fn pr ->
+      GitHub.ServerMock.get_state() |> get_in([{{:installation, 31}, 13}, :comments, pr]) || []
+    end
+
+    assert comments_for.(1) == []
+    assert comments_for.(2) == []
   end
 
   test "sync PR on reopen", %{conn: conn, project: project} do

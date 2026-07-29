@@ -152,10 +152,20 @@ defmodule BorsNG.Worker.Batcher.Bundles do
       true ->
         members = expand_bundles([patch | targets])
 
-        if Enum.any?(members, &in_incomplete_batch?/1) do
-          {:error, :in_batch}
-        else
-          {:ok, members}
+        cond do
+          Enum.any?(members, &in_incomplete_batch?/1) ->
+            {:error, :in_batch}
+
+          # `link` adds no stack edge, so the expanded set's roots are its final
+          # roots: refuse now if they disagree on a target branch rather than
+          # letting the bundle wedge at activation, where `final_target` fails
+          # every time. `stack` adds an edge that changes the roots, so
+          # `do_stack` runs this check against the post-edge shape instead.
+          mode == :link and match?({:error, _}, final_target(members)) ->
+            {:error, :branch_mismatch}
+
+          true ->
+            {:ok, members}
         end
     end
   end

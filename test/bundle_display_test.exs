@@ -59,6 +59,29 @@ defmodule BorsNG.BundleDisplayTest do
       assert [11, 10] =
                members |> BundleDisplay.display_order() |> Enum.map(& &1.pr_xref)
     end
+
+    test "fan-out: a base with two children lists the base, then children descending" do
+      base = patch(1, 10)
+      child_low = patch(2, 11, stacked_on: 1)
+      child_high = patch(3, 12, stacked_on: 1)
+
+      assert [10, 12, 11] =
+               [child_low, base, child_high]
+               |> BundleDisplay.display_order()
+               |> Enum.map(& &1.pr_xref)
+    end
+
+    test "forest: each root heads its own chain (depth-first), roots descending" do
+      r_low = patch(1, 10)
+      r_high = patch(2, 20)
+      c_low = patch(3, 11, stacked_on: 1)
+      c_high = patch(4, 21, stacked_on: 2)
+
+      assert [20, 21, 10, 11] =
+               [c_low, r_low, c_high, r_high]
+               |> BundleDisplay.display_order()
+               |> Enum.map(& &1.pr_xref)
+    end
   end
 
   describe "state/1" do

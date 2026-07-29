@@ -196,6 +196,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. The batch applies ##{parent_xref}'s changes first ([##{child_xref}'s own changes](#{compare_url})). Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
   end
 
+  def generate_message({:bundle_base_edit_mismatch, xref}) do
+    "The base branch of ##{xref} changed, so its linked bundle no longer resolves to a single target branch. Bors can't queue the bundle until its members share one base again. Restore ##{xref}'s base, or `bors unlink` to split the bundle."
+  end
+
   def generate_message({:bundle_waiting, xrefs}) do
     prs = Enum.map_join(xrefs, ", ", &"##{&1}")
 
