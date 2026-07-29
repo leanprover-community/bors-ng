@@ -33,16 +33,25 @@
   </li>
   <% end %>
 </ul>
-<p>
-  Pull Requests:
-  <ul>
-    <%= for patch <- @patches do %>
-    <li>
-      <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>">#<%= patch.pr_xref %></a>
-    </li>
+<p>Pull requests (merge order):</p>
+<table class="table">
+  <thead>
+    <tr role="row"><th>Order</th><th>#</th><th>Title</th></tr>
+  </thead>
+  <tbody>
+    <%= for {patch, i} <- Enum.with_index(@patches) do %>
+    <tr role="row" id="prrow-<%= patch.pr_xref %>"<%= if patch.bundle_id do %> class=row--bundled<% end %>>
+      <td><%= i + 1 %></td>
+      <td class=expand-row style="padding-left: <%= 10 + Map.get(@depths, patch.id, 0) * 20 %>px">
+        <%= patch.pr_xref %><%= if patch.bundle_id do %> <a class=bundle-chip href="../bundles/<%= patch.bundle_id %>" title="Bundle <%= patch.bundle_id %> — merges atomically">⛓ <%= patch.bundle_id %></a><% end %>
+      </td>
+      <td class="fill-link">
+        <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>"><%= patch.title %></a>
+      </td>
+    </tr>
     <% end %>
-  </ul>
-</p>
+  </tbody>
+</table>
 
 <% else %>
 There is no such batch

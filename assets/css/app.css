@@ -444,6 +444,24 @@ tr.row--bundled > td:first-child {
 .approval--waiting {
   color: #666;
 }
+/* A stack member's readiness dot, shown before its PR number */
+.stack-dot {
+  padding-right: 6px;
+}
+.stack-dot--held {
+  color: #3c763d;
+}
+.stack-dot--waiting {
+  color: #666;
+}
+.stack-dot--blocked {
+  color: #a94442;
+}
+/* Bundle members on the bundle detail page: indented, no list bullets */
+.stack-list {
+  list-style: none;
+  padding-left: 0;
+}
 /* Allow preformatted text to wrap (crash reports) */
 pre {
   white-space: pre-wrap;
@@ -516,5 +534,11 @@ time[title] {
   }
   .approval--held {
       color:#7bbf82;
+  }
+  .stack-dot--held {
+      color:#7bbf82;
+  }
+  .stack-dot--waiting {
+      color:#999;
   }
 }

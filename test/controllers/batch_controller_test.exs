@@ -7,6 +7,7 @@ defmodule BorsNG.BatchControllerTest do
   alias BorsNG.Database.LinkMemberProject
   alias BorsNG.Database.LinkUserProject
   alias BorsNG.Database.Patch
+  alias BorsNG.Database.PatchBundle
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.Database.Status
@@ -100,7 +101,7 @@ defmodule BorsNG.BatchControllerTest do
     assert html_response(conn, 200) =~ "Batch Details"
     assert html_response(conn, 200) =~ "Priority: 33"
     assert html_response(conn, 200) =~ "State: Invalid"
-    assert html_response(conn, 200) =~ "#43"
+    assert html_response(conn, 200) =~ "/pull/43"
     assert html_response(conn, 200) =~ "<span>some-identifier (Running)</span>"
 
     assert html_response(conn, 200) =~
@@ -124,7 +125,7 @@ defmodule BorsNG.BatchControllerTest do
     assert html_response(conn, 200) =~ "Batch Details"
     assert html_response(conn, 200) =~ "Priority: 33"
     assert html_response(conn, 200) =~ "State: Invalid"
-    assert html_response(conn, 200) =~ "#43"
+    assert html_response(conn, 200) =~ "/pull/43"
     assert html_response(conn, 200) =~ "<span>some-identifier (Running)</span>"
 
     assert html_response(conn, 200) =~
@@ -148,7 +149,7 @@ defmodule BorsNG.BatchControllerTest do
     assert html_response(conn, 200) =~ "Batch Details"
     assert html_response(conn, 200) =~ "Priority: 33"
     assert html_response(conn, 200) =~ "State: Invalid"
-    assert html_response(conn, 200) =~ "#43"
+    assert html_response(conn, 200) =~ "/pull/43"
     assert html_response(conn, 200) =~ "<span>some-identifier (Running)</span>"
 
     assert html_response(conn, 200) =~
@@ -162,6 +163,38 @@ defmodule BorsNG.BatchControllerTest do
     conn = get(conn, "/batches/#{batch.id}")
 
     assert html_response(conn, 200) =~ "Batch Details"
+  end
+
+  test "lists pull requests in merge order", %{conn: conn, project: project, batch: batch} do
+    bundle = Repo.insert!(%PatchBundle{project_id: project.id})
+
+    base =
+      Repo.insert!(%Patch{
+        project_id: project.id,
+        pr_xref: 44,
+        title: "base patch",
+        bundle_id: bundle.id
+      })
+
+    top =
+      Repo.insert!(%Patch{
+        project_id: project.id,
+        pr_xref: 45,
+        title: "stacked patch",
+        bundle_id: bundle.id,
+        stacked_on_id: base.id
+      })
+
+    Repo.insert!(%LinkPatchBatch{patch_id: base.id, batch_id: batch.id})
+    Repo.insert!(%LinkPatchBatch{patch_id: top.id, batch_id: batch.id})
+
+    conn = login(conn)
+    conn = get(conn, "/batches/#{batch.id}")
+    html = html_response(conn, 200)
+
+    assert html =~ "merge order"
+    # the base merges before the patch stacked on it
+    assert html =~ ~r/base patch.*stacked patch/s
   end
 
   test "returns 404 when there is no such batch", %{conn: conn} do

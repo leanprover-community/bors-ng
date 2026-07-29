@@ -35,11 +35,11 @@
     <tr role=row><th>#</th><th aria-label=Mergeable title=Mergeable>M<span class=hide-on-narrow>ergeable</span></th><th>Title</th><th aria-label="Delegated to" title="Delegated to">D<span class=hide-on-narrow>elegated to</span></th><th class=priority-column>Priority</th><th class=hide-on-super-narrow>Commit</th></tr>
   </thead>
   <tbody>
-  <% xrefs = Map.new(batch.patches, &{&1.id, &1.pr_xref}) %>
-  <%= for patch <- batch.patches do %>
+  <% xrefs = Map.new(batch.patches, fn {patch, _depth} -> {patch.id, patch.pr_xref} end) %>
+  <%= for {patch, depth} <- batch.patches do %>
     <tr role="row" id="prrow-<%= patch.pr_xref %>"<%= if patch.bundle_id do %> class=row--bundled<% end %>>
-      <td class=expand-row>
-        <%= patch.pr_xref %><%= if patch.bundle_id do %> <a class=bundle-chip href="../bundles/<%= patch.bundle_id %>" title="Bundle <%= patch.bundle_id %> — merges atomically">⛓ <%= patch.bundle_id %></a><% end %>
+      <td class=expand-row style="padding-left: <%= 10 + depth * 20 %>px">
+        <%= if patch.bundle_id do %><span class="stack-dot stack-dot--<%= BorsNG.BundleDisplay.member_status(patch) %>" aria-hidden="true">●</span><% end %><%= patch.pr_xref %><%= if patch.bundle_id do %> <a class=bundle-chip href="../bundles/<%= patch.bundle_id %>" title="Bundle <%= patch.bundle_id %> — merges atomically">⛓ <%= patch.bundle_id %></a><% end %>
       </td>
       <td class=span--<%= if patch.is_mergeable do %>ok<% else %>error<% end %> aria-label="<%= if patch.is_mergeable do %><%= if patch.is_draft do %>Draft<% else %>Yes<% end %><% else %>No<% end %>" title="<%= if patch.is_mergeable do %><%= if patch.is_draft do %>Draft<% else %>Yes<% end %><% else %>No<% end %>">
         <%= if patch.is_mergeable do %>
@@ -53,8 +53,8 @@
         <% end %>
       </td>
       <td class="fill-link">
-        <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>">
-          <%= if patch.stacked_on_id && xrefs[patch.stacked_on_id] do %><span class=stack-mark title="Stacked on #<%= xrefs[patch.stacked_on_id] %>">↰</span><% end %><%= patch.title %>
+        <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>"<%= if patch.stacked_on_id && xrefs[patch.stacked_on_id] do %> title="Stacked on #<%= xrefs[patch.stacked_on_id] %>"<% end %>>
+          <%= patch.title %>
         </a>
       </td>
       <td class=delegated-cell>
@@ -72,7 +72,7 @@
   </tbody>
 <% end %>
 <%= for bundle <- @bundles do %>
-  <% xrefs = Map.new(bundle.members, &{&1.id, &1.pr_xref}) %>
+  <% xrefs = Map.new(bundle.members, fn {patch, _depth} -> {patch.id, patch.pr_xref} end) %>
   <thead>
     <tr role=heading><td aria-role=presentation colspan=6>
       <a href="../bundles/<%= bundle.id %>">Bundle <%= bundle.id %></a>
@@ -85,10 +85,10 @@
     <tr role=row><th>#</th><th aria-label=Mergeable title=Mergeable>M<span class=hide-on-narrow>ergeable</span></th><th>Title</th><th aria-label=Approval title=Approval>A<span class=hide-on-narrow>pproval</span></th><th class=priority-column>Priority</th><th class=hide-on-super-narrow>Commit</th></tr>
   </thead>
   <tbody>
-  <%= for patch <- bundle.members do %>
+  <%= for {patch, depth} <- bundle.members do %>
     <tr role="row" id="prrow-<%= patch.pr_xref %>">
-      <td class=expand-row>
-        <%= patch.pr_xref %>
+      <td class=expand-row style="padding-left: <%= 10 + depth * 20 %>px">
+        <span class="stack-dot stack-dot--<%= BorsNG.BundleDisplay.member_status(patch) %>" aria-hidden="true">●</span><%= patch.pr_xref %>
       </td>
       <%= if patch.open do %>
       <td class=span--<%= if patch.is_mergeable do %>ok<% else %>error<% end %> aria-label="<%= if patch.is_mergeable do %><%= if patch.is_draft do %>Draft<% else %>Yes<% end %><% else %>No<% end %>" title="<%= if patch.is_mergeable do %><%= if patch.is_draft do %>Draft<% else %>Yes<% end %><% else %>No<% end %>">
@@ -106,8 +106,8 @@
       <td class=span--error aria-label=Closed title=Closed>✗<span class=hide-on-narrow> Closed</span></td>
       <% end %>
       <td class="fill-link">
-        <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>">
-          <%= if patch.stacked_on_id && xrefs[patch.stacked_on_id] do %><span class=stack-mark title="Stacked on #<%= xrefs[patch.stacked_on_id] %>">↰</span><% end %><%= patch.title %>
+        <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>"<%= if patch.stacked_on_id && xrefs[patch.stacked_on_id] do %> title="Stacked on #<%= xrefs[patch.stacked_on_id] %>"<% end %>>
+          <%= patch.title %>
         </a>
       </td>
       <%= if patch.bundle_reviewer do %>

@@ -105,7 +105,7 @@ defmodule BorsNG.ProjectController do
         batch.id
         |> Patch.all_for_batch()
         |> Repo.all()
-        |> BundleDisplay.batch_display_order(),
+        |> BundleDisplay.batch_display_rows(),
       priority: batch.priority,
       state: batch.state
     }
@@ -123,7 +123,7 @@ defmodule BorsNG.ProjectController do
     |> Enum.map(fn {id, members} ->
       %{
         id: id,
-        members: BundleDisplay.display_order(members),
+        members: BundleDisplay.display_rows(members),
         state: BundleDisplay.state(members),
         stacked: BundleDisplay.stacked?(members)
       }
