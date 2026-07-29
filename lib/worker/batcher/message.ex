@@ -384,6 +384,51 @@ defmodule BorsNG.Worker.Batcher.Message do
     "Pull request successfully merged into #{target_branch}.\n\n#{status_msg}"
   end
 
+  # Bundle comments carry a trailing link to the bundle's page in the bors
+  # dashboard, so a reader can jump from any member's pull request to the whole
+  # bundle: its members, approval state, and batches. The URL is built by the
+  # caller (which has the router helpers); this module only owns the wording.
+  @bundle_page_messages [
+    :bundle_conflict,
+    :bundle_timeout,
+    :linked,
+    :stacked,
+    :bundle_waiting,
+    :bundle_held,
+    :bundle_last_unapproved,
+    :bundle_pulled,
+    :bundle_failed,
+    :stack_stale,
+    :stack_retarget_failed,
+    :retargeted
+  ]
+
+  @doc """
+  Whether a comment for `message` should link to its bundle's page. True for
+  messages that describe a bundle that still exists. False for link-rejection
+  (`:link_error`), unlink, and base-restore messages, where there is no live
+  bundle to point at.
+  """
+  def links_to_bundle?(message) when is_tuple(message),
+    do: elem(message, 0) in @bundle_page_messages
+
+  def links_to_bundle?(_), do: false
+
+  @doc """
+  The trailing "view this bundle" link appended to bundle comments. `url` is
+  built by the caller. A nil url yields an empty string so callers can append
+  it unconditionally.
+
+  The note about signing in is deliberate: the bundle page sits behind the bors
+  dashboard's login, so any signed-in GitHub user can open it, but a signed-out
+  reader following the link is bounced to a GitHub OAuth prompt rather than the
+  page they expected.
+  """
+  def bundle_link_footer(nil), do: ""
+
+  def bundle_link_footer(url),
+    do: "\n\n[View this bundle in bors](#{url}) (sign in with GitHub to view)."
+
   def gen_status_link(status) do
     case status.url do
       nil -> status.identifier
