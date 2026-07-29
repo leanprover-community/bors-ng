@@ -857,12 +857,15 @@ defmodule BorsNG.Command do
     # `try` knows nothing about bundles: it builds this patch's branch alone.
     # Say so, or a green result overstates what the batch will do.
     if c.patch.bundle_id != nil do
+      body =
+        Batcher.Message.generate_message(:try_ignores_bundle) <>
+          Batcher.Message.bundle_link_footer(
+            bundle_url(BorsNG.Endpoint, :show, c.patch.bundle_id)
+          )
+
       c.project.repo_xref
       |> Project.installation_connection(Repo)
-      |> GitHub.post_comment!(
-        c.pr_xref,
-        Batcher.Message.generate_message(:try_ignores_bundle)
-      )
+      |> GitHub.post_comment!(c.pr_xref, body)
     end
 
     attemptor = Attemptor.Registry.get(c.project.id)

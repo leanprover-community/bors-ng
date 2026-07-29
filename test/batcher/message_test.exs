@@ -112,6 +112,44 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     end
   end
 
+  test "bundle-status messages link to the bundle page; others do not" do
+    for message <- [
+          {:linked, [1, 2]},
+          {:stacked, 2, 1, "https://github.com/o/r/compare/a...b"},
+          {:bundle_waiting, [7]},
+          {:bundle_held, 7},
+          {:bundle_last_unapproved, :awaiting_review},
+          {:bundle_pulled, 7, :closed},
+          {:bundle_failed, [3, 7], []},
+          {:bundle_conflict, [3, 7]},
+          {:bundle_timeout, [3, 7]},
+          {:stack_stale, 2, 1},
+          {:stack_retarget_failed, 7},
+          {:retargeted, "master"}
+        ] do
+      assert Message.links_to_bundle?(message), "expected #{inspect(message)} to link"
+    end
+
+    for message <- [
+          :unlinked,
+          {:unlinked, :fresh_approval_needed},
+          {:link_error, :closed},
+          {:base_restored, "feature-a"},
+          {:base_restore_failed, "feature-a"},
+          {:preflight, :ok},
+          {:canceled, :failed, :push}
+        ] do
+      refute Message.links_to_bundle?(message), "expected #{inspect(message)} not to link"
+    end
+  end
+
+  test "bundle link footer" do
+    assert Message.bundle_link_footer(nil) == ""
+
+    assert Message.bundle_link_footer("http://localhost/bundles/42") ==
+             "\n\n[View this bundle in bors](http://localhost/bundles/42) (sign in with GitHub to view)."
+  end
+
   test "every bors.toml error key has an explicit, friendly renderer" do
     # Single source of truth: BorsToml's @type err (introspected below), plus
     # the fetch-layer-only :fetch_failed. Adding a new validation key extends

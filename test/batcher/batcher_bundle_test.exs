@@ -180,7 +180,10 @@ defmodule BorsNG.Worker.BatcherBundleTest do
 
       assert [comment] = comments_for(1)
       assert comment =~ "linked bundle: #1, #2"
-      assert [_comment] = comments_for(2)
+      assert comment =~ "[View this bundle in bors]"
+      assert comment =~ "/bundles/#{patch.bundle_id})"
+      assert [comment2] = comments_for(2)
+      assert comment2 =~ "/bundles/#{patch.bundle_id})"
     end
 
     test "linking an already-bundled patch unions the bundles", %{proj: proj} do
