@@ -39,5 +39,53 @@ defmodule BorsNG.Worker.Batcher.BundlesTest do
       b = fake_patch(2, 2, 1)
       assert Bundles.stack_order([a, b]) == [a, b]
     end
+
+    test "fan-out: two children of one parent come after it, in PR-number order" do
+      a = fake_patch(1, 5)
+      b = fake_patch(2, 6, 1)
+      c = fake_patch(3, 7, 1)
+      assert Bundles.stack_order([c, b, a]) == [a, b, c]
+    end
+
+    test "forest: multiple roots order breadth-first (roots first, by PR number)" do
+      r1 = fake_patch(1, 2)
+      r2 = fake_patch(2, 4)
+      c1 = fake_patch(3, 1, 1)
+      c2 = fake_patch(4, 3, 2)
+      assert Bundles.stack_order([c1, r1, c2, r2]) == [r1, r2, c1, c2]
+    end
+  end
+
+  describe "final_target/1" do
+    defp target_patch(id, into, stacked_on \\ nil) do
+      %Patch{id: id, into_branch: into, stacked_on_id: stacked_on}
+    end
+
+    test "a single root gives its branch" do
+      root = target_patch(1, "master")
+      child = target_patch(2, "feature-a", 1)
+      assert {:ok, "master"} = Bundles.final_target([child, root])
+    end
+
+    test "multiple roots that agree give the shared branch" do
+      r1 = target_patch(1, "master")
+      r2 = target_patch(2, "master")
+      c1 = target_patch(3, "feature-a", 1)
+      assert {:ok, "master"} = Bundles.final_target([r1, r2, c1])
+    end
+
+    test "roots that disagree are a mismatch" do
+      r1 = target_patch(1, "master")
+      r2 = target_patch(2, "develop")
+      assert {:error, :branch_mismatch} = Bundles.final_target([r1, r2])
+    end
+
+    test "a member stacked on an out-of-set parent counts as a root" do
+      # 2's parent (99) is not in the set, so 2 is a root; its branch must
+      # agree with the in-set root, and here it does not.
+      root = target_patch(1, "master")
+      orphan = target_patch(2, "develop", 99)
+      assert {:error, :branch_mismatch} = Bundles.final_target([root, orphan])
+    end
   end
 end

@@ -267,6 +267,25 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert comment =~ "same base branch"
     end
 
+    # The named pair share a base branch, so the per-pair check passes, but the
+    # expanded bundle would have two roots (#2 on master, #3 on feature-a). The
+    # root-consistency check refuses it rather than letting it wedge later.
+    test "link is refused when it would leave the bundle's roots on different branches",
+         %{proj: proj} do
+      put_plain_state(%{1 => [], 2 => [], 3 => []})
+      # Bundle: #2 (root, master) with #1 stacked on it (base feature-a).
+      a = insert_patch(proj, 2, %{head_ref: "feature-a"})
+      b = insert_patch(proj, 1, %{into_branch: "feature-a", stacked_on_id: a.id})
+      insert_bundle(proj, [a, b])
+      # A standalone PR also based on feature-a.
+      s = insert_patch(proj, 3, %{into_branch: "feature-a"})
+
+      Batcher.handle_cast({:link, b.id, [3]}, proj.id)
+
+      assert Repo.get!(Patch, s.id).bundle_id == nil
+      assert Enum.any?(comments_for(1), &(&1 =~ "same base branch"))
+    end
+
     test "link is refused while a target is queued", %{proj: proj} do
       put_plain_state(%{1 => [], 2 => []})
       patch = insert_patch(proj, 1)
@@ -681,6 +700,84 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert Enum.any?(comments_for(1), &(&1 =~ "Rebase it onto #2"))
     end
 
+    # #1 and #2 form a consistent bundle targeting feature-d. Stacking #1 onto
+    # #3 (which targets develop) is rebased and cycle-free, but it would leave
+    # the bundle with two roots on different branches (#2 on feature-d, #3 on
+    # develop). Refuse it here rather than at activation.
+    test "stack is refused when it would leave the bundle's roots on different branches",
+         %{proj: proj} do
+      put_plain_state(
+        %{1 => [], 2 => [], 3 => []},
+        %{compare_status: %{{"commit-3", "commit-1"} => :ahead}}
+      )
+
+      p1 = insert_patch(proj, 1, %{into_branch: "feature-d"})
+      p2 = insert_patch(proj, 2, %{into_branch: "feature-d"})
+      insert_bundle(proj, [p1, p2])
+      p3 = insert_patch(proj, 3, %{into_branch: "develop", head_ref: "feature-d"})
+
+      Batcher.handle_cast({:stack, p1.id, [3]}, proj.id)
+
+      assert Repo.get!(Patch, p1.id).stacked_on_id == nil
+      assert Repo.get!(Patch, p3.id).bundle_id == nil
+      assert Enum.any?(comments_for(1), &(&1 =~ "same base branch"))
+    end
+
+    # Fan-out A -> {B, C}: #1 and #2 both stacked on root #3. Re-stacking #1
+    # onto #2 (once it is rebased on it) turns the tree into a chain by moving
+    # #1's single parent pointer from #3 to #2.
+    test "re-stacking moves the edge to the new parent (tree becomes a chain)",
+         %{proj: proj} do
+      put_plain_state(
+        %{1 => [], 2 => [], 3 => []},
+        %{compare_status: %{{"commit-2", "commit-1"} => :ahead}}
+      )
+
+      a = insert_patch(proj, 3, %{head_ref: "feature-a"})
+
+      b =
+        insert_patch(proj, 2, %{
+          into_branch: "feature-a",
+          head_ref: "feature-b",
+          stacked_on_id: a.id
+        })
+
+      c = insert_patch(proj, 1, %{into_branch: "feature-a", stacked_on_id: a.id})
+      insert_bundle(proj, [a, b, c])
+
+      Batcher.handle_cast({:stack, c.id, [2]}, proj.id)
+
+      assert Repo.get!(Patch, c.id).stacked_on_id == b.id
+      assert Enum.any?(comments_for(1), &(&1 =~ "stacked on #2"))
+    end
+
+    # The re-stack of the tree-to-chain conversion is refused until the child is
+    # actually rebased on its new parent; the original edge is left in place.
+    test "re-stacking is refused when not rebased, leaving the edge unchanged",
+         %{proj: proj} do
+      put_plain_state(
+        %{1 => [], 2 => [], 3 => []},
+        %{compare_status: %{{"commit-2", "commit-1"} => :diverged}}
+      )
+
+      a = insert_patch(proj, 3, %{head_ref: "feature-a"})
+
+      b =
+        insert_patch(proj, 2, %{
+          into_branch: "feature-a",
+          head_ref: "feature-b",
+          stacked_on_id: a.id
+        })
+
+      c = insert_patch(proj, 1, %{into_branch: "feature-a", stacked_on_id: a.id})
+      insert_bundle(proj, [a, b, c])
+
+      Batcher.handle_cast({:stack, c.id, [2]}, proj.id)
+
+      assert Repo.get!(Patch, c.id).stacked_on_id == a.id
+      assert Enum.any?(comments_for(1), &(&1 =~ "Rebase it onto #2"))
+    end
+
     test "stack commented on the parent names the fix", %{proj: proj} do
       # #2 contains #1's head, not the other way around. The user commented
       # `bors stack #2` on the parent instead of on the child.
@@ -881,6 +978,39 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       staging_sha = state.branches["staging"]
       %{commit_message: message} = state.commits[staging_sha]
       assert message =~ ~r/\AMerge #2 #3 #1/
+    end
+
+    # One bundle holding two stacks (a forest): #1 on root #2, #3 on root #4,
+    # both roots targeting master. stack_order is breadth-first, so both roots
+    # merge before either child. final_target agrees (both roots on master), so
+    # the forest queues and merges as one batch.
+    test "a single forest bundle merges both roots before their children", %{proj: proj} do
+      put_merge_state(
+        [{1, "N"}, {2, "O"}, {3, "P"}, {4, "Q"}],
+        %{statuses: %{"iniOQNP" => %{}}}
+      )
+
+      p1 = insert_patch(proj, 1, %{commit: "N"})
+      p2 = insert_patch(proj, 2, %{commit: "O"})
+      p3 = insert_patch(proj, 3, %{commit: "P"})
+      p4 = insert_patch(proj, 4, %{commit: "Q"})
+      {_bundle, [p1, p2, p3, p4]} = insert_bundle(proj, [p1, p2, p3, p4])
+      p1 |> Patch.changeset(%{stacked_on_id: p2.id}) |> Repo.update!()
+      p3 |> Patch.changeset(%{stacked_on_id: p4.id}) |> Repo.update!()
+
+      batch = insert_waiting_batch(proj, [p1, p2, p3, p4])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      assert Repo.get!(Batch, batch.id).state == :running
+
+      state =
+        GitHub.ServerMock.get_state()
+        |> Map.get({{:installation, 91}, 14})
+
+      staging_sha = state.branches["staging"]
+      %{commit_message: message} = state.commits[staging_sha]
+      assert message =~ ~r/\AMerge #2 #4 #1 #3/
     end
 
     test "two bundles in one batch merge contiguously", %{proj: proj} do

@@ -64,6 +64,7 @@ defmodule BorsNG.WebhookController do
 
   alias BorsNG.Worker.Attemptor
   alias BorsNG.Worker.Batcher
+  alias BorsNG.Worker.Batcher.Bundles
   alias BorsNG.Worker.BranchDeleter
   alias BorsNG.Worker.DelegationInvalidator
   alias BorsNG.Worker.Labeler
@@ -472,7 +473,7 @@ defmodule BorsNG.WebhookController do
     end)
   end
 
-  def do_webhook_pr(conn, %{action: "edited", patch: patch}) do
+  def do_webhook_pr(conn, %{action: "edited", project: project, patch: patch}) do
     %{
       "pull_request" => %{
         "title" => title,
@@ -481,17 +482,41 @@ defmodule BorsNG.WebhookController do
       }
     } = conn.body_params
 
-    Repo.update!(
-      Patch.changeset(patch, %{
-        title: title,
-        body: body,
-        into_branch: base_ref
-      })
-    )
+    patch =
+      Repo.update!(
+        Patch.changeset(patch, %{
+          title: title,
+          body: body,
+          into_branch: base_ref
+        })
+      )
+
+    # A base-branch change on a bundled PR can leave the bundle's stack roots
+    # disagreeing on a target branch, which wedges it at activation
+    # (`final_target` in the batcher). The edit already landed on GitHub, so we
+    # can't refuse it — warn the bundle now instead of failing silently later.
+    # Only base changes matter; title/body edits leave the bundle shape alone.
+    if patch.bundle_id != nil and get_in(conn.body_params, ["changes", "base"]) != nil do
+      warn_if_bundle_unqueueable(project, patch)
+    end
   end
 
   def do_webhook_pr(_conn, %{action: action}) do
     Logger.info(["WebhookController: Got unknown action: ", action])
+  end
+
+  defp warn_if_bundle_unqueueable(project, patch) do
+    members = Bundles.members(patch.bundle_id)
+
+    case Bundles.final_target(members) do
+      {:error, :branch_mismatch} ->
+        conn = Project.installation_connection(project.repo_xref, Repo)
+        body = Batcher.Message.generate_message({:bundle_base_edit_mismatch, patch.pr_xref})
+        Enum.each(members, &GitHub.post_comment!(conn, &1.pr_xref, body))
+
+      {:ok, _} ->
+        :ok
+    end
   end
 
   defp draft_mode_message(

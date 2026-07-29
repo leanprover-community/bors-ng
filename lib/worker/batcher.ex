@@ -763,6 +763,15 @@ defmodule BorsNG.Worker.Batcher do
       {:ok, members} ->
         target = Enum.find(members, &(&1.pr_xref == target_xref))
 
+        # The shape once this edge is recorded: `patch` stops being a root and
+        # hangs under `target`. Check target-branch agreement against that
+        # shape, so an inconsistent forest is refused here instead of wedging
+        # at activation (`final_target`).
+        staged =
+          Enum.map(members, fn m ->
+            if m.id == patch.id, do: %{m | stacked_on_id: target.id}, else: m
+          end)
+
         cond do
           Bundles.creates_stack_cycle?(target, patch) ->
             send_message(repo_conn, [patch], {:link_error, :cycle})
@@ -778,6 +787,9 @@ defmodule BorsNG.Worker.Batcher do
               end
 
             send_message(repo_conn, [patch], message)
+
+          match?({:error, _}, Bundles.final_target(staged)) ->
+            send_message(repo_conn, [patch], {:link_error, :branch_mismatch})
 
           true ->
             members = Bundles.form_stacked(members, patch, target, project.id)
