@@ -50,7 +50,7 @@ defmodule BorsNG.BundleController do
     render(conn, "show.html",
       bundle: bundle,
       project: project,
-      members: BundleDisplay.display_order(members),
+      members: BundleDisplay.display_rows(members),
       state: BundleDisplay.state(members),
       stacked: BundleDisplay.stacked?(members),
       batches: batches,

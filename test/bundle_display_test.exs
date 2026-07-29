@@ -84,6 +84,73 @@ defmodule BorsNG.BundleDisplayTest do
     end
   end
 
+  describe "display_rows/1" do
+    test "roots are depth 0, each stacked PR one deeper" do
+      base = patch(1, 10)
+      mid = patch(2, 11, stacked_on: 1)
+      top = patch(3, 12, stacked_on: 2)
+
+      assert [{10, 0}, {11, 1}, {12, 2}] =
+               [top, base, mid]
+               |> BundleDisplay.display_rows()
+               |> Enum.map(fn {p, depth} -> {p.pr_xref, depth} end)
+    end
+
+    test "a plain linked bundle is all depth 0" do
+      members = [patch(1, 10), patch(2, 12), patch(3, 11)]
+
+      assert [{12, 0}, {11, 0}, {10, 0}] =
+               members
+               |> BundleDisplay.display_rows()
+               |> Enum.map(fn {p, depth} -> {p.pr_xref, depth} end)
+    end
+
+    test "siblings on a branching base share a depth, base leads" do
+      base = patch(1, 10)
+      left = patch(2, 11, stacked_on: 1)
+      right = patch(3, 12, stacked_on: 1)
+
+      rows =
+        [base, left, right]
+        |> BundleDisplay.display_rows()
+        |> Enum.map(fn {p, depth} -> {p.pr_xref, depth} end)
+
+      assert hd(rows) == {10, 0}
+      assert {11, 1} in rows
+      assert {12, 1} in rows
+    end
+  end
+
+  describe "depths/1" do
+    test "depth per patch id; singles and roots at 0" do
+      base = patch(1, 10, bundle_id: 7)
+      top = patch(2, 11, bundle_id: 7, stacked_on: 1)
+      lone = patch(3, 12, bundle_id: nil)
+
+      # keyed by patch id (base id 1, top id 2, lone id 3), as the templates look it up
+      depths = BundleDisplay.depths([lone, top, base])
+
+      assert depths[1] == 0
+      assert depths[2] == 1
+      assert depths[3] == 0
+    end
+  end
+
+  describe "member_status/1" do
+    test "held when an approval is held" do
+      assert BundleDisplay.member_status(patch(1, 10, reviewer: "r")) == :held
+    end
+
+    test "waiting with no approval" do
+      assert BundleDisplay.member_status(patch(1, 10)) == :waiting
+    end
+
+    test "blocked when closed or a draft, even holding an approval" do
+      assert BundleDisplay.member_status(patch(1, 10, draft: true)) == :blocked
+      assert BundleDisplay.member_status(patch(1, 10, reviewer: "r", open: false)) == :blocked
+    end
+  end
+
   describe "state/1" do
     test "waiting on the members without a held approval" do
       held = patch(1, 10, reviewer: "reviewer")
@@ -126,6 +193,17 @@ defmodule BorsNG.BundleDisplayTest do
                [lone_low, top, lone_high, base]
                |> BundleDisplay.batch_display_order()
                |> Enum.map(& &1.pr_xref)
+    end
+
+    test "carries stack depth; singles are depth 0" do
+      base = patch(1, 10, bundle_id: 7)
+      top = patch(2, 11, bundle_id: 7, stacked_on: 1)
+      lone = patch(3, 12, bundle_id: nil)
+
+      assert [{12, 0}, {10, 0}, {11, 1}] =
+               [lone, top, base]
+               |> BundleDisplay.batch_display_rows()
+               |> Enum.map(fn {p, depth} -> {p.pr_xref, depth} end)
     end
   end
 end
