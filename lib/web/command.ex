@@ -858,10 +858,10 @@ defmodule BorsNG.Command do
     # Say so, or a green result overstates what the batch will do.
     if c.patch.bundle_id != nil do
       body =
-        Batcher.Message.generate_message(:try_ignores_bundle) <>
-          Batcher.Message.bundle_link_footer(
-            bundle_url(BorsNG.Endpoint, :show, c.patch.bundle_id)
-          )
+        Batcher.Message.generate_message(
+          :try_ignores_bundle,
+          bundle_url(BorsNG.Endpoint, :show, c.patch.bundle_id)
+        )
 
       c.project.repo_xref
       |> Project.installation_connection(Repo)
