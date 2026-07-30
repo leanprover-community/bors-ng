@@ -125,7 +125,8 @@ defmodule BorsNG.Worker.BatcherMessageTest do
           {:bundle_timeout, [3, 7]},
           {:stack_stale, 2, 1},
           {:stack_retarget_failed, 7},
-          {:retargeted, "master"}
+          {:retargeted, "master"},
+          :try_ignores_bundle
         ] do
       assert Message.links_to_bundle?(message), "expected #{inspect(message)} to link"
     end
@@ -148,6 +149,24 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     assert Message.bundle_link_footer("http://localhost/bundles/42") ==
              "\n\n[View this bundle in bors](http://localhost/bundles/42) (sign in with GitHub to view)."
+  end
+
+  test "generate_message/2 appends the footer only to bundle-page messages" do
+    url = "http://localhost/bundles/42"
+    footer = Message.bundle_link_footer(url)
+
+    assert Message.generate_message({:linked, [1, 2]}, url) ==
+             Message.generate_message({:linked, [1, 2]}) <> footer
+
+    assert Message.generate_message(:try_ignores_bundle, url) ==
+             Message.generate_message(:try_ignores_bundle) <> footer
+
+    # Non-bundle messages pass through unchanged, even with a url.
+    assert Message.generate_message(:unlinked, url) == Message.generate_message(:unlinked)
+
+    # A nil url appends nothing.
+    assert Message.generate_message({:linked, [1, 2]}, nil) ==
+             Message.generate_message({:linked, [1, 2]})
   end
 
   test "every bors.toml error key has an explicit, friendly renderer" do

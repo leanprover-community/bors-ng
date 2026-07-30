@@ -397,6 +397,7 @@ defmodule BorsNG.Worker.Batcher.Message do
     :bundle_timeout,
     :linked,
     :stacked,
+    :try_ignores_bundle,
     :bundle_waiting,
     :bundle_held,
     :bundle_last_unapproved,
@@ -416,6 +417,9 @@ defmodule BorsNG.Worker.Batcher.Message do
   def links_to_bundle?(message) when is_tuple(message),
     do: elem(message, 0) in @bundle_page_messages
 
+  def links_to_bundle?(message) when is_atom(message),
+    do: message in @bundle_page_messages
+
   def links_to_bundle?(_), do: false
 
   @doc """
@@ -432,6 +436,24 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def bundle_link_footer(url),
     do: "\n\n[View this bundle in bors](#{url}) (sign in with GitHub to view)."
+
+  @doc """
+  Like `generate_message/1`, but appends the bundle-page link footer when
+  `message` is one that links to its bundle (see `links_to_bundle?/1`).
+  `bundle_url` is built by the caller (which has the router helpers); pass
+  nil when there is no bundle page to point at.
+  """
+  def generate_message(message, bundle_url) do
+    case generate_message(message) do
+      nil ->
+        nil
+
+      body ->
+        if links_to_bundle?(message),
+          do: body <> bundle_link_footer(bundle_url),
+          else: body
+    end
+  end
 
   def gen_status_link(status) do
     case status.url do

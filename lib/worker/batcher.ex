@@ -2127,7 +2127,7 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp send_message(repo_conn, patches, message) do
-    body = append_bundle_link(Batcher.Message.generate_message(message), message, patches)
+    body = Batcher.Message.generate_message(message, bundle_page_url(patches))
 
     case body do
       nil ->
@@ -2148,19 +2148,12 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # A comment about an existing bundle gets a link to its dashboard page. All
-  # members of a bundle share a bundle_id, so the first patch's is
+  # All members of a bundle share a bundle_id, so the first patch's is
   # representative of the group send_message posts to.
-  defp append_bundle_link(nil, _message, _patches), do: nil
+  defp bundle_page_url([%Patch{bundle_id: bundle_id} | _]) when not is_nil(bundle_id),
+    do: bundle_url(Endpoint, :show, bundle_id)
 
-  defp append_bundle_link(body, message, patches) do
-    with true <- Batcher.Message.links_to_bundle?(message),
-         [%Patch{bundle_id: bundle_id} | _] when not is_nil(bundle_id) <- patches do
-      body <> Batcher.Message.bundle_link_footer(bundle_url(Endpoint, :show, bundle_id))
-    else
-      _ -> body
-    end
-  end
+  defp bundle_page_url(_), do: nil
 
   defp send_status(
          repo_conn,
