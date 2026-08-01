@@ -793,18 +793,10 @@ defmodule BorsNG.Worker.Batcher do
 
           true ->
             members = Bundles.form_stacked(members, patch, target, project.id)
-            compare_url = compare_url(project, target, patch)
-            send_message(repo_conn, members, {:stacked, patch.pr_xref, target_xref, compare_url})
+            url = Bundles.own_changes_url(project, target, patch)
+            send_message(repo_conn, members, {:stacked, patch.pr_xref, target_xref, url})
         end
     end
-  end
-
-  # A point-in-time compare view of the child's own changes: exactly the delta
-  # that contains_head?/3 verified. Built from SHAs, so it works when branches
-  # live in a fork.
-  defp compare_url(project, parent, child) do
-    root = Confex.fetch_env!(:bors, :html_github_root)
-    "#{root}/#{project.name}/compare/#{parent.commit}...#{child.commit}"
   end
 
   def sort_batches(batches) do

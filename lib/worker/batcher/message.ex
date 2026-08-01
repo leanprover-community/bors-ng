@@ -192,8 +192,22 @@ defmodule BorsNG.Worker.Batcher.Message do
     "Note: `bors try` builds this pull request without the rest of its bundle, so its result may differ from the bundle's batch."
   end
 
-  def generate_message({:stacked, child_xref, parent_xref, compare_url}) do
-    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. The batch applies ##{parent_xref}'s changes first ([##{child_xref}'s own changes](#{compare_url})). Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
+  # The review call-out gets its own bold line: buried in a parenthetical,
+  # reviewers overlooked it, and it is the one link they should open — this
+  # pull request's Files tab shows the whole stack below it too. A nil URL
+  # (head commit unknown) just drops the line.
+  def generate_message({:stacked, child_xref, parent_xref, url}) do
+    base =
+      "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. The batch applies ##{parent_xref}'s changes first. Each pull request still needs its own `bors r+`; `bors unlink` removes the link."
+
+    case url do
+      nil ->
+        base
+
+      url ->
+        base <>
+          "\n\n**Review:** [##{child_xref}'s own changes](#{url}) — this pull request's diff without ##{parent_xref}'s changes. Line comments there work as usual."
+    end
   end
 
   def generate_message({:bundle_base_edit_mismatch, xref}) do
