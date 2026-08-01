@@ -122,6 +122,9 @@ defmodule BorsNG.BundleDisplay do
   def member_status(%Patch{bundle_reviewer: reviewer}) when not is_nil(reviewer), do: :held
   def member_status(%Patch{}), do: :waiting
 
+  @doc "See `BorsNG.Worker.Batcher.Bundles.own_changes_url/3`."
+  defdelegate own_changes_url(project, parent, child), to: Bundles
+
   @doc """
   A batch's patches in display order: descending PR order, except bundle
   members stay together (sorted by their highest member) with stacks base

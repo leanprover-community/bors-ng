@@ -368,6 +368,23 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
+  A link to a stacked child's own changes: the commit range from the parent's
+  head to the child's head, shown in the child's pull request
+  (`pull/N/files/parent..child`). Reviewers can leave line comments there.
+  The range works for every pair that `contains_head?/3` accepts, forks
+  included, because the parent's head is then a commit of the child's pull
+  request. GitHub also shows it after the pull request closes. The URL pins
+  both head commits. Returns nil when either head commit is unknown.
+  """
+  def own_changes_url(_project, %Patch{commit: nil}, _child), do: nil
+  def own_changes_url(_project, _parent, %Patch{commit: nil}), do: nil
+
+  def own_changes_url(project, parent, child) do
+    root = Confex.fetch_env!(:bors, :html_github_root)
+    "#{root}/#{project.name}/pull/#{child.pr_xref}/files/#{parent.commit}..#{child.commit}"
+  end
+
+  @doc """
   The first stacked member whose branch does not contain the current head of
   the patch it stacks on, returned as `{child, parent}`. Returns nil if every
   stack edge is fresh. An unverifiable comparison counts as stale: this check
