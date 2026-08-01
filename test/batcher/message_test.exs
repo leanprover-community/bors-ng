@@ -23,9 +23,10 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   test "generate bundle messages" do
     assert Message.generate_message({:linked, [1, 2]}) =~ "linked bundle: #1, #2"
     assert Message.generate_message(:unlinked) =~ "no longer linked"
-    stacked = Message.generate_message({:stacked, 2, 1, "https://github.com/o/r/compare/a...b"})
+
+    stacked = Message.generate_message({:stacked, 2, 1, "https://bors/patches/7/own-changes"})
     assert stacked =~ "#2 is now stacked on #1"
-    assert stacked =~ "[#2's own changes](https://github.com/o/r/compare/a...b)"
+    assert stacked =~ "**Review:** [#2's own changes](https://bors/patches/7/own-changes)"
     assert Message.generate_message({:link_error, {:not_rebased, 5}}) =~ "Rebase it onto #5"
 
     assert Message.generate_message({:link_error, {:stack_reversed, 5, 2}}) =~

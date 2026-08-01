@@ -65,6 +65,14 @@ defmodule BorsNG.Router do
     get("/:id", BundleController, :show)
   end
 
+  # Unauthenticated: reviewers open this link from a pull request comment. It
+  # only redirects to GitHub, which checks access to the diff.
+  scope "/patches", BorsNG do
+    pipe_through(:browser_page)
+
+    get("/:id/own-changes", BundleController, :own_changes)
+  end
+
   scope "/repositories", BorsNG do
     pipe_through(:browser_page)
     pipe_through(:browser_session)
