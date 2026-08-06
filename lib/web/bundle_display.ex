@@ -123,6 +123,15 @@ defmodule BorsNG.BundleDisplay do
   def member_status(%Patch{}), do: :waiting
 
   @doc """
+  A link showing a stacked member's own changes inside its pull request's
+  files view, where line comments work. Built from the patches' current head
+  commits, so a page rendering it stays fresh as the branches move, unlike
+  the pinned link in the stack announcement comment. Nil when either head
+  commit is unknown (rows that predate head tracking).
+  """
+  defdelegate own_changes_url(project, parent, child), to: Bundles
+
+  @doc """
   A batch's patches in display order: descending PR order, except bundle
   members stay together (sorted by their highest member) with stacks base
   first.
