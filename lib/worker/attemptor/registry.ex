@@ -33,6 +33,11 @@ defmodule BorsNG.Worker.Attemptor.Registry do
   # Server callbacks
 
   def init(:ok) do
+    # This registry may be restarting under a supervisor that was started
+    # before it, so `Attemptor.Supervisor` can still hold the attemptors of the
+    # previous incarnation. See `Attemptor.Supervisor.terminate_all/0`.
+    Attemptor.Supervisor.terminate_all()
+
     names =
       Project.active()
       |> Repo.all()
@@ -73,10 +78,20 @@ defmodule BorsNG.Worker.Attemptor.Registry do
     {:reply, pid, state}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, :normal}, {names, refs}) do
-    {project_id, refs} = Map.pop(refs, ref)
-    names = Map.delete(names, project_id)
-    {:noreply, {names, refs}}
+  def handle_info({:DOWN, ref, :process, _pid, :normal}, state) do
+    {:noreply, forget(ref, state)}
+  end
+
+  # A supervisor-ordered stop is not a crash. `Attemptor.Supervisor.terminate_all/0`
+  # exits attemptors this way, and so does application shutdown. Restarting the
+  # attemptor and recording a crash for an orderly stop would be wrong, so just
+  # drop the entry.
+  def handle_info({:DOWN, ref, :process, _pid, :shutdown}, state) do
+    {:noreply, forget(ref, state)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, {:shutdown, _}}, state) do
+    {:noreply, forget(ref, state)}
   end
 
   def handle_info({:DOWN, ref, :process, _, reason}, {_, refs} = state) do
@@ -90,6 +105,12 @@ defmodule BorsNG.Worker.Attemptor.Registry do
 
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  # Drop an attemptor that stopped without crashing.
+  defp forget(ref, {names, refs}) do
+    {project_id, refs} = Map.pop(refs, ref)
+    {Map.delete(names, project_id), refs}
   end
 
   # Recording the crash is best-effort. The attemptor has already been

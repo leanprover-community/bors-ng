@@ -33,10 +33,10 @@ defmodule BorsNG.Worker.Batcher.Registry do
   def get(project_id, count \\ 0)
 
   def get(project_id, 5) when is_integer(project_id) do
-    pid = GenServer.call(@name, {:get, project_id})
-    # process haven't been started at all
-    if pid == nil do
-      do_start(project_id)
+    case GenServer.call(@name, {:get, project_id}) do
+      # The batcher never registered, so it hasn't been started at all.
+      nil -> do_start(project_id)
+      pid -> pid
     end
   end
 
@@ -60,6 +60,12 @@ defmodule BorsNG.Worker.Batcher.Registry do
   # Server callbacks
 
   def init(:ok) do
+    # This registry may be restarting under a supervisor that was started
+    # before it, so `Batcher.Supervisor` can still hold the batchers of the
+    # previous incarnation — unmonitored here, and about to be joined by the
+    # ones started below. See `Batcher.Supervisor.terminate_all/0`.
+    Batcher.Supervisor.terminate_all()
+
     Project.active()
     |> Repo.all()
     |> Enum.map(fn %{id: id} -> id end)
@@ -109,17 +115,20 @@ defmodule BorsNG.Worker.Batcher.Registry do
     {:noreply, new_state}
   end
 
-  def handle_info({:DOWN, ref, :process, pid, :normal}, {names, refs}) do
-    {project_id, refs} = Map.pop(refs, ref)
+  def handle_info({:DOWN, ref, :process, pid, :normal}, state) do
+    {:noreply, forget(ref, pid, state)}
+  end
 
-    names =
-      if names[project_id] == pid do
-        Map.delete(names, project_id)
-      else
-        names
-      end
+  # A supervisor-ordered stop is not a crash. `Batcher.Supervisor.terminate_all/0`
+  # exits batchers this way, and so does application shutdown. Reacting as if
+  # the batcher had crashed would delete the project's queued batches and post a
+  # crash alert for an orderly stop, so just drop the entry.
+  def handle_info({:DOWN, ref, :process, pid, :shutdown}, state) do
+    {:noreply, forget(ref, pid, state)}
+  end
 
-    {:noreply, {names, refs}}
+  def handle_info({:DOWN, ref, :process, pid, {:shutdown, _}}, state) do
+    {:noreply, forget(ref, pid, state)}
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, {names, refs}) do
@@ -148,6 +157,21 @@ defmodule BorsNG.Worker.Batcher.Registry do
 
   def handle_info(_msg, state) do
     {:noreply, state}
+  end
+
+  # Drop a batcher that stopped without crashing. Only forget the name if it
+  # still points at this pid: a replacement may already have registered.
+  defp forget(ref, pid, {names, refs}) do
+    {project_id, refs} = Map.pop(refs, ref)
+
+    names =
+      if names[project_id] == pid do
+        Map.delete(names, project_id)
+      else
+        names
+      end
+
+    {names, refs}
   end
 
   defp clean_up_after_crash(project_id, pid, reason) do

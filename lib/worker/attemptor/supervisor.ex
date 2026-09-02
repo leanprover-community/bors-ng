@@ -20,6 +20,25 @@ defmodule BorsNG.Worker.Attemptor.Supervisor do
     DynamicSupervisor.start_child(@name, spec)
   end
 
+  @doc """
+  Terminate every attemptor this supervisor currently holds, without restarting
+  it.
+
+  Called by `BorsNG.Worker.Attemptor.Registry` as it starts, for the reason
+  spelled out in `BorsNG.Worker.Batcher.Supervisor.terminate_all/0`: the
+  `:rest_for_one` application tree starts this supervisor before the registry,
+  so a registry restart would otherwise leave the previous attemptors running
+  alongside the ones its `init/1` starts.
+  """
+  def terminate_all do
+    @name
+    |> DynamicSupervisor.which_children()
+    |> Enum.each(fn
+      {_, pid, _, _} when is_pid(pid) -> DynamicSupervisor.terminate_child(@name, pid)
+      _ -> :ok
+    end)
+  end
+
   def init(:ok) do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
