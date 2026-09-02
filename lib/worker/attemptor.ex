@@ -327,23 +327,41 @@ defmodule BorsNG.Worker.Attemptor do
     GitHub.delete_branch!(repo_conn, stmp)
   end
 
+  # Write the attempt's CI status rows and arm its timeout.
+  #
+  # A previous attempt on this row may have left rows behind: this runs before
+  # the caller commits the attempt to `:running`, so an attemptor that dies in
+  # between (a dyno restart, say) leaves the rows without the state. Unlike
+  # `statuses`, `attempt_statuses` has no unique index on
+  # `(identifier, attempt_id)`, so re-inserting them does not raise — it
+  # silently duplicates every row, which then double-counts in
+  # `summary_database_statuses/1` and shows up twice in the try report. Clear
+  # the attempt's rows before rewriting them, in one transaction, mirroring
+  # `Batcher.setup_statuses/2`.
   defp setup_statuses(attempt, toml) do
-    toml.status
-    |> Enum.map(
-      &%AttemptStatus{
-        attempt_id: attempt.id,
-        identifier: &1,
-        url: nil,
-        state: :running
-      }
-    )
-    |> Enum.each(&Repo.insert!/1)
-
     now = DateTime.to_unix(DateTime.utc_now(), :second)
 
-    attempt
-    |> Attempt.changeset(%{timeout_at: now + toml.timeout_sec})
-    |> Repo.update!()
+    {:ok, _} =
+      Repo.transaction(fn ->
+        attempt.id
+        |> AttemptStatus.all_for_attempt()
+        |> Repo.delete_all()
+
+        toml.status
+        |> Enum.map(
+          &%AttemptStatus{
+            attempt_id: attempt.id,
+            identifier: &1,
+            url: nil,
+            state: :running
+          }
+        )
+        |> Enum.each(&Repo.insert!/1)
+
+        attempt
+        |> Attempt.changeset(%{timeout_at: now + toml.timeout_sec})
+        |> Repo.update!()
+      end)
 
     :running
   end
