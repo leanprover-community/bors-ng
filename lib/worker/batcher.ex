@@ -1374,23 +1374,46 @@ defmodule BorsNG.Worker.Batcher do
     |> Enum.uniq()
   end
 
+  # Write the batch's CI status rows and arm its timeout.
+  #
+  # A previous attempt may have left rows behind. This runs before the caller
+  # commits the batch to `:running`, and several GitHub calls sit in between
+  # (see start_waiting_batch/1: the staging.tmp delete, then a commit status
+  # per patch). If the batcher dies in that window — a dyno restart, or
+  # `delete_branch!` giving up — the batch stays `:waiting` with its statuses
+  # already written. Re-inserting them would then violate
+  # `statuses_identifier_batch_id_index` on *every* later poll, wedging the
+  # batch until something deleted it. So clear the batch's rows first and
+  # rewrite them, in one transaction: either the batch comes out armed, or
+  # nothing changed. Rows from an abandoned attempt describe a staging commit
+  # that no longer exists, so dropping them is the correct reading — the same
+  # thing put_incomplete_on_hold/2 does when it re-queues a running batch.
   defp setup_statuses(batch, toml) do
-    toml.status
-    |> Enum.map(
-      &%Status{
-        batch_id: batch.id,
-        identifier: &1,
-        url: nil,
-        state: :running
-      }
-    )
-    |> Enum.each(&Repo.insert!/1)
-
     now = DateTime.to_unix(DateTime.utc_now(), :second)
 
-    batch
-    |> Batch.changeset(%{timeout_at: now + toml.timeout_sec})
-    |> Repo.update!()
+    {:ok, _} =
+      Repo.transaction(fn ->
+        batch.id
+        |> Status.all_for_batch()
+        |> Repo.delete_all()
+
+        toml.status
+        |> Enum.map(
+          &%Status{
+            batch_id: batch.id,
+            identifier: &1,
+            url: nil,
+            state: :running
+          }
+        )
+        |> Enum.each(&Repo.insert!/1)
+
+        batch
+        |> Batch.changeset(%{timeout_at: now + toml.timeout_sec})
+        |> Repo.update!()
+      end)
+
+    :ok
   end
 
   defp poll_running_batch(batch) do
