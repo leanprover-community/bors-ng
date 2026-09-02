@@ -147,6 +147,69 @@ defmodule BorsNG.Worker.AttemptorTest do
            )
   end
 
+  test "an interrupted attempt reclaims its statuses instead of duplicating them",
+       %{proj: proj} do
+    # setup_statuses/2 writes the attempt's rows before the caller commits the
+    # attempt to :running, so an attemptor that dies in between leaves a
+    # :waiting attempt whose rows are already written. attempt_statuses has no
+    # unique index on (identifier, attempt_id), so re-inserting them would not
+    # raise -- it would silently double every row, double-counting in
+    # summary_database_statuses/1 and listing each status twice in the report.
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "trying" => "", "trying.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => []},
+        pr_commits: %{1 => [], 2 => []},
+        statuses: %{"iniN" => []},
+        files: %{"trying.tmp" => %{"bors.toml" => ~s/status = [ "ci", "cd" ]/}}
+      }
+    })
+
+    running_patch = new_patch(proj, 1, "N")
+    Attemptor.handle_cast({:tried, running_patch.id, ""}, proj.id)
+    assert Repo.get_by!(Attempt, patch_id: running_patch.id).state == :running
+
+    # The attempt behind it in the queue, left mid-start by the interruption.
+    queued_patch = new_patch(proj, 2, "O")
+
+    queued =
+      queued_patch
+      |> Attempt.new("")
+      |> Repo.insert!()
+
+    Repo.insert!(%AttemptStatus{
+      attempt_id: queued.id,
+      identifier: "ci",
+      url: nil,
+      state: :error
+    })
+
+    assert Repo.get!(Attempt, queued.id).state == :waiting
+
+    # Completing the running attempt starts the queued one.
+    GitHub.ServerMock.put_state(
+      GitHub.ServerMock.get_state()
+      |> put_in([{{:installation, 91}, 14}, :statuses], %{"iniN" => [{"ci", :ok}, {"cd", :ok}]})
+    )
+
+    Attempt
+    |> Repo.get_by!(patch_id: running_patch.id)
+    |> Attempt.changeset(%{last_polled: 0})
+    |> Repo.update!()
+
+    Attemptor.handle_info(:poll, proj.id)
+
+    assert Repo.get!(Attempt, queued.id).state == :running
+
+    statuses = Repo.all(AttemptStatus.all_for_attempt(queued.id))
+
+    # Each configured status once, and the stale :error -- which described a
+    # trying commit that no longer exists -- is gone.
+    assert statuses |> Enum.map(& &1.identifier) |> Enum.sort() == ["cd", "ci"]
+    assert Enum.all?(statuses, &(&1.state == :running))
+  end
+
   test "respects use_squash_merge for try commits", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

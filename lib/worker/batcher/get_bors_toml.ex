@@ -82,6 +82,20 @@ defmodule BorsNG.Worker.Batcher.GetBorsToml do
           not is_nil(GitHub.get_file!(repo_conn, branch, file))
         end)
         |> Enum.map(fn {_, status} -> status end)
+        # Several filenames above infer the *same* status: either AppVeyor
+        # config name, and any of the four Codeship ones. A repo carrying two
+        # of a group (a rename whose old file was never deleted) would infer
+        # that status twice, and `Batcher.setup_statuses/2` would then violate
+        # `statuses_identifier_batch_id_index` on the second insert. Unlike the
+        # `bors.toml` path this struct skips `BorsToml.new/1`, which rejects a
+        # duplicated `status` list, so dedupe here.
+        #
+        # Note this cannot dedupe `circle.yml`'s "ci/circleci" against
+        # `.circleci/config.yml`'s "ci/circleci%" — distinct strings, but the
+        # stored identifier is a SQL LIKE pattern (see `Status.get_for_batch/2`),
+        # so an incoming "ci/circleci" matches both rows. A repo with both
+        # CircleCI generations wants a real `bors.toml`.
+        |> Enum.uniq()
         |> case do
           [] -> {:error, :fetch_failed}
           statuses -> {:ok, %BorsToml{status: statuses}}
