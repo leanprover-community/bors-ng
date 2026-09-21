@@ -742,9 +742,9 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   # bors parses its own comments, so a refusal that parsed as a command would
   # make a draft PR answer itself forever.
   test "the dropped-batch notice cannot be parsed as a bors command" do
-    msg = Message.generate_message({:draft_in_batch, [1, 2]})
+    msg = Message.generate_message(:draft_dropped_from_batch)
 
-    assert msg =~ "draft pull request: #1, #2"
+    assert msg =~ "left the queue without merging because it is a draft"
     assert [] == BorsNG.Command.parse(msg)
   end
 

@@ -2389,6 +2389,21 @@ defmodule BorsNG.Worker.BatcherTest do
     refute "bors-staging" in labels_for(1)
   end
 
+  defp draft_test_pr(number, sha) do
+    %Pr{
+      number: number,
+      title: "Test",
+      body: "Mess",
+      state: :open,
+      base_ref: "master",
+      head_sha: sha,
+      head_ref: "update#{number}",
+      base_repo_id: 14,
+      head_repo_id: 14,
+      merged: false
+    }
+  end
+
   # A draft is not supposed to reach a batch, but the command gate and the
   # convert-to-draft cleanup both hang on a webhook bors may never receive.
   # Nothing between the batch starting and the push re-checks, so this is the
@@ -2442,13 +2457,74 @@ defmodule BorsNG.Worker.BatcherTest do
 
     state = GitHub.ServerMock.get_state() |> Map.get(key)
 
-    assert Repo.get_by!(Batch, project_id: proj.id).state == :error
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :canceled
     assert state.branches["master"] == "ini"
 
     assert Enum.any?(
              state.comments[1],
-             &String.contains?(&1, "contains a draft pull request: #1")
+             &String.contains?(&1, "left the queue without merging because it is a draft")
            )
+  end
+
+  test "a draft is ejected from its batch and the rest is re-queued", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => draft_test_pr(1, "N"),
+          2 => draft_test_pr(2, "O")
+        },
+        pr_commits: %{1 => [], 2 => []}
+      }
+    })
+
+    p1 =
+      Repo.insert!(%Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"})
+
+    p2 =
+      Repo.insert!(%Patch{project_id: proj.id, pr_xref: 2, commit: "O", into_branch: "master"})
+
+    Batcher.handle_cast({:reviewed, p1.id, "rvr"}, proj.id)
+    Batcher.handle_cast({:reviewed, p2.id, "rvr"}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    assert batch.state == :running
+
+    # #1 goes draft mid-build; bors never sees the event.
+    key = {{:installation, 91}, 14}
+    repo = GitHub.ServerMock.get_state() |> Map.get(key)
+    repo = put_in(repo, [:pulls, 1, Access.key!(:draft)], true)
+    GitHub.ServerMock.put_state(%{key => repo})
+
+    Batcher.do_handle_cast({:status, {batch.commit, "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert state.branches["master"] == "ini"
+    assert Repo.get!(Batch, batch.id).state == :canceled
+
+    # The draft is dropped; #2 is not punished for it and rides a fresh batch.
+    requeued = Repo.one!(from(b in Batch, where: b.id != ^batch.id))
+    assert requeued.state == :waiting
+
+    assert [p2.id] ==
+             requeued.id |> Patch.all_for_batch() |> Repo.all() |> Enum.map(& &1.id)
+
+    assert Enum.any?(
+             state.comments[1],
+             &String.contains?(&1, "left the queue without merging because it is a draft")
+           )
+
+    assert Enum.any?(state.comments[2], &String.contains?(&1, "automatically retried"))
+    refute Enum.any?(state.comments[2], &String.contains?(&1, "is a draft"))
   end
 
   test "a batch merges normally when no PR is a draft", %{proj: proj} do
@@ -2495,6 +2571,81 @@ defmodule BorsNG.Worker.BatcherTest do
 
     assert Repo.get_by!(Batch, project_id: proj.id).state == :ok
     assert state.branches["master"] == "iniN"
+  end
+
+  test "a draft in a bundle takes its sibling with it, sparing the rest", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => [], 3 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => draft_test_pr(1, "N"),
+          2 => draft_test_pr(2, "O"),
+          3 => draft_test_pr(3, "P")
+        },
+        pr_commits: %{1 => [], 2 => [], 3 => []}
+      }
+    })
+
+    bundle = Repo.insert!(BorsNG.Database.PatchBundle.new(proj.id))
+
+    p1 =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        bundle_id: bundle.id
+      })
+
+    p2 =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 2,
+        commit: "O",
+        into_branch: "master",
+        bundle_id: bundle.id
+      })
+
+    p3 =
+      Repo.insert!(%Patch{project_id: proj.id, pr_xref: 3, commit: "P", into_branch: "master"})
+
+    Enum.each([p1, p2, p3], &Batcher.handle_cast({:reviewed, &1.id, "rvr"}, proj.id))
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    assert batch.state == :running
+
+    key = {{:installation, 91}, 14}
+    repo = GitHub.ServerMock.get_state() |> Map.get(key)
+    GitHub.ServerMock.put_state(%{key => put_in(repo, [:pulls, 1, Access.key!(:draft)], true)})
+
+    Batcher.do_handle_cast({:status, {batch.commit, "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert state.branches["master"] == "ini"
+    assert Repo.get!(Batch, batch.id).state == :canceled
+
+    # The bundle is indivisible, so #2 goes with the draft. Only #3 re-queues.
+    requeued = Repo.one!(from(b in Batch, where: b.id != ^batch.id))
+
+    assert [p3.id] ==
+             requeued.id |> Patch.all_for_batch() |> Repo.all() |> Enum.map(& &1.id)
+
+    assert hd(state.comments[1]) =~ "left the queue without merging because it is a draft"
+    assert hd(state.comments[2]) =~ "linked with #1, which was converted to draft"
+    assert hd(state.comments[3]) =~ "automatically retried"
+
+    # A dropped bundle needs a fresh r+ on every member.
+    assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+    assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
   end
 
   test "full runthrough (with zero patches)", %{proj: proj} do

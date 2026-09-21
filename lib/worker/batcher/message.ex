@@ -242,10 +242,8 @@ defmodule BorsNG.Worker.Batcher.Message do
       "\n\nThe linked bundle (#{prs}) failed to build, and bors can't tell which pull request is at fault. The whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
   end
 
-  def generate_message({:draft_in_batch, xrefs}) do
-    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
-
-    "This batch was dropped without merging because it contains a draft pull request: #{prs}.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
+  def generate_message(:draft_dropped_from_batch) do
+    "This pull request left the queue without merging because it is a draft. The rest of its batch was re-queued without it.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
   end
 
   # No line may begin with the command trigger: bors parses its own comments,

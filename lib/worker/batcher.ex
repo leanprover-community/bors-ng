@@ -1556,21 +1556,52 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
+  # Drop the drafts and re-queue the rest, the way canceling one patch out of a
+  # running batch does. Only the draft is at fault, and bors knows exactly
+  # which one, so nothing else in the batch should have to be re-approved.
   defp abort_draft_merge(batch, drafts) do
-    repo_conn = get_repo_conn(batch.project)
-    patches = batch.id |> Patch.all_for_batch() |> Repo.all()
-    xrefs = drafts |> Enum.map(& &1.pr_xref) |> Enum.sort()
+    project = batch.project
+    repo_conn = get_repo_conn(project)
 
-    send_message(repo_conn, patches, {:draft_in_batch, xrefs})
+    patch_links = batch.id |> LinkPatchBatch.from_batch() |> Repo.all()
+    patches = Enum.map(patch_links, & &1.patch)
+    draft_ids = MapSet.new(drafts, & &1.id)
+
+    # A draft takes its bundle with it: linked patches merge together or not
+    # at all.
+    dropped_ids =
+      drafts
+      |> Enum.flat_map(&Bundles.member_ids(patch_links, &1.id))
+      |> MapSet.new()
+
+    {dropped, kept} = Enum.split_with(patches, &MapSet.member?(dropped_ids, &1.id))
+    kept_links = Enum.reject(patch_links, &MapSet.member?(dropped_ids, &1.patch_id))
 
     # Nothing was pushed, so the next batch can build on the commit we saw.
     Process.put(:last_commit, nil)
 
-    # Not retried: re-queueing a draft would only fail here again.
-    Bundles.drop_held_approvals(patches)
-    Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
+    if kept_links != [] do
+      Divider.clone_batch(kept_links, project.id, batch.into_branch)
+      poll_after_delay(project)
+      send_message(repo_conn, kept, {:canceled, :retrying})
+    end
 
-    :error
+    # The drafts are dropped for good: re-queueing one would only stop here
+    # again. They need a fresh r+ after being marked ready for review.
+    Bundles.drop_held_approvals(dropped)
+    Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, dropped)
+    send_message(repo_conn, drafts, :draft_dropped_from_batch)
+
+    siblings = Enum.reject(dropped, &MapSet.member?(draft_ids, &1.id))
+
+    Enum.each(drafts, fn draft ->
+      if draft.bundle_id != nil do
+        pulled = Enum.filter(siblings, &(&1.bundle_id == draft.bundle_id))
+        send_message(repo_conn, pulled, {:bundle_pulled, draft.pr_xref, :draft})
+      end
+    end)
+
+    :canceled
   end
 
   defp push_completed_batch(batch, statuses) do
