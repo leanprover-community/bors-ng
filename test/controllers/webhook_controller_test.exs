@@ -651,7 +651,7 @@ defmodule BorsNG.WebhookControllerTest do
     assert Repo.get!(Patch, patch.id).commit == "B"
   end
 
-  test "converting a PR to draft cancels active work, removes delegations and the delegated label, and posts notice",
+  test "converting a PR to draft removes it from the queue, wipes delegations and the delegated label, and posts a notice",
        %{
          conn: conn,
          project: proj,
@@ -733,8 +733,10 @@ defmodule BorsNG.WebhookControllerTest do
     _ = :sys.get_state(attemptor)
 
     assert Repo.all(BorsNG.Database.Batch.all_for_patch(patch.id, :incomplete)) == []
-    assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
     assert Repo.all(from(d in UserPatchDelegation, where: d.patch_id == ^patch.id)) == []
+
+    # `bors try-`, a push, or closing the PR still cancel it.
+    assert [_] = Repo.all(Attempt.all_for_patch(patch.id, :incomplete))
 
     comments =
       GitHub.ServerMock.get_state()
@@ -743,7 +745,8 @@ defmodule BorsNG.WebhookControllerTest do
       |> Map.get(1)
 
     assert Enum.any?(comments, &String.contains?(&1, "now in draft mode"))
-    assert Enum.any?(comments, &String.contains?(&1, "will ignore commands"))
+    refute Enum.any?(comments, &String.contains?(&1, "canceled active try jobs"))
+    refute Enum.any?(comments, &String.contains?(&1, "ignore commands"))
 
     # The delegations are gone, so the `delegated` label is reconciled off too.
     labels =
@@ -825,7 +828,7 @@ defmodule BorsNG.WebhookControllerTest do
            )
   end
 
-  test "ignore pull_request_review_comment commands on draft PR", %{conn: conn} do
+  test "a command that cannot lead to a merge still runs on a draft PR", %{conn: conn} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 31}, 13} => %{
         branches: %{},
@@ -867,7 +870,306 @@ defmodule BorsNG.WebhookControllerTest do
       |> Map.get(:comments)
       |> Map.get(1)
 
-    assert comments == []
+    assert comments == ["pong"]
+  end
+
+  defp draft_pr_json do
+    %{
+      "number" => 1,
+      "title" => "T",
+      "body" => "B",
+      "state" => "open",
+      "draft" => true,
+      "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+      "head" => %{"sha" => "C", "ref" => "feature", "repo" => %{"id" => 13}},
+      "merged_at" => nil,
+      "mergeable" => true,
+      "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+    }
+  end
+
+  defp draft_comment_state do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{}
+      }
+    })
+  end
+
+  defp pr_comments(pr_xref) do
+    GitHub.ServerMock.get_state()
+    |> get_in([{{:installation, 31}, 13}, :comments, pr_xref])
+  end
+
+  test "an r+ in an issue comment on a draft PR is refused with a warning", %{
+    conn: conn,
+    project: proj
+  } do
+    draft_comment_state()
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "C",
+      into_branch: "master",
+      open: true,
+      is_draft: true
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "issue" => %{"number" => 1, "draft" => true, "pull_request" => %{}},
+      "comment" => %{
+        "body" => "bors r+",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "issue_comment")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [comment] = pr_comments(1)
+    assert comment =~ "is a draft"
+    assert comment =~ "`bors r+`"
+  end
+
+  test "an issue comment on a draft PR with no command says nothing", %{
+    conn: conn,
+    project: proj
+  } do
+    draft_comment_state()
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "C",
+      into_branch: "master",
+      open: true,
+      is_draft: true
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "issue" => %{"number" => 1, "draft" => true, "pull_request" => %{}},
+      "comment" => %{
+        "body" => "still working on this, will ask bors to merge later",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "issue_comment")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [] == pr_comments(1)
+  end
+
+  test "an r+ in a review on a draft PR is refused with a warning", %{conn: conn} do
+    draft_comment_state()
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "submitted",
+      "review" => %{
+        "body" => "bors r+",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      },
+      "pull_request" => draft_pr_json()
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request_review")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [comment] = pr_comments(1)
+    assert comment =~ "is a draft"
+  end
+
+  test "an r+ in a review comment on a draft PR is refused with a warning", %{conn: conn} do
+    draft_comment_state()
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "comment" => %{
+        "body" => "bors r+",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      },
+      "pull_request" => draft_pr_json()
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request_review_comment")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [comment] = pr_comments(1)
+    assert comment =~ "is a draft"
+  end
+
+  test "an r+ in the body of a PR opened as a draft is refused with a warning", %{conn: conn} do
+    draft_comment_state()
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "opened",
+      "pull_request" => Map.put(draft_pr_json(), "body", "bors r+")
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [comment] = pr_comments(1)
+    assert comment =~ "is a draft"
+  end
+
+  test "opening a draft PR whose body has no command says nothing", %{conn: conn} do
+    draft_comment_state()
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "opened",
+      "pull_request" => draft_pr_json()
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [] == pr_comments(1)
+  end
+
+  test "converting a draft PR with no bors state attached posts no comment", %{
+    conn: conn,
+    project: proj
+  } do
+    draft_comment_state()
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "C",
+      into_branch: "master",
+      open: true
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "converted_to_draft",
+      "pull_request" => draft_pr_json()
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+
+    assert [] == pr_comments(1)
+  end
+
+  test "bors try runs on a draft PR", %{conn: conn, project: proj, user: user} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{"master" => "C", "trying" => "", "trying.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        pr_commits: %{1 => []},
+        statuses: %{},
+        files: %{"trying.tmp" => %{"bors.toml" => ~s/status = ["ci"]\n/}}
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true,
+        is_draft: true
+      })
+
+    # `try` needs :member, which a draft does not change.
+    Repo.insert!(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "comment" => %{
+        "body" => "bors try",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      },
+      "pull_request" => draft_pr_json()
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request_review_comment")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(attemptor)
+
+    assert [_] = Repo.all(Attempt.all_for_patch(patch.id, :incomplete))
+    refute Enum.any?(pr_comments(1), &String.contains?(&1, "is a draft"))
+  end
+
+  test "pushing to a draft PR still cancels its try job", %{conn: conn, project: proj} do
+    draft_comment_state()
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "C",
+        into_branch: "master",
+        open: true,
+        is_draft: true
+      })
+
+    now = DateTime.to_unix(DateTime.utc_now(), :second)
+
+    Attempt.new(patch, "")
+    |> Attempt.changeset(%{
+      state: :running,
+      commit: "TRY",
+      timeout_at: now + 3600,
+      last_polled: now
+    })
+    |> Repo.insert!()
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "synchronize",
+      "pull_request" =>
+        Map.put(draft_pr_json(), "head", %{
+          "sha" => "D",
+          "ref" => "feature",
+          "repo" => %{"id" => 13}
+        })
+    }
+
+    conn
+    |> put_req_header("x-github-event", "pull_request")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+    _ = :sys.get_state(attemptor)
+
+    # A try survives going draft, so the push has to be what cancels it, or a
+    # build of stale code keeps running against an old commit.
+    assert Repo.all(Attempt.all_for_patch(patch.id, :incomplete)) == []
+    assert Repo.get!(Patch, patch.id).commit == "D"
   end
 
   test "converting a running PR to draft posts only the draft notice, not a separate canceled comment",

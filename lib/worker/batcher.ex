@@ -1486,6 +1486,94 @@ defmodule BorsNG.Worker.Batcher do
 
   @spec complete_batch(Status.state(), Batch.t(), [Status.t()]) :: Status.state()
   defp complete_batch(:ok, batch, statuses) do
+    case draft_patches(batch) do
+      [] -> push_completed_batch(batch, statuses)
+      drafts -> abort_draft_merge(batch, drafts)
+    end
+  end
+
+  defp complete_batch(:error, batch, statuses) do
+    project = batch.project
+    repo_conn = get_repo_conn(project)
+    erred = Enum.filter(statuses, &(&1.state == :error))
+
+    patch_links =
+      batch.id
+      |> LinkPatchBatch.from_batch()
+      |> Repo.all()
+
+    patches = Enum.map(patch_links, & &1.patch)
+    state = Divider.split_batch(patch_links, batch)
+
+    # The batch failed, so it's OK to push the next batch on top of the same commit we saw
+    # see do_get_base/4
+    Process.put(:last_commit, nil)
+
+    if state == :retrying do
+      poll_after_delay(project)
+      send_message(repo_conn, patches, {state, erred})
+    else
+      # Terminal failure: the PR is dropped and needs a maintainer to
+      # re-queue it. Flag it. The queue labels are taken off once the batch
+      # state is committed to :error.
+      Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
+
+      # A bundle cannot be bisected to find a culprit. Drop the bundled
+      # patches' held approvals (like a solo PR loses its r+) and tell each
+      # bundle's members together, not per-PR text. Every member then needs
+      # a fresh r+. Re-running requires re-reviewing the fixed pull request.
+      # The bundle is not dissolved and bases stay retargeted, so the
+      # retargeting record stays intact for a later unlink to restore.
+      {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
+      send_message(repo_conn, solo, {state, erred})
+      fail_bundles(repo_conn, bundled, &{:bundle_failed, &1, erred})
+    end
+
+    :error
+  end
+
+  # The last gate before the push. A draft is not supposed to reach a batch —
+  # `Command.run/1` refuses `r+` on one, and converting to draft cancels the
+  # batch — but both hang on a webhook, and nothing between here and the merge
+  # re-checks. `Divider`'s mergeability check is only reached once a batch has
+  # already failed.
+  defp draft_patches(batch) do
+    repo_conn = get_repo_conn(batch.project)
+
+    batch.id
+    |> Patch.all_for_batch()
+    |> Repo.all()
+    |> Enum.filter(&draft_at_merge?(repo_conn, &1))
+  end
+
+  # The synced column catches a draft event whose cleanup did not run; the live
+  # read catches a delivery bors never received at all. A failed read falls
+  # back to the column rather than holding up the merge over an API blip.
+  defp draft_at_merge?(repo_conn, patch) do
+    case GitHub.get_pr(repo_conn, patch.pr_xref) do
+      {:ok, pr} -> pr.draft
+      {:error, _} -> patch.is_draft
+    end
+  end
+
+  defp abort_draft_merge(batch, drafts) do
+    repo_conn = get_repo_conn(batch.project)
+    patches = batch.id |> Patch.all_for_batch() |> Repo.all()
+    xrefs = drafts |> Enum.map(& &1.pr_xref) |> Enum.sort()
+
+    send_message(repo_conn, patches, {:draft_in_batch, xrefs})
+
+    # Nothing was pushed, so the next batch can build on the commit we saw.
+    Process.put(:last_commit, nil)
+
+    # Not retried: re-queueing a draft would only fail here again.
+    Bundles.drop_held_approvals(patches)
+    Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
+
+    :error
+  end
+
+  defp push_completed_batch(batch, statuses) do
     project = batch.project
     repo_conn = get_repo_conn(project)
 
@@ -1588,46 +1676,6 @@ defmodule BorsNG.Worker.Batcher do
 
         :error
     end
-  end
-
-  defp complete_batch(:error, batch, statuses) do
-    project = batch.project
-    repo_conn = get_repo_conn(project)
-    erred = Enum.filter(statuses, &(&1.state == :error))
-
-    patch_links =
-      batch.id
-      |> LinkPatchBatch.from_batch()
-      |> Repo.all()
-
-    patches = Enum.map(patch_links, & &1.patch)
-    state = Divider.split_batch(patch_links, batch)
-
-    # The batch failed, so it's OK to push the next batch on top of the same commit we saw
-    # see do_get_base/4
-    Process.put(:last_commit, nil)
-
-    if state == :retrying do
-      poll_after_delay(project)
-      send_message(repo_conn, patches, {state, erred})
-    else
-      # Terminal failure: the PR is dropped and needs a maintainer to
-      # re-queue it. Flag it. The queue labels are taken off once the batch
-      # state is committed to :error.
-      Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, patches)
-
-      # A bundle cannot be bisected to find a culprit. Drop the bundled
-      # patches' held approvals (like a solo PR loses its r+) and tell each
-      # bundle's members together, not per-PR text. Every member then needs
-      # a fresh r+. Re-running requires re-reviewing the fixed pull request.
-      # The bundle is not dissolved and bases stay retargeted, so the
-      # retargeting record stays intact for a later unlink to restore.
-      {bundled, solo} = Enum.split_with(patches, &(&1.bundle_id != nil))
-      send_message(repo_conn, solo, {state, erred})
-      fail_bundles(repo_conn, bundled, &{:bundle_failed, &1, erred})
-    end
-
-    :error
   end
 
   # Terminal-failure handling for the bundled patches of a batch: drop every

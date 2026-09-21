@@ -2389,6 +2389,114 @@ defmodule BorsNG.Worker.BatcherTest do
     refute "bors-staging" in labels_for(1)
   end
 
+  # A draft is not supposed to reach a batch, but the command gate and the
+  # convert-to-draft cleanup both hang on a webhook bors may never receive.
+  # Nothing between the batch starting and the push re-checks, so this is the
+  # last line of defence against merging a draft.
+  test "a batch whose PR went draft after queueing does not merge", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]}
+      }
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :running
+
+    # The PR goes draft while the batch builds, and bors never sees the event.
+    # CI then comes back green.
+    key = {{:installation, 91}, 14}
+    repo = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    repo = put_in(repo, [:pulls, 1, Access.key!(:draft)], true)
+    GitHub.ServerMock.put_state(%{key => repo})
+
+    Batcher.do_handle_cast({:status, {"iniN", "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :error
+    assert state.branches["master"] == "ini"
+
+    assert Enum.any?(
+             state.comments[1],
+             &String.contains?(&1, "contains a draft pull request: #1")
+           )
+  end
+
+  test "a batch merges normally when no PR is a draft", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :open,
+            base_ref: "master",
+            head_sha: "N",
+            head_ref: "update",
+            base_repo_id: 14,
+            head_repo_id: 14,
+            merged: false
+          }
+        },
+        pr_commits: %{1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]}
+      }
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    key = {{:installation, 91}, 14}
+
+    Batcher.do_handle_cast({:status, {"iniN", "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :ok
+    assert state.branches["master"] == "iniN"
+  end
+
   test "full runthrough (with zero patches)", %{proj: proj} do
     # Create a zero-patch batch in a "waiting" state
     # This isn't normally possible through the user interface,

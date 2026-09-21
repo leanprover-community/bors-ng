@@ -90,7 +90,7 @@ delegation is gone. Reconcile points:
 | Manual revoke (`d-`, `d-=user`) | `run(:undelegate)` / `run({:undelegate_to, _})` in `lib/web/command.ex` |
 | **Timed expiry** | `expire_delegations` in `lib/database/context/delegation.ex` |
 | Sensitive-path revoke | the revoke path in `lib/worker/delegation_invalidator.ex` |
-| Convert-to-draft (wipes delegations) | the `is_draft` clause of `do_webhook_pr`, after `undelegate_patch` |
+| Convert-to-draft (wipes delegations) | the `converted_to_draft` clause of `do_webhook_pr`, after `undelegate_patch` |
 | Close without merging (wipes delegations) | the `closed` clause of `do_webhook_pr`, when `pr.merged` is false |
 
 Closing a PR without merging now also **wipes its delegations** (mirroring the

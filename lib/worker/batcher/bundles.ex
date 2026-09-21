@@ -62,12 +62,12 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   re-approval goes back through the gate. See DELEGATION_INVALIDATION.md,
   "standing approvals".
 
-  Invariant: a draft cannot hold an approval. It is enforced only at the
-  webhook boundary — every command entry point in `BorsNG.WebhookController`
-  (issue_comment, review_comment, review, and the PR-opened body handler)
-  drops commands on drafts before `Command.run/1`, and converting an approved
-  patch to draft revokes what it held. There is no draft guard here or in
-  `patch_preflight`, so a new command entry point must gate drafts itself.
+  Invariant: a draft cannot hold an approval. It is enforced in `Command.run/1`,
+  which refuses `r+` (and everything else that could lead to a merge) on a
+  draft whatever entry point the command arrived through, and by the
+  convert-to-draft webhook, which revokes what an approved patch held. There is
+  no draft guard here or in `patch_preflight`; the backstop for both is
+  `complete_batch/3`, which refuses to push a batch containing a draft.
   """
   def hold_approval(patch, reviewer) do
     patch

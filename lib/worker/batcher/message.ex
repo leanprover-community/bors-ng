@@ -242,6 +242,31 @@ defmodule BorsNG.Worker.Batcher.Message do
       "\n\nThe linked bundle (#{prs}) failed to build, and bors can't tell which pull request is at fault. The whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
   end
 
+  def generate_message({:draft_in_batch, xrefs}) do
+    prs = Enum.map_join(xrefs, ", ", &"##{&1}")
+
+    "This batch was dropped without merging because it contains a draft pull request: #{prs}.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
+  end
+
+  # No line may begin with the command trigger: bors parses its own comments,
+  # so a draft would answer itself forever. `message_test.exs` holds that line.
+  def generate_message({:draft_refused, blocked, also_dropped}) do
+    rest =
+      case also_dropped do
+        [] ->
+          ""
+
+        cmds ->
+          " #{draft_refused_names(cmds)} did not run either: one blocked command stops the whole comment."
+      end
+
+    """
+    :construction: This pull request is a draft, so bors took no action on #{draft_refused_names(blocked)}.#{rest}
+
+    Mark it ready for review, then run the command again. Commands that cannot lead to a merge do still work on a draft: `try`, `try-`, `r-`, `unlink`, `delegate-` and `ping`.
+    """
+  end
+
   def generate_message({:malformed_args, :priority}) do
     ":-1: `p=` takes an integer, e.g. `bors p=10`."
   end
@@ -488,6 +513,35 @@ defmodule BorsNG.Worker.Batcher.Message do
 
     "#{pr.title} (##{pr.number})\n\n#{String.trim(message_body)}\n\n#{co_authors}\n"
   end
+
+  defp draft_refused_names(cmds) do
+    cmds
+    |> Enum.map(&draft_refused_name/1)
+    |> Enum.uniq()
+    |> Enum.map_join(", ", &"`bors #{&1}`")
+  end
+
+  defp draft_refused_name(:activate), do: "r+"
+  defp draft_refused_name({:activate_by, username}), do: "r=#{username}"
+  defp draft_refused_name({:set_priority, priority}), do: "p=#{priority}"
+  defp draft_refused_name({:set_is_single, true}), do: "single on"
+  defp draft_refused_name({:set_is_single, false}), do: "single off"
+  defp draft_refused_name(:delegate), do: "delegate+"
+  defp draft_refused_name({:delegate, _duration}), do: "delegate+"
+  defp draft_refused_name({:delegate_to, login}), do: "delegate=#{login}"
+  defp draft_refused_name({:delegate_to, login, _duration}), do: "delegate=#{login}"
+  defp draft_refused_name({:link, _}), do: "link"
+  defp draft_refused_name({:stack, _}), do: "stack"
+  defp draft_refused_name({:link_malformed, cmd, _}), do: to_string(cmd)
+  defp draft_refused_name({:malformed_args, :priority}), do: "p="
+  defp draft_refused_name({:malformed_args, :single}), do: "single"
+  defp draft_refused_name(:retry), do: "retry"
+  defp draft_refused_name(cmd) when is_atom(cmd), do: to_string(cmd)
+
+  # `draft_blocked?/1` blocks every command it does not recognize, so a newly
+  # added one arrives here with no clause of its own. Name it after its tag
+  # rather than raising inside the webhook.
+  defp draft_refused_name(cmd) when is_tuple(cmd), do: cmd |> elem(0) |> to_string()
 
   defp filter_lines(text, regex) do
     {matching, remaining} =

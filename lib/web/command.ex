@@ -60,7 +60,8 @@ defmodule BorsNG.Command do
     pr: nil,
     pr_xref: nil,
     patch: nil,
-    comment: ""
+    comment: "",
+    is_draft: nil
   )
 
   @type t :: %BorsNG.Command{
@@ -69,7 +70,8 @@ defmodule BorsNG.Command do
           pr: map | nil,
           pr_xref: integer,
           patch: Patch.t() | nil,
-          comment: binary
+          comment: binary,
+          is_draft: boolean | nil
         }
 
   defp command_trigger(),
@@ -603,51 +605,110 @@ defmodule BorsNG.Command do
   def run(c) do
     cmd_list = parse(c.comment)
 
-    if cmd_list == [] do
-      :ok
+    cond do
+      cmd_list == [] ->
+        :ok
+
+      # Ahead of the permission block: a refused command must not reach
+      # `verify_for_merge/2`, which revokes and comments as a side effect.
+      # The list check comes first because `draft?/1` may hit the database.
+      Enum.any?(cmd_list, &draft_blocked?/1) and draft?(c) ->
+        draft_refused(c, cmd_list)
+
+      true ->
+        run_permitted(c, cmd_list)
+    end
+  end
+
+  defp run_permitted(c, cmd_list) do
+    required_permission = required_permission_level(cmd_list)
+
+    if required_permission == :none do
+      c = fetch_patch_local(c)
+      Enum.each(cmd_list, &run(c, &1))
+      maybe_log_commands(c, cmd_list)
     else
-      required_permission = required_permission_level(cmd_list)
+      c = fetch_patch(c)
 
-      if required_permission == :none do
-        c = fetch_patch_local(c)
-        Enum.each(cmd_list, &run(c, &1))
-        maybe_log_commands(c, cmd_list)
+      if is_nil(c.patch) do
+        Logger.warning(
+          "Command.run: patch lookup failed for project=#{c.project.id} pr=#{c.pr_xref}"
+        )
+
+        :ok
       else
-        c = fetch_patch(c)
+        cond do
+          # Merge-time gate: a reviewer-level command relying on a delegation
+          # is re-checked against the current head and fails closed. If the
+          # gate denies, it has already revoked + commented (or explained an
+          # unverifiable check), so don't also post the generic denial.
+          #
+          # For a bundled patch this is the only delegation check the
+          # approval ever gets: "merge time" is hold time. The r+ this gate
+          # blesses may be held on the patch (`Bundles.hold_approval/2`)
+          # until the rest of the bundle is approved, and is not re-checked
+          # when the bundle later queues. See DELEGATION_INVALIDATION.md,
+          # "standing approvals".
+          required_permission == :reviewer and
+              DelegationInvalidator.verify_for_merge(c.patch, c.commenter) == :deny ->
+            :ok
 
-        if is_nil(c.patch) do
-          Logger.warning(
-            "Command.run: patch lookup failed for project=#{c.project.id} pr=#{c.pr_xref}"
-          )
+          Permission.permission?(required_permission, c.commenter, c.patch) ->
+            Enum.each(cmd_list, &run(c, &1))
+            Enum.each(cmd_list, &log(c, &1))
 
-          :ok
-        else
-          cond do
-            # Merge-time gate: a reviewer-level command relying on a delegation
-            # is re-checked against the current head and fails closed. If the
-            # gate denies, it has already revoked + commented (or explained an
-            # unverifiable check), so don't also post the generic denial.
-            #
-            # For a bundled patch this is the only delegation check the
-            # approval ever gets: "merge time" is hold time. The r+ this gate
-            # blesses may be held on the patch (`Bundles.hold_approval/2`)
-            # until the rest of the bundle is approved, and is not re-checked
-            # when the bundle later queues. See DELEGATION_INVALIDATION.md,
-            # "standing approvals".
-            required_permission == :reviewer and
-                DelegationInvalidator.verify_for_merge(c.patch, c.commenter) == :deny ->
-              :ok
-
-            Permission.permission?(required_permission, c.commenter, c.patch) ->
-              Enum.each(cmd_list, &run(c, &1))
-              Enum.each(cmd_list, &log(c, &1))
-
-            true ->
-              permission_denied(c)
-          end
+          true ->
+            permission_denied(c)
         end
       end
     end
+  end
+
+  # The `false` clauses are the commands that cannot lead to a merge: a trial
+  # build, and taking state away.
+  @spec draft_blocked?(cmd) :: boolean
+  defp draft_blocked?(:ping), do: false
+  defp draft_blocked?({:autocorrect, _}), do: false
+  defp draft_blocked?({:try, _}), do: false
+  defp draft_blocked?(:try_cancel), do: false
+  defp draft_blocked?(:deactivate), do: false
+  defp draft_blocked?(:unlink), do: false
+  defp draft_blocked?(:unlink_with_args), do: false
+  defp draft_blocked?(:undelegate), do: false
+  defp draft_blocked?({:undelegate_to, _}), do: false
+  defp draft_blocked?(:bros), do: false
+  defp draft_blocked?(_), do: true
+
+  # `is_draft: nil` means the caller did not say, not "not a draft", so it
+  # falls through to the next source. The last clause queries instead of
+  # storing the row on `c`, which would rob `fetch_patch/1` of its
+  # `author_id` backfill.
+  @spec draft?(t) :: boolean
+  defp draft?(%Command{is_draft: is_draft}) when is_boolean(is_draft), do: is_draft
+  defp draft?(%Command{pr: %{draft: draft}}) when is_boolean(draft), do: draft
+  defp draft?(%Command{patch: %Patch{is_draft: is_draft}}), do: is_draft
+
+  defp draft?(%Command{patch: nil, project: project, pr_xref: pr_xref})
+       when not is_nil(project) and not is_nil(pr_xref) do
+    case Repo.get_by(Patch, project_id: project.id, pr_xref: pr_xref) do
+      %Patch{is_draft: is_draft} -> is_draft
+      nil -> false
+    end
+  end
+
+  defp draft?(_), do: false
+
+  # Not logged: `bors retry` would later replay a command that never ran.
+  @spec draft_refused(t, [cmd]) :: :ok
+  defp draft_refused(c, cmd_list) do
+    {blocked, also_dropped} = Enum.split_with(cmd_list, &draft_blocked?/1)
+
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      Batcher.Message.generate_message({:draft_refused, blocked, also_dropped})
+    )
   end
 
   def required_permission_level_cmd(:ping) do

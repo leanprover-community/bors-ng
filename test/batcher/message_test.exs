@@ -691,4 +691,72 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     assert expected_message == actual_message
   end
+
+  test "the draft refusal says so when an allowed command was dropped with it" do
+    msg = Message.generate_message({:draft_refused, [:activate], [{:try, ""}]})
+
+    assert msg =~ "`bors r+`"
+    assert msg =~ "`bors try` did not run either"
+    assert msg =~ "stops the whole comment"
+  end
+
+  test "the draft refusal stays quiet about dropped commands when there were none" do
+    refute Message.generate_message({:draft_refused, [:activate], []}) =~ "did not run either"
+  end
+
+  test "generate draft refusal message" do
+    msg = Message.generate_message({:draft_refused, [:activate], []})
+
+    assert msg =~ "is a draft"
+    assert msg =~ "`bors r+`"
+    assert msg =~ "Mark it ready for review"
+  end
+
+  test "the draft refusal names each blocked command the way it was typed" do
+    msg =
+      Message.generate_message(
+        {:draft_refused, [{:set_priority, 10}, {:activate_by, "alice"}, {:delegate_to, "bob"}],
+         []}
+      )
+
+    assert msg =~ "`bors p=10`"
+    assert msg =~ "`bors r=alice`"
+    assert msg =~ "`bors delegate=bob`"
+  end
+
+  test "the draft refusal names a repeated command once" do
+    msg = Message.generate_message({:draft_refused, [:activate, :activate], []})
+
+    assert ["`bors r+`"] == Regex.scan(~r/`bors r\+`/, msg) |> Enum.map(&hd/1)
+  end
+
+  # Every unrecognized command is blocked, so one added later reaches the
+  # message with no name clause of its own. It must not raise.
+  test "the draft refusal names an unrecognized command instead of raising" do
+    assert Message.generate_message({:draft_refused, [{:future_cmd, "x"}], []}) =~
+             "`bors future_cmd`"
+
+    assert Message.generate_message({:draft_refused, [:future_cmd], []}) =~ "`bors future_cmd`"
+  end
+
+  # bors parses its own comments, so a refusal that parsed as a command would
+  # make a draft PR answer itself forever.
+  test "the dropped-batch notice cannot be parsed as a bors command" do
+    msg = Message.generate_message({:draft_in_batch, [1, 2]})
+
+    assert msg =~ "draft pull request: #1, #2"
+    assert [] == BorsNG.Command.parse(msg)
+  end
+
+  test "the draft refusal cannot be parsed as a bors command" do
+    for cmds <- [
+          [:activate],
+          [{:activate_by, "alice"}, {:set_priority, 10}],
+          [:retry],
+          [{:link, [2]}],
+          [{:delegate_to, "bob"}]
+        ] do
+      assert [] == BorsNG.Command.parse(Message.generate_message({:draft_refused, cmds, []}))
+    end
+  end
 end

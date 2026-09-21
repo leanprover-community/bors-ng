@@ -1638,4 +1638,138 @@ defmodule BorsNG.CommandTest do
     assert d2.id == d1.id
     assert NaiveDateTime.compare(d2.expires_at, d1.expires_at) == :gt
   end
+
+  defp draft_setup(proj, opts \\ []) do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{"master" => %{"bors.toml" => ~s(status = ["ci"]\n)}}
+      }
+    })
+
+    {:ok, user} =
+      Repo.insert(%BorsNG.Database.User{user_xref: 1, is_admin: true, login: "repo_owner"})
+
+    {:ok, _patch} =
+      Repo.insert(%BorsNG.Database.Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        open: true,
+        is_draft: Keyword.get(opts, :is_draft, true)
+      })
+
+    Repo.insert(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
+
+    user
+  end
+
+  defp run_on_draft(proj, user, comment, fields \\ []) do
+    Command.run(
+      struct(
+        %Command{
+          project: proj,
+          commenter: user,
+          comment: comment,
+          pr_xref: 1
+        },
+        fields
+      )
+    )
+  end
+
+  test "a draft refuses r+ and says so", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "bors r+", is_draft: true)
+
+    assert [comment] = mock_comments(1)
+    assert comment =~ "is a draft"
+    assert comment =~ "`bors r+`"
+    assert [] == Repo.all(BorsNG.Database.LinkPatchBatch)
+  end
+
+  test "a draft says nothing when the comment carries no command", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "I will mark this ready and then ask bors to merge it",
+      is_draft: true
+    )
+
+    assert [] == mock_comments(1)
+  end
+
+  test "a draft allows the commands that cannot lead to a merge", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "bors ping", is_draft: true)
+
+    assert ["pong"] == mock_comments(1)
+  end
+
+  test "a draft refuses the whole comment when any command is blocked", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "bors ping\nbors r+", is_draft: true)
+
+    # `ping` is allowed on its own, but a blocked command takes the whole
+    # comment with it, the way a permission failure does. The refusal has to
+    # say so, or it reads as though the `ping` ran.
+    assert [comment] = mock_comments(1)
+    assert comment =~ "`bors r+`"
+    assert comment =~ "`bors ping` did not run either"
+    refute comment =~ "pong"
+  end
+
+  test "a refused draft command is not logged, so retry cannot replay it", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "bors r+", is_draft: true)
+
+    patch = Repo.get_by!(BorsNG.Database.Patch, project_id: proj.id, pr_xref: 1)
+    assert nil == Logging.most_recent_cmd(patch)
+  end
+
+  test "the draft refusal cannot be parsed as a command", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "bors r+", is_draft: true)
+
+    assert [comment] = mock_comments(1)
+    assert [] == Command.parse(comment)
+  end
+
+  test "a draft is recognized from the synced patch when the caller does not say", %{proj: proj} do
+    user = draft_setup(proj)
+
+    # No `is_draft` and no `pr`: the gate falls back to the patch row.
+    run_on_draft(proj, user, "bors r+")
+
+    assert [comment] = mock_comments(1)
+    assert comment =~ "is a draft"
+  end
+
+  test "an explicit not-a-draft flag wins over a stale patch row", %{proj: proj} do
+    user = draft_setup(proj)
+
+    # The patch row says draft; the live payload flag is fresher and wins.
+    run_on_draft(proj, user, "bors ping", is_draft: false)
+
+    assert ["pong"] == mock_comments(1)
+  end
+
+  test "a PR that is not a draft is unaffected", %{proj: proj} do
+    user = draft_setup(proj, is_draft: false)
+
+    run_on_draft(proj, user, "bors r+")
+
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
+
+    # The command ran: a refusal would neither log nor reach the batcher.
+    patch = Repo.get_by!(BorsNG.Database.Patch, project_id: proj.id, pr_xref: 1)
+    assert {%{login: "repo_owner"}, :activate} = Logging.most_recent_cmd(patch)
+  end
 end
