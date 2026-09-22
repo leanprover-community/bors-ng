@@ -759,4 +759,50 @@ defmodule BorsNG.Worker.BatcherMessageTest do
       assert [] == BorsNG.Command.parse(Message.generate_message({:draft_refused, cmds, []}))
     end
   end
+
+  # The "did not run either" list is the one the reader is told to run again,
+  # so every name in it has to be text bors can parse. These five tags do not
+  # spell their own command, and all five are commands `draft_blocked?/1`
+  # allows on a draft, so `also_dropped` is exactly where they turn up.
+  test "the draft refusal names dropped commands the way they are typed" do
+    for {cmd, typed, parses_to} <- [
+          {:deactivate, "r-", :deactivate},
+          {:try_cancel, "try-", :try_cancel},
+          {:undelegate, "delegate-", :undelegate},
+          {{:undelegate_to, "bob"}, "delegate-=bob", {:undelegate_to, "bob"}},
+          # `unlink #3` is refused *because* of the arguments, so the text to
+          # run again is bare `unlink`, which parses back to `:unlink`.
+          {:unlink_with_args, "unlink", :unlink}
+        ] do
+      msg = Message.generate_message({:draft_refused, [:activate], [cmd]})
+
+      assert msg =~ "`bors #{typed}` did not run either",
+             "#{inspect(cmd)} should be named `bors #{typed}`, got: #{msg}"
+
+      # Whatever name it hands back has to be text the parser accepts, or the
+      # "run the command again" instruction sends the author in a circle.
+      assert [parses_to] == BorsNG.Command.parse("bors #{typed}")
+    end
+  end
+
+  # `:autocorrect` is bors guessing at a typo and `:bros` is the alternate
+  # trigger, so neither is a command anyone can re-run by name. Naming the
+  # autocorrect would print its suggestion — for `bors +r` that is the very
+  # `bors r+` the sentence before it just refused.
+  test "the draft refusal leaves pseudo-commands out of the dropped list" do
+    for cmd <- [{:autocorrect, "r+"}, :bros] do
+      msg = Message.generate_message({:draft_refused, [:activate], [cmd]})
+
+      refute msg =~ "did not run either"
+      refute msg =~ "`bors autocorrect`"
+      refute msg =~ "`bors bros`"
+    end
+  end
+
+  test "a pseudo-command does not hide a real dropped command beside it" do
+    msg =
+      Message.generate_message({:draft_refused, [:activate], [{:autocorrect, "r+"}, :deactivate]})
+
+    assert msg =~ "`bors r-` did not run either"
+  end
 end

@@ -1724,6 +1724,20 @@ defmodule BorsNG.CommandTest do
     refute comment =~ "pong"
   end
 
+  # End-to-end counterpart to the naming tests in `message_test.exs`: the tag
+  # the parser produces for `bors r-` is `:deactivate`, and a refusal that
+  # echoed the tag would tell the author to run `bors deactivate`, which
+  # parses to nothing.
+  test "a draft names a dropped command as the author typed it", %{proj: proj} do
+    user = draft_setup(proj)
+
+    run_on_draft(proj, user, "bors r-\nbors r+", is_draft: true)
+
+    assert [comment] = mock_comments(1)
+    assert comment =~ "`bors r-` did not run either"
+    refute comment =~ "bors deactivate"
+  end
+
   test "a refused draft command is not logged, so retry cannot replay it", %{proj: proj} do
     user = draft_setup(proj)
 

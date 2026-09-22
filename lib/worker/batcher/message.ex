@@ -250,7 +250,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   # so a draft would answer itself forever. `message_test.exs` holds that line.
   def generate_message({:draft_refused, blocked, also_dropped}) do
     rest =
-      case also_dropped do
+      case Enum.reject(also_dropped, &pseudo_command?/1) do
         [] ->
           ""
 
@@ -534,12 +534,33 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name({:malformed_args, :priority}), do: "p="
   defp draft_refused_name({:malformed_args, :single}), do: "single"
   defp draft_refused_name(:retry), do: "retry"
+
+  # The tags below do not spell their own command. Every one of them is a
+  # command `draft_blocked?/1` *allows* on a draft, so they reach this module
+  # only through `also_dropped` — which is exactly the list the message tells
+  # the reader to run again. Naming them after the tag hands back text that
+  # parses to nothing (`bors deactivate`, `bors try_cancel`).
+  defp draft_refused_name(:deactivate), do: "r-"
+  defp draft_refused_name(:try_cancel), do: "try-"
+  defp draft_refused_name(:undelegate), do: "delegate-"
+  defp draft_refused_name({:undelegate_to, login}), do: "delegate-=#{login}"
+  defp draft_refused_name(:unlink_with_args), do: "unlink"
+
   defp draft_refused_name(cmd) when is_atom(cmd), do: to_string(cmd)
 
   # `draft_blocked?/1` blocks every command it does not recognize, so a newly
   # added one arrives here with no clause of its own. Name it after its tag
   # rather than raising inside the webhook.
   defp draft_refused_name(cmd) when is_tuple(cmd), do: cmd |> elem(0) |> to_string()
+
+  # Neither of these is a command anyone typed, so neither belongs in a list
+  # headed "did not run either". `:autocorrect` is bors guessing at a typo —
+  # naming it would print the suggestion, which for `bors +r` is the very
+  # `bors r+` the sentence before it already refused — and `:bros` is the
+  # alternate trigger, not a command, so there is no `bors bros` to re-run.
+  defp pseudo_command?({:autocorrect, _}), do: true
+  defp pseudo_command?(:bros), do: true
+  defp pseudo_command?(_), do: false
 
   defp filter_lines(text, regex) do
     {matching, remaining} =
