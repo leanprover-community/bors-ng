@@ -2573,6 +2573,101 @@ defmodule BorsNG.Worker.BatcherTest do
     assert state.branches["master"] == "iniN"
   end
 
+  # Regression. `GitHub.get_pr/2` reports a failed read as
+  # `{:error, :get_pr, status, pr_xref}` (the real server) or
+  # `{:error, :github_call_timeout, :get_pr}` (a wedged GitHub GenServer).
+  # `ServerMock` returns a bare `{:error, :get_pr}`, so a `draft_at_merge?/2`
+  # that matched only the 2-tuple passed this whole file — every batcher test
+  # with no `pulls` entry exercises that branch — and raised `CaseClauseError`
+  # in production, inside the poll that is about to push. A batcher that dies
+  # there takes the project's queue with it: `Batcher.Registry`'s crash
+  # handler deletes every waiting batch. `get_pr_error` injects the real shape.
+  test "a failed live read falls back to the synced draft column", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{1 => draft_test_pr(1, "N")},
+        pr_commits: %{1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]}
+      }
+    })
+
+    # The column caught the draft event; its cleanup never ran. Note the mock's
+    # PR says `draft: false`, so only the column can supply the answer here.
+    patch =
+      %Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        is_draft: true
+      }
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    key = {{:installation, 91}, 14}
+    repo = GitHub.ServerMock.get_state() |> Map.get(key)
+    GitHub.ServerMock.put_state(%{key => repo, get_pr_error: 1})
+
+    Batcher.do_handle_cast({:status, {"iniN", "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :canceled
+    assert state.branches["master"] == "ini"
+
+    assert Enum.any?(
+             state.comments[1],
+             &String.contains?(&1, "left the queue without merging because it is a draft")
+           )
+  end
+
+  # The other half of the fallback: a read bors cannot make must not become a
+  # refusal to merge. An API blip is not evidence of a draft.
+  test "a failed live read does not hold up a merge the column says is ready", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{"iniN" => %{}},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{1 => draft_test_pr(1, "N")},
+        pr_commits: %{1 => [%GitHub.Commit{sha: "1234", author_name: "a", author_email: "e"}]}
+      }
+    })
+
+    patch =
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
+      |> Repo.insert!()
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    batch = Repo.get_by!(Batch, project_id: proj.id)
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    key = {{:installation, 91}, 14}
+    repo = GitHub.ServerMock.get_state() |> Map.get(key)
+    GitHub.ServerMock.put_state(%{key => repo, get_pr_error: 1})
+
+    Batcher.do_handle_cast({:status, {"iniN", "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert Repo.get_by!(Batch, project_id: proj.id).state == :ok
+    assert state.branches["master"] == "iniN"
+    refute Enum.any?(state.comments[1], &String.contains?(&1, "because it is a draft"))
+  end
+
   test "a draft in a bundle takes its sibling with it, sparing the rest", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

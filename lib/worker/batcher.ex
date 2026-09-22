@@ -1484,7 +1484,7 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  @spec complete_batch(Status.state(), Batch.t(), [Status.t()]) :: Status.state()
+  @spec complete_batch(Status.state(), Batch.t(), [Status.t()]) :: Batch.state()
   defp complete_batch(:ok, batch, statuses) do
     case draft_patches(batch) do
       [] -> push_completed_batch(batch, statuses)
@@ -1549,10 +1549,29 @@ defmodule BorsNG.Worker.Batcher do
   # The synced column catches a draft event whose cleanup did not run; the live
   # read catches a delivery bors never received at all. A failed read falls
   # back to the column rather than holding up the merge over an API blip.
+  #
+  # The catch-all is load-bearing, not defensive padding. `GitHub.get_pr/2`
+  # reports failure in three different shapes: `{:error, :get_pr, status,
+  # pr_xref}` from the real server on any non-200, and
+  # `{:error, :github_call_timeout, :get_pr}` /
+  # `{:error, :github_call_exit, :get_pr, reason}` when the GitHub GenServer
+  # is wedged. Only `ServerMock` returns a bare `{:error, :get_pr}`, so a
+  # narrow `{:error, _}` clause type-checks against the tests and raises
+  # `CaseClauseError` in production — inside the poll that is about to push,
+  # which takes the batcher down and lets the registry bin the project's whole
+  # queue. Match `reconcile_raced_patch/3` and swallow every shape.
   defp draft_at_merge?(repo_conn, patch) do
     case GitHub.get_pr(repo_conn, patch.pr_xref) do
-      {:ok, pr} -> pr.draft
-      {:error, _} -> patch.is_draft
+      {:ok, pr} ->
+        pr.draft
+
+      error ->
+        Logger.warning(
+          "draft_at_merge?: get_pr failed for patch #{patch.id} (PR ##{patch.pr_xref}): " <>
+            "#{inspect(error)}; falling back to synced is_draft=#{patch.is_draft}"
+        )
+
+        patch.is_draft
     end
   end
 

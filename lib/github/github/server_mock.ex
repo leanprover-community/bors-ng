@@ -100,6 +100,7 @@ defmodule BorsNG.GitHub.ServerMock do
           :users => %{bitstring => tuser},
           :merge_conflict => integer,
           :create_commit_error => integer,
+          :get_pr_error => integer,
           :get_pr_files_error => integer,
           :get_commit_status_error => integer,
           :get_labels_error => integer,
@@ -154,6 +155,33 @@ defmodule BorsNG.GitHub.ServerMock do
       |> Enum.uniq()
 
     {:reply, {:ok, list}, state}
+  end
+
+  # Error injection, counted down like `get_pr_files_error`. The tuple shape
+  # matters: the real server answers any non-200 with
+  # `{:error, :get_pr, status, pr_xref}` (`server.ex`, `do_handle_call(:get_pr,
+  # ...)`), and a call that never reaches it comes back as
+  # `{:error, :github_call_timeout, :get_pr}`. The bare `{:error, :get_pr}`
+  # below is a mock-only shape, so a caller that only handles *it* looks
+  # correct under test and raises in production. Reach for this knob when a
+  # test needs a realistic failed read.
+  def do_handle_call(
+        :get_pr,
+        repo_conn,
+        params,
+        %{get_pr_error: 0} = state
+      ) do
+    do_handle_call(:get_pr, repo_conn, params, %{state | :get_pr_error => nil})
+  end
+
+  def do_handle_call(
+        :get_pr,
+        _repo_conn,
+        {pr_xref},
+        %{get_pr_error: n} = state
+      )
+      when is_integer(n) and n > 0 do
+    {{:error, :get_pr, 502, pr_xref}, %{state | :get_pr_error => n - 1}}
   end
 
   def do_handle_call(:get_pr, repo_conn, {pr_xref}, state) do

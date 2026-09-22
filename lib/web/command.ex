@@ -90,8 +90,13 @@ defmodule BorsNG.Command do
           {:ok, pr} ->
             %Command{c | pr: pr}
 
-          {:error, reason} ->
-            Logger.warning("fetch_pr: failed for PR #{pr_xref}: #{inspect(reason)}")
+          # Catch-all, not `{:error, reason}`: `GitHub.get_pr/2` reports
+          # failures as 2-, 3- and 4-element tuples (see `draft_at_merge?/2`
+          # in the batcher), and only `ServerMock` uses the 2-tuple. A narrow
+          # clause raises `CaseClauseError` here on any real GitHub error,
+          # which fails the webhook rather than the one command.
+          error ->
+            Logger.warning("fetch_pr: failed for PR #{pr_xref}: #{inspect(error)}")
             c
         end
 
