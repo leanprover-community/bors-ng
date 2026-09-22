@@ -242,6 +242,10 @@ defmodule BorsNG.Worker.Batcher.Message do
       "\n\nThe linked bundle (#{prs}) failed to build, and bors can't tell which pull request is at fault. The whole set left the queue. Fix what is needed, then run `bors r+` on each member; the bundle re-queues once they are all approved again."
   end
 
+  def generate_message(:draft_dropped_before_batch) do
+    "This pull request left the queue without building because it is a draft.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
+  end
+
   def generate_message(:draft_dropped_from_batch) do
     "This pull request left the queue without merging because it is a draft. The rest of its batch was re-queued without it.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
   end

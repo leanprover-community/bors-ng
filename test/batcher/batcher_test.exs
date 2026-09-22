@@ -2595,16 +2595,8 @@ defmodule BorsNG.Worker.BatcherTest do
       }
     })
 
-    # The column caught the draft event; its cleanup never ran. Note the mock's
-    # PR says `draft: false`, so only the column can supply the answer here.
     patch =
-      %Patch{
-        project_id: proj.id,
-        pr_xref: 1,
-        commit: "N",
-        into_branch: "master",
-        is_draft: true
-      }
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "N", into_branch: "master"}
       |> Repo.insert!()
 
     Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
@@ -2612,6 +2604,13 @@ defmodule BorsNG.Worker.BatcherTest do
     batch = Repo.get_by!(Batch, project_id: proj.id)
     batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
     Batcher.handle_info({:poll, :once}, proj.id)
+
+    # The PR goes draft *while the batch builds*, so the batch-start check is
+    # already behind us. `Syncer.sync_patch/2` writes the column, but the
+    # cleanup that should cancel the batch never runs — and the merge-time
+    # live read cannot reach GitHub either. The mock's PR still says
+    # `draft: false`, so only the column can supply the answer here.
+    patch |> Patch.changeset(%{is_draft: true}) |> Repo.update!()
 
     key = {{:installation, 91}, 14}
     repo = GitHub.ServerMock.get_state() |> Map.get(key)
@@ -2666,6 +2665,164 @@ defmodule BorsNG.Worker.BatcherTest do
     assert Repo.get_by!(Batch, project_id: proj.id).state == :ok
     assert state.branches["master"] == "iniN"
     refute Enum.any?(state.comments[1], &String.contains?(&1, "because it is a draft"))
+  end
+
+  # The cheap half of the guard. A PR already drafted when the batch starts is
+  # ejected off the synced column, before it costs a CI run. The merge-time
+  # check stays for the PR that goes draft *during* the build, which never
+  # passes through here again.
+  test "a draft is ejected before the batch builds", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{1 => draft_test_pr(1, "N"), 2 => draft_test_pr(2, "O")},
+        pr_commits: %{1 => [], 2 => []}
+      }
+    })
+
+    p1 =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        is_draft: true
+      })
+
+    p2 =
+      Repo.insert!(%Patch{project_id: proj.id, pr_xref: 2, commit: "O", into_branch: "master"})
+
+    Batcher.handle_cast({:reviewed, p1.id, "rvr"}, proj.id)
+    Batcher.handle_cast({:reviewed, p2.id, "rvr"}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    assert batch.state == :running
+
+    # The draft never entered the build at all.
+    assert [p2.id] == batch.id |> Patch.all_for_batch() |> Repo.all() |> Enum.map(& &1.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get({{:installation, 91}, 14})
+    assert hd(state.comments[1]) =~ "left the queue without building because it is a draft"
+    assert [] == state.comments[2]
+
+    # ...and #2, which did nothing wrong, merges on this pass rather than
+    # being re-queued behind a wasted build.
+    Batcher.do_handle_cast({:status, {batch.commit, "ci", :ok, nil}}, proj.id)
+
+    assert Repo.get!(Batch, batch.id).state == :ok
+
+    refute GitHub.ServerMock.get_state()
+           |> get_in([{{:installation, 91}, 14}, :branches, "master"]) == "ini"
+  end
+
+  test "a batch of nothing but drafts is canceled before building", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{1 => draft_test_pr(1, "N")},
+        pr_commits: %{1 => []}
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        is_draft: true
+      })
+
+    Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    assert Repo.get!(Batch, batch.id).state == :canceled
+
+    state = GitHub.ServerMock.get_state() |> Map.get({{:installation, 91}, 14})
+    assert state.branches["master"] == "ini"
+    assert hd(state.comments[1]) =~ "without building because it is a draft"
+  end
+
+  # A bundle with a draft member cannot queue in the first place
+  # (`Bundles.unapproved/1`), so the only way one reaches a batch is by going
+  # draft after queueing with the cleanup lost. It still takes its bundle.
+  test "a draft ejected before the batch builds takes its bundle with it", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => [], 3 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => draft_test_pr(1, "N"),
+          2 => draft_test_pr(2, "O"),
+          3 => draft_test_pr(3, "P")
+        },
+        pr_commits: %{1 => [], 2 => [], 3 => []}
+      }
+    })
+
+    bundle = Repo.insert!(BorsNG.Database.PatchBundle.new(proj.id))
+
+    p1 =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "N",
+        into_branch: "master",
+        bundle_id: bundle.id
+      })
+
+    p2 =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 2,
+        commit: "O",
+        into_branch: "master",
+        bundle_id: bundle.id
+      })
+
+    p3 =
+      Repo.insert!(%Patch{project_id: proj.id, pr_xref: 3, commit: "P", into_branch: "master"})
+
+    Enum.each([p1, p2, p3], &Batcher.handle_cast({:reviewed, &1.id, "rvr"}, proj.id))
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+
+    # #1 goes draft after the bundle queued; bors never saw the event.
+    Repo.get!(Patch, p1.id) |> Patch.changeset(%{is_draft: true}) |> Repo.update!()
+
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    assert batch.state == :running
+    assert [p3.id] == batch.id |> Patch.all_for_batch() |> Repo.all() |> Enum.map(& &1.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get({{:installation, 91}, 14})
+    assert hd(state.comments[1]) =~ "left the queue without building because it is a draft"
+    assert hd(state.comments[2]) =~ "linked with #1, which was converted to draft"
+    assert [] == state.comments[3]
+
+    # A dropped bundle needs a fresh r+ on every member.
+    assert Repo.get!(Patch, p1.id).bundle_reviewer == nil
+    assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
   end
 
   test "a draft in a bundle takes its sibling with it, sparing the rest", %{proj: proj} do

@@ -748,6 +748,13 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert [] == BorsNG.Command.parse(msg)
   end
 
+  test "the dropped-before-batch notice cannot be parsed as a bors command" do
+    msg = Message.generate_message(:draft_dropped_before_batch)
+
+    assert msg =~ "left the queue without building because it is a draft"
+    assert [] == BorsNG.Command.parse(msg)
+  end
+
   test "the draft refusal cannot be parsed as a bors command" do
     for cmds <- [
           [:activate],

@@ -857,33 +857,52 @@ defmodule BorsNG.Worker.Batcher do
     project = batch.project
     repo_conn = get_repo_conn(project)
 
-    {closed_links, patch_links} =
+    {closed_links, links} =
       Repo.all(LinkPatchBatch.from_batch(batch.id))
       |> Enum.sort_by(& &1.patch.pr_xref)
       |> Enum.split_with(&(&1.patch.open == false))
 
-    # A closed patch takes its whole bundle with it. Linked patches merge
+    # The cheap half of the draft guard. `Command.run/1` refuses `r+` on a
+    # draft and converting to draft cancels the batch, but both hang on a
+    # webhook bors may never receive. `Syncer.sync_patch/2` writes `is_draft`
+    # on every `pull_request` event, so the column costs nothing to read and
+    # is fresher than the approval that queued this patch.
+    #
+    # This does not replace `draft_at_merge?/2`, and neither replaces this
+    # one. A PR already drafted when the batch starts is caught here, before
+    # it burns a CI run; a PR drafted *during* the build never passes through
+    # here again, which is why the merge-time check reads live from GitHub.
+    {draft_links, links} = Enum.split_with(links, & &1.patch.is_draft)
+
+    # An ejected patch takes its whole bundle with it. Linked patches merge
     # together or not at all.
-    {pulled_links, patch_links} = Bundles.split_pulled_by_closed(closed_links, patch_links)
+    {pulled_by_closed, links} = Bundles.split_pulled_by(closed_links, links)
+    {pulled_by_draft, patch_links} = Bundles.split_pulled_by(draft_links, links)
 
-    Enum.each(closed_links ++ pulled_links, &Repo.delete!/1)
+    ejected_links = closed_links ++ draft_links ++ pulled_by_closed ++ pulled_by_draft
+    Enum.each(ejected_links, &Repo.delete!/1)
 
-    Enum.each(pulled_links, fn link ->
-      closed_xref =
-        Enum.find_value(closed_links, fn closed ->
-          closed.patch.bundle_id == link.patch.bundle_id && closed.patch.pr_xref
-        end)
+    send_bundle_pulled(repo_conn, pulled_by_closed, closed_links, :closed)
+    send_bundle_pulled(repo_conn, pulled_by_draft, draft_links, :draft)
 
-      send_message(repo_conn, [link.patch], {:bundle_pulled, closed_xref, :closed})
-    end)
+    # A closed PR was already told when it closed. A draft has been told
+    # nothing, so say why it is not building.
+    send_message(repo_conn, Enum.map(draft_links, & &1.patch), :draft_dropped_before_batch)
 
-    # A PR closed while queued has just left the queue; reconcile its labels off.
-    # The closed links are gone now and these patches are dropped from the
-    # reconcile below, so they wouldn't be touched otherwise.
+    # Approved, off the queue, and needing a human: the same standing as a
+    # draft ejected at merge time, so drop what it held and flag it. A draft
+    # cannot hold a bundle approval either (`Bundles.hold_approval/2`).
+    dropped_by_draft = Enum.map(draft_links ++ pulled_by_draft, & &1.patch)
+    Bundles.drop_held_approvals(dropped_by_draft)
+    Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, dropped_by_draft)
+
+    # A PR closed or drafted while queued has just left the queue; reconcile
+    # its labels off. The links are gone now and these patches are dropped
+    # from the reconcile below, so they wouldn't be touched otherwise.
     Labeler.reconcile_queue(
       repo_conn,
       batch.into_branch,
-      Enum.map(closed_links ++ pulled_links, & &1.patch)
+      Enum.map(ejected_links, & &1.patch)
     )
 
     # Stacked patches merge after the patch they stack on. Bundles merge as
@@ -2271,6 +2290,20 @@ defmodule BorsNG.Worker.Batcher do
 
   # All members of a bundle share a bundle_id, so the first patch's is
   # representative of the group send_message posts to.
+  # Tell each sibling pulled out of a batch which member took its bundle with
+  # it. `cause_links` are the links that were ejected; the sibling shares a
+  # `bundle_id` with exactly one of them.
+  defp send_bundle_pulled(repo_conn, pulled_links, cause_links, reason) do
+    Enum.each(pulled_links, fn link ->
+      xref =
+        Enum.find_value(cause_links, fn cause ->
+          cause.patch.bundle_id == link.patch.bundle_id && cause.patch.pr_xref
+        end)
+
+      send_message(repo_conn, [link.patch], {:bundle_pulled, xref, reason})
+    end)
+  end
+
   defp bundle_page_url([%Patch{bundle_id: bundle_id} | _]) when not is_nil(bundle_id),
     do: bundle_url(Endpoint, :show, bundle_id)
 

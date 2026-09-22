@@ -481,13 +481,17 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  Split `patch_links` into those pulled out because a closed patch shares
-  their bundle (a closed patch takes its whole bundle) and the rest. Returns
+  Split `patch_links` into those pulled out because an ejected patch shares
+  their bundle (an ejected patch takes its whole bundle) and the rest. Returns
   `{pulled, remaining}`.
+
+  `ejected_links` is whatever is leaving the batch — closed, draft, or
+  anything added later. The reason never mattered here; only the `bundle_id`
+  does.
   """
-  def split_pulled_by_closed(closed_links, patch_links) do
+  def split_pulled_by(ejected_links, patch_links) do
     closed_bundles =
-      closed_links
+      ejected_links
       |> Enum.map(& &1.patch.bundle_id)
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
