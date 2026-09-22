@@ -882,17 +882,20 @@ defmodule BorsNG.Worker.Batcher do
     ejected_links = closed_links ++ draft_links ++ pulled_by_closed ++ pulled_by_draft
     Enum.each(ejected_links, &Repo.delete!/1)
 
-    send_bundle_pulled(repo_conn, pulled_by_closed, closed_links, :closed)
-    send_bundle_pulled(repo_conn, pulled_by_draft, draft_links, :draft)
+    closed_patches = Enum.map(closed_links, & &1.patch)
+    drafted_patches = Enum.map(draft_links, & &1.patch)
+
+    send_bundle_pulled(repo_conn, Enum.map(pulled_by_closed, & &1.patch), closed_patches, :closed)
+    send_bundle_pulled(repo_conn, Enum.map(pulled_by_draft, & &1.patch), drafted_patches, :draft)
 
     # A closed PR was already told when it closed. A draft has been told
     # nothing, so say why it is not building.
-    send_message(repo_conn, Enum.map(draft_links, & &1.patch), :draft_dropped_before_batch)
+    send_message(repo_conn, drafted_patches, :draft_dropped_before_batch)
 
     # Approved, off the queue, and needing a human: the same standing as a
     # draft ejected at merge time, so drop what it held and flag it. A draft
     # cannot hold a bundle approval either (`Bundles.hold_approval/2`).
-    dropped_by_draft = Enum.map(draft_links ++ pulled_by_draft, & &1.patch)
+    dropped_by_draft = drafted_patches ++ Enum.map(pulled_by_draft, & &1.patch)
     Bundles.drop_held_approvals(dropped_by_draft)
     Labeler.mark_awaiting_requeue(repo_conn, batch.into_branch, dropped_by_draft)
 
@@ -1562,6 +1565,7 @@ defmodule BorsNG.Worker.Batcher do
     batch.id
     |> Patch.all_for_batch()
     |> Repo.all()
+    |> Enum.sort_by(& &1.pr_xref)
     |> Enum.filter(&draft_at_merge?(repo_conn, &1))
   end
 
@@ -1631,13 +1635,7 @@ defmodule BorsNG.Worker.Batcher do
     send_message(repo_conn, drafts, :draft_dropped_from_batch)
 
     siblings = Enum.reject(dropped, &MapSet.member?(draft_ids, &1.id))
-
-    Enum.each(drafts, fn draft ->
-      if draft.bundle_id != nil do
-        pulled = Enum.filter(siblings, &(&1.bundle_id == draft.bundle_id))
-        send_message(repo_conn, pulled, {:bundle_pulled, draft.pr_xref, :draft})
-      end
-    end)
+    send_bundle_pulled(repo_conn, siblings, drafts, :draft)
 
     :canceled
   end
@@ -2291,16 +2289,17 @@ defmodule BorsNG.Worker.Batcher do
   # All members of a bundle share a bundle_id, so the first patch's is
   # representative of the group send_message posts to.
   # Tell each sibling pulled out of a batch which member took its bundle with
-  # it. `cause_links` are the links that were ejected; the sibling shares a
-  # `bundle_id` with exactly one of them.
-  defp send_bundle_pulled(repo_conn, pulled_links, cause_links, reason) do
-    Enum.each(pulled_links, fn link ->
+  # it. One comment per *sibling*, not per cause: a bundle can lose two
+  # members at once, and a sibling that hears twice learns nothing the second
+  # time. `causes` is ordered, so the named member is deterministic.
+  defp send_bundle_pulled(repo_conn, pulled, causes, reason) do
+    Enum.each(pulled, fn patch ->
       xref =
-        Enum.find_value(cause_links, fn cause ->
-          cause.patch.bundle_id == link.patch.bundle_id && cause.patch.pr_xref
+        Enum.find_value(causes, fn cause ->
+          cause.bundle_id == patch.bundle_id && cause.pr_xref
         end)
 
-      send_message(repo_conn, [link.patch], {:bundle_pulled, xref, reason})
+      send_message(repo_conn, [patch], {:bundle_pulled, xref, reason})
     end)
   end
 

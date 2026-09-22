@@ -2900,6 +2900,81 @@ defmodule BorsNG.Worker.BatcherTest do
     assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
   end
 
+  # A bundle can lose two members to drafts at once, which needs both
+  # convert-to-draft deliveries to have gone missing — if bors sees either
+  # one, it cancels the batch and the bundle leaves there instead. The
+  # surviving sibling still hears once: a second comment saying the same
+  # thing about a different member tells it nothing it can act on.
+  test "two drafts in one bundle tell their sibling once", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "staging" => "", "staging.tmp" => ""},
+        commits: %{},
+        comments: %{1 => [], 2 => [], 3 => [], 4 => []},
+        statuses: %{},
+        files: %{"staging.tmp" => %{"bors.toml" => ~s/status = [ "ci" ]/}},
+        pulls: %{
+          1 => draft_test_pr(1, "N"),
+          2 => draft_test_pr(2, "O"),
+          3 => draft_test_pr(3, "P"),
+          4 => draft_test_pr(4, "Q")
+        },
+        pr_commits: %{1 => [], 2 => [], 3 => [], 4 => []}
+      }
+    })
+
+    bundle = Repo.insert!(BorsNG.Database.PatchBundle.new(proj.id))
+
+    [p1, p2, p3] =
+      for {xref, sha} <- [{1, "N"}, {2, "O"}, {3, "P"}] do
+        Repo.insert!(%Patch{
+          project_id: proj.id,
+          pr_xref: xref,
+          commit: sha,
+          into_branch: "master",
+          bundle_id: bundle.id
+        })
+      end
+
+    p4 =
+      Repo.insert!(%Patch{project_id: proj.id, pr_xref: 4, commit: "Q", into_branch: "master"})
+
+    Enum.each([p1, p2, p3, p4], &Batcher.handle_cast({:reviewed, &1.id, "rvr"}, proj.id))
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    batch |> Batch.changeset(%{last_polled: 0}) |> Repo.update!()
+    Batcher.handle_info({:poll, :once}, proj.id)
+
+    batch = Repo.one!(from(b in Batch, where: b.project_id == ^proj.id))
+    assert batch.state == :running
+
+    # #1 and #2 both go draft during the build; bors sees neither event.
+    key = {{:installation, 91}, 14}
+    repo = GitHub.ServerMock.get_state() |> Map.get(key)
+    repo = put_in(repo, [:pulls, 1, Access.key!(:draft)], true)
+    repo = put_in(repo, [:pulls, 2, Access.key!(:draft)], true)
+    GitHub.ServerMock.put_state(%{key => repo})
+
+    Batcher.do_handle_cast({:status, {batch.commit, "ci", :ok, nil}}, proj.id)
+
+    state = GitHub.ServerMock.get_state() |> Map.get(key)
+
+    assert state.branches["master"] == "ini"
+
+    # Exactly one bundle-pulled comment on #3, naming the lowest-numbered
+    # draft, rather than one comment per draft.
+    pulled =
+      Enum.filter(state.comments[3], &String.contains?(&1, "linked with"))
+
+    assert [comment] = pulled
+    assert comment =~ "linked with #1, which was converted to draft"
+
+    # Both drafts hear why, and the unrelated #4 is re-queued untouched.
+    assert hd(state.comments[1]) =~ "without merging because it is a draft"
+    assert hd(state.comments[2]) =~ "without merging because it is a draft"
+    assert hd(state.comments[4]) =~ "automatically retried"
+  end
+
   test "full runthrough (with zero patches)", %{proj: proj} do
     # Create a zero-patch batch in a "waiting" state
     # This isn't normally possible through the user interface,
