@@ -1780,6 +1780,13 @@ defmodule BorsNG.CommandTest do
 
     run_on_draft(proj, user, "bors r+")
 
+    # `r+` is the only command in this block that reaches the batcher, and
+    # `Batcher.reviewed/3` is a cast. Left unsynchronized, the batcher picks it
+    # up after this test's sandbox owner has exited, dies on the checked-in
+    # connection, and the registry logs a rescued crash against a project row
+    # that rolled back with the test. Flush the mailbox before asserting.
+    _ = :sys.get_state(BorsNG.Worker.Batcher.Registry.get(proj.id))
+
     refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
 
     # The command ran: a refusal would neither log nor reach the batcher.
