@@ -954,7 +954,7 @@ defmodule BorsNG.CommandTest do
 
     Command.run(c)
 
-    [p1, p2] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    [p1, p2] = delegations_in_order()
     p1 = Repo.preload(p1, :user)
     assert p1.user.user_xref == 2
     p2 = Repo.preload(p2, :user)
@@ -1046,7 +1046,7 @@ defmodule BorsNG.CommandTest do
 
     Command.run(c2)
 
-    [p1, p2] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    [p1, p2] = delegations_in_order()
     p1 = Repo.preload(p1, :user)
     assert p1.user.user_xref == 2
     p2 = Repo.preload(p2, :user)
@@ -1156,7 +1156,7 @@ defmodule BorsNG.CommandTest do
 
                      Command.run(c2)
 
-                     [p1, p2, p3] = Repo.all(BorsNG.Database.UserPatchDelegation)
+                     [p1, p2, p3] = delegations_in_order()
                      p1 = Repo.preload(p1, :user)
                      assert p1.user.user_xref == 2
                      p2 = Repo.preload(p2, :user)
@@ -1223,6 +1223,14 @@ defmodule BorsNG.CommandTest do
     })
 
     user
+  end
+
+  # In the order they were made. `Repo.all/1` has no ORDER BY, and Postgres
+  # does not promise to return rows in insertion order.
+  defp delegations_in_order do
+    BorsNG.Database.UserPatchDelegation
+    |> Repo.all()
+    |> Enum.sort_by(& &1.id)
   end
 
   defp mock_comments(pr_xref) do
