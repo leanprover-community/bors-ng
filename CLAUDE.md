@@ -229,6 +229,14 @@ lib/
 The database backend is selected at runtime via `BORS_DATABASE` env var
 (default: `postgresql`). `:persistent_term` holds the chosen repo module.
 
+## Command parsing
+
+The comment parser (`lib/web/command.ex`) keeps rules that are easy to break
+from inside one command: exact syntax with nothing left over, refusals that
+name the command as typed, prose that stays quiet, and replies that never read
+as commands. Read `COMMAND_PARSING.md` before changing a command, and add lines
+to the corpora in `test/command_parsing_invariants_test.exs`.
+
 ## RFCs
 
 Additional design documentation may be found in the RFCs repo: https://github.com/bors-ng/rfcs

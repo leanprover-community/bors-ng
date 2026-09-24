@@ -829,7 +829,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     msg = Message.generate_message({:malformed_args, {:undelegate, "d- for=24h", []}})
 
     assert msg =~ "`bors d-=alice,bob`"
-    refute msg =~ "for=24h"
+    refute msg =~ "d-=for=24h"
   end
 
   test "the delegation refusals name each login" do
@@ -849,7 +849,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
           {:malformed_args, {:undelegate, "d-!", []}},
           {:malformed_args, {:delegate, "d+ alice for=24h", ["alice"], ["for=24h"]}},
           {:malformed_args, {:delegate, "d+ p=5", [], []}},
-          {:malformed_args, :priority_range},
+          {:malformed_args, {:priority_range, "p=99999999999"}},
           {:delegation_refused, :unknown_users, ["alcie"]},
           {:delegation_refused, :lookup_failed, ["alice"]}
         ] do
@@ -1002,11 +1002,11 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     msg = Message.generate_message({:malformed_args, {:delegate, "d+ p=5", [], []}})
 
     assert msg =~ "`bors d=alice,bob`"
-    refute msg =~ "p=5"
+    refute msg =~ "d=p=5"
   end
 
   test "the priority range hint gives the range" do
-    assert Message.generate_message({:malformed_args, :priority_range}) =~
+    assert Message.generate_message({:malformed_args, {:priority_range, "p=99999999999"}}) =~
              "from -2147483648 to 2147483647"
   end
 
@@ -1018,12 +1018,12 @@ defmodule BorsNG.Worker.BatcherMessageTest do
         {:draft_refused,
          [
            {:malformed_args, {:delegate, "d+ bob", ["bob"], []}},
-           {:malformed_args, :priority_range}
+           {:malformed_args, {:priority_range, "p=99999999999"}}
          ], []}
       )
 
     assert msg =~ "`bors d+ bob`"
-    assert msg =~ "`bors p=`"
+    assert msg =~ "`bors p=99999999999`"
   end
 
   test "a pseudo-command does not hide a real dropped command beside it" do

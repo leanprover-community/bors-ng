@@ -107,7 +107,7 @@ defmodule BorsNG.CommandTest do
     assert [] == Command.parse("bors Doink")
     assert [] == Command.parse("bors Merged this")
     # Already a hint, and correcting the case would not change it.
-    assert [{:malformed_args, :single}] == Command.parse("bors single On")
+    assert [{:malformed_args, {:single, "single On"}}] == Command.parse("bors single On")
 
     assert [{:malformed_args, {:delegate, "d alice", ["alice"], []}}] ==
              Command.parse("bors d alice")
@@ -115,6 +115,59 @@ defmodule BorsNG.CommandTest do
     # The existing `+r` corrections are unchanged.
     assert [{:autocorrect, "r+"}] == Command.parse("bors +r")
     assert [{:autocorrect, "r-"}] == Command.parse("bors -")
+  end
+
+  # `bros` is the joke trigger. Whatever follows it never runs, however many
+  # commands the line spells and however `bros` is capitalized.
+  test "bros never runs a command" do
+    for comment <- [
+          "bros r+",
+          "bros d=alice,bob",
+          "bros r+ single on",
+          "Bros r+",
+          "BROS r=alice p=5"
+        ] do
+      assert [:bros] == Command.parse(comment), comment
+    end
+
+    assert [] == Command.parse("bros doink")
+  end
+
+  test "a run of spaces reads as one, except in try arguments" do
+    assert [{:set_priority, 5}, :activate] == Command.parse("bors r+  p=5")
+    assert [{:set_priority, 5}, :activate] == Command.parse("bors r+\tp=5")
+    assert [{:set_is_single, true}] == Command.parse("bors single  on")
+    assert [{:try, "  --a   --b"}] == Command.parse("bors try  --a   --b")
+  end
+
+  test "+r and -r are corrected like any other command, leftover included" do
+    assert [{:autocorrect, "r+"}] == Command.parse("bors +r")
+    assert [{:autocorrect, "r-"}] == Command.parse("bors -r")
+    assert [{:autocorrect, "r+"}] == Command.parse("bors +")
+
+    assert [{:malformed_args, {:leftover, "r+ now", "r+", "now"}}] ==
+             Command.parse("bors +r now")
+
+    # Not a sign and an `r` that end there.
+    assert [] == Command.parse("bors +rebase")
+    assert [] == Command.parse("bors -rf")
+    assert [] == Command.parse("bors +1")
+  end
+
+  # Otherwise `24h` would be looked up as a login whose delegation to remove.
+  test "delegate-= refuses a for=" do
+    assert [{:malformed_args, {:no_for, "d-=alice for 24h"}}] ==
+             Command.parse("bors d-=alice for 24h")
+  end
+
+  test "a refusal names the command exactly as typed" do
+    assert [{:malformed_args, {:leftover, "p=+5 now", "p=5", "now"}}] ==
+             Command.parse("bors p=+5 now")
+
+    assert [{:malformed_args, {:leftover, "r=@alice p=5 now", "r=alice p=5", "now"}}] ==
+             Command.parse("bors r=@alice p=5 now")
+
+    assert [{:malformed_args, {:priority, "r+ p=abc"}}] == Command.parse("bors r+ p=abc")
   end
 
   test "a miscased command among link arguments is refused like the command" do
@@ -134,7 +187,7 @@ defmodule BorsNG.CommandTest do
     assert [:deactivate] == Command.parse("bors merge-")
     assert [:unlink] == Command.parse("bors link-")
     assert [{:link, [12]}] == Command.parse("bors link#12")
-    assert [{:malformed_args, :single}] == Command.parse("bors single")
+    assert [{:malformed_args, {:single, "single"}}] == Command.parse("bors single")
   end
 
   test "a command that takes nothing refuses whatever follows it" do
@@ -147,9 +200,7 @@ defmodule BorsNG.CommandTest do
           {"bors merge- x", "merge-", "x"},
           {"bors cancel!", "cancel", "!"},
           {"bors try- now", "try-", "now"},
-          {"bors retry (flaky)", "retry", "(flaky)"},
-          # Only one space may separate `r+` from its modifier.
-          {"bors r+  p=5", "r+", "p=5"}
+          {"bors retry (flaky)", "retry", "(flaky)"}
         ] do
       "bors " <> typed = comment
 
@@ -177,7 +228,7 @@ defmodule BorsNG.CommandTest do
     end
 
     # A glued word is not an `on`.
-    assert [{:malformed_args, :single}] == Command.parse("bors single onion")
+    assert [{:malformed_args, {:single, "single onion"}}] == Command.parse("bors single onion")
   end
 
   test "merge takes the single modifier, as r+ does" do
@@ -199,7 +250,7 @@ defmodule BorsNG.CommandTest do
     assert [{:malformed_args, {:bad_names, "d=alice r+", ["r+"]}}] ==
              Command.parse("bors d=alice r+")
 
-    assert [{:malformed_args, {:bad_names, "d-=alice for=24h", ["for=24h"]}}] ==
+    assert [{:malformed_args, {:no_for, "d-=alice for=24h"}}] ==
              Command.parse("bors d-=alice for=24h")
 
     assert :member ==
@@ -349,22 +400,24 @@ defmodule BorsNG.CommandTest do
   end
 
   test "malformed priority and single arguments parse to a hint, not a crash" do
-    assert [{:malformed_args, :priority}] == Command.parse("bors p=abc")
-    assert [{:malformed_args, :priority}] == Command.parse("bors p=")
-    assert [{:malformed_args, :single}] == Command.parse("bors single")
-    assert [{:malformed_args, :single}] == Command.parse("bors single maybe")
+    assert [{:malformed_args, {:priority, "p=abc"}}] == Command.parse("bors p=abc")
+    assert [{:malformed_args, {:priority, "p="}}] == Command.parse("bors p=")
+    assert [{:malformed_args, {:single, "single"}}] == Command.parse("bors single")
+    assert [{:malformed_args, {:single, "single maybe"}}] == Command.parse("bors single maybe")
   end
 
   test "a malformed modifier swallows its activation instead of dropping the modifier" do
-    assert [{:malformed_args, :priority}] == Command.parse("bors r+ p=abc")
-    assert [{:malformed_args, :priority}] == Command.parse("bors merge p=abc")
-    assert [{:malformed_args, :priority}] == Command.parse("bors r=me p=abc")
-    assert [{:malformed_args, :single}] == Command.parse("bors r+ single maybe")
+    assert [{:malformed_args, {:priority, "r+ p=abc"}}] == Command.parse("bors r+ p=abc")
+    assert [{:malformed_args, {:priority, "merge p=abc"}}] == Command.parse("bors merge p=abc")
+    assert [{:malformed_args, {:priority, "r=me p=abc"}}] == Command.parse("bors r=me p=abc")
+
+    assert [{:malformed_args, {:single, "r+ single maybe"}}] ==
+             Command.parse("bors r+ single maybe")
   end
 
   test "the malformed-argument hint is member-gated, below the delegation merge gate" do
-    assert :member == Command.required_permission_level([{:malformed_args, :priority}])
-    assert :member == Command.required_permission_level([{:malformed_args, :single}])
+    assert :member == Command.required_permission_level([{:malformed_args, {:priority, "p=x"}}])
+    assert :member == Command.required_permission_level([{:malformed_args, {:single, "single"}}])
 
     assert :member ==
              Command.required_permission_level([
@@ -375,21 +428,35 @@ defmodule BorsNG.CommandTest do
   test "a priority outside the 32-bit column is refused with its own hint" do
     assert [{:set_priority, 2_147_483_647}] == Command.parse("bors p=2147483647")
     assert [{:set_priority, -2_147_483_648}] == Command.parse("bors p=-2147483648")
-    assert [{:malformed_args, :priority_range}] == Command.parse("bors p=2147483648")
-    assert [{:malformed_args, :priority_range}] == Command.parse("bors p=-2147483649")
-    assert [{:malformed_args, :priority_range}] == Command.parse("bors p=99999999999")
+
+    assert [{:malformed_args, {:priority_range, "p=2147483648"}}] ==
+             Command.parse("bors p=2147483648")
+
+    assert [{:malformed_args, {:priority_range, "p=-2147483649"}}] ==
+             Command.parse("bors p=-2147483649")
+
+    assert [{:malformed_args, {:priority_range, "p=99999999999"}}] ==
+             Command.parse("bors p=99999999999")
+
     # A modifier that cannot be applied swallows its activation.
-    assert [{:malformed_args, :priority_range}] == Command.parse("bors r+ p=99999999999")
-    assert [{:malformed_args, :priority_range}] == Command.parse("bors merge p=99999999999")
-    assert [{:malformed_args, :priority_range}] == Command.parse("bors r=me p=99999999999")
-    assert :member == Command.required_permission_level([{:malformed_args, :priority_range}])
+    assert [{:malformed_args, {:priority_range, "r+ p=99999999999"}}] ==
+             Command.parse("bors r+ p=99999999999")
+
+    assert [{:malformed_args, {:priority_range, "merge p=99999999999"}}] ==
+             Command.parse("bors merge p=99999999999")
+
+    assert [{:malformed_args, {:priority_range, "r=me p=99999999999"}}] ==
+             Command.parse("bors r=me p=99999999999")
+
+    assert :member ==
+             Command.required_permission_level([{:malformed_args, {:priority_range, "p=9e99"}}])
   end
 
   test "a priority with letters stuck to it is refused, not truncated" do
-    assert [{:malformed_args, :priority}] == Command.parse("bors p=5abc")
-    assert [{:malformed_args, :priority}] == Command.parse("bors p=5.5")
-    assert [{:malformed_args, :priority}] == Command.parse("bors r+ p=5abc")
-    assert [{:malformed_args, :priority}] == Command.parse("bors r=me p=5abc")
+    assert [{:malformed_args, {:priority, "p=5abc"}}] == Command.parse("bors p=5abc")
+    assert [{:malformed_args, {:priority, "p=5.5"}}] == Command.parse("bors p=5.5")
+    assert [{:malformed_args, {:priority, "r+ p=5abc"}}] == Command.parse("bors r+ p=5abc")
+    assert [{:malformed_args, {:priority, "r=me p=5abc"}}] == Command.parse("bors r=me p=5abc")
   end
 
   test "delegate+ with names is refused, not taken as delegating the author" do
@@ -448,7 +515,7 @@ defmodule BorsNG.CommandTest do
     end
 
     # `for=` is not a name.
-    assert [{:malformed_args, {:no_names, "d="}}] == Command.parse("bors d= for=24h")
+    assert [{:malformed_args, {:no_names, "d= for=24h"}}] == Command.parse("bors d= for=24h")
 
     assert :member ==
              Command.required_permission_level([{:malformed_args, {:no_names, "r="}}])
@@ -1391,7 +1458,7 @@ defmodule BorsNG.CommandTest do
     })
 
     assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
-    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=` needs the users"))
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`d-=` needs the users"))
     refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
   end
 

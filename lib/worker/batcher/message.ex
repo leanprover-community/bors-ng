@@ -269,17 +269,21 @@ defmodule BorsNG.Worker.Batcher.Message do
     """
   end
 
-  def generate_message({:malformed_args, :priority}) do
-    ":-1: `p=` takes an integer, e.g. `bors p=10`."
+  # Every refusal of a command opens the same way: `bors did not run`, then
+  # the command as typed. What follows says why and what to type instead.
+  # See COMMAND_PARSING.md.
+  def generate_message({:malformed_args, {:priority, typed}}) do
+    ":-1: bors did not run `bors #{typed}`: `p=` takes an integer, e.g. `bors p=10`."
   end
 
-  def generate_message({:malformed_args, :priority_range}) do
+  def generate_message({:malformed_args, {:priority_range, typed}}) do
     {min, max} = BorsNG.Command.priority_range()
-    ":-1: `p=` takes an integer from #{min} to #{max}, e.g. `bors p=10`."
+
+    ":-1: bors did not run `bors #{typed}`: `p=` takes an integer from #{min} to #{max}, e.g. `bors p=10`."
   end
 
-  def generate_message({:malformed_args, :single}) do
-    ":-1: `single` takes `on` or `off`, e.g. `bors single on`."
+  def generate_message({:malformed_args, {:single, typed}}) do
+    ":-1: bors did not run `bors #{typed}`: `single` takes `on` or `off`, e.g. `bors single on`."
   end
 
   def generate_message({:malformed_args, {:delegate, typed, logins, for_tokens}}) do
@@ -298,7 +302,7 @@ defmodule BorsNG.Worker.Batcher.Message do
           "If you meant to delegate #{Enum.map_join(logins, ", ", &"`#{&1}`")}, reply with `bors #{named}#{Enum.join(logins, ",")}#{for_suffix}`."
       end
 
-    ":-1: `bors #{cmd}` delegates the PR author and takes no names, so bors did not delegate anyone. #{suggestion} To delegate the PR author, reply with just `bors #{cmd}#{for_suffix}`."
+    ":-1: bors did not run `bors #{typed}`: `bors #{cmd}` delegates the PR author and takes no names. #{suggestion} To delegate the PR author, reply with just `bors #{cmd}#{for_suffix}`."
   end
 
   def generate_message({:malformed_args, {:undelegate, typed, logins}}) do
@@ -313,24 +317,36 @@ defmodule BorsNG.Worker.Batcher.Message do
           "If you meant to remove only #{Enum.map_join(logins, ", ", &"`#{&1}`")}, reply with `bors #{cmd}=#{Enum.join(logins, ",")}`."
       end
 
-    ":-1: `bors #{cmd}` takes no arguments, so bors did not remove any delegations. #{suggestion} To remove every delegation, reply with just `bors #{cmd}`."
-  end
-
-  def generate_message({:malformed_args, {:no_names, typed}}) when typed in ["r=", "merge="] do
-    self_cmd = if typed == "r=", do: "r+", else: "merge"
-
-    ":-1: `bors #{typed}` needs the reviewers to approve on behalf of, e.g. `bors #{typed}alice`. To approve as yourself, reply with `bors #{self_cmd}`."
-  end
-
-  def generate_message({:malformed_args, {:no_names, typed}})
-      when typed in ["d-=", "delegate-="] do
-    ":-1: `bors #{typed}` needs the users whose delegation to remove, e.g. `bors #{typed}alice`. To remove every delegation, reply with `bors #{String.trim_trailing(typed, "=")}`."
+    ":-1: bors did not run `bors #{typed}`: `bors #{cmd}` removes every delegation and takes nothing after it. #{suggestion} To remove every delegation, reply with just `bors #{cmd}`."
   end
 
   def generate_message({:malformed_args, {:no_names, typed}}) do
-    self_cmd = if String.starts_with?(typed, "delegate"), do: "delegate+", else: "d+"
+    # `r=`, `merge=`, `d+=`, `delegate-=` and so on, as typed.
+    [prefix] = Regex.run(~r/^[a-z]+[+-]?=/, typed)
 
-    ":-1: `bors #{typed}` needs the users to delegate, e.g. `bors #{typed}alice,bob`. To delegate the PR author, reply with `bors #{self_cmd}`."
+    needs =
+      cond do
+        prefix in ["r=", "merge="] ->
+          self_cmd = if prefix == "r=", do: "r+", else: "merge"
+
+          "`#{prefix}` needs the reviewers to approve on behalf of, e.g. `bors #{prefix}alice`. To approve as yourself, reply with `bors #{self_cmd}`."
+
+        String.ends_with?(prefix, "-=") ->
+          "`#{prefix}` needs the users whose delegation to remove, e.g. `bors #{prefix}alice`. To remove every delegation, reply with `bors #{String.trim_trailing(prefix, "=")}`."
+
+        true ->
+          self_cmd = if String.starts_with?(prefix, "delegate"), do: "delegate+", else: "d+"
+
+          "`#{prefix}` needs the users to delegate, e.g. `bors #{prefix}alice,bob`. To delegate the PR author, reply with `bors #{self_cmd}`."
+      end
+
+    ":-1: bors did not run `bors #{typed}`: #{needs}"
+  end
+
+  def generate_message({:malformed_args, {:no_for, typed}}) do
+    [prefix] = Regex.run(~r/^(?:delegate|d)-=/, typed)
+
+    ":-1: bors did not run `bors #{typed}`: `#{prefix}` removes delegations, so it takes no `for=`. Reply with just the names, e.g. `bors #{prefix}alice`."
   end
 
   def generate_message({:malformed_args, {:leftover, typed, understood, rest}}) do
@@ -430,7 +446,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:link_error, :unlink_args}) do
-    ":-1: `bors unlink` takes nothing after it: it dissolves this pull request's whole bundle. To drop one member, `bors unlink` and then `bors link` the ones that still belong together."
+    ":-1: bors did not unlink anything: `bors unlink` takes nothing after it, since it dissolves this pull request's whole bundle. To drop one member, `bors unlink` and then `bors link` the ones that still belong together."
   end
 
   def generate_message({:stack_stale, child_xref, parent_xref}) do
@@ -637,15 +653,10 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name({:link, _}), do: "link"
   defp draft_refused_name({:stack, _}), do: "stack"
   defp draft_refused_name({:link_malformed, cmd, _}), do: to_string(cmd)
-  defp draft_refused_name({:malformed_args, :priority}), do: "p="
-  defp draft_refused_name({:malformed_args, :priority_range}), do: "p="
-  defp draft_refused_name({:malformed_args, {:delegate, typed, _, _}}), do: typed
-  defp draft_refused_name({:malformed_args, {:no_names, typed}}), do: typed
-  defp draft_refused_name({:malformed_args, {:leftover, typed, _, _}}), do: typed
-  defp draft_refused_name({:malformed_args, {:bad_names, typed, _}}), do: typed
-  defp draft_refused_name({:malformed_args, {:bad_for, typed, _}}), do: typed
-  defp draft_refused_name({:malformed_args, {:repeated_for, typed}}), do: typed
-  defp draft_refused_name({:malformed_args, :single}), do: "single"
+  # Every hint carries the command as typed second, after its kind. Named
+  # that way, running it again gets the hint again rather than whatever it
+  # was mistaken for.
+  defp draft_refused_name({:malformed_args, hint}), do: elem(hint, 1)
   defp draft_refused_name(:retry), do: "retry"
 
   # The tags below do not spell their own command. Every one of them is a
@@ -657,8 +668,6 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name(:try_cancel), do: "try-"
   defp draft_refused_name(:undelegate), do: "delegate-"
   defp draft_refused_name({:undelegate_to, login}), do: "delegate-=#{login}"
-  # Named as typed: run again, it gets the hint rather than removing them all.
-  defp draft_refused_name({:malformed_args, {:undelegate, typed, _}}), do: typed
   defp draft_refused_name(:unlink_with_args), do: "unlink"
 
   defp draft_refused_name(cmd) when is_atom(cmd), do: to_string(cmd)
