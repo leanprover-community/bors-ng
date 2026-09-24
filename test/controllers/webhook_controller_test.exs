@@ -907,9 +907,12 @@ defmodule BorsNG.WebhookControllerTest do
 
   test "an r+ in an issue comment on a draft PR is refused with a warning", %{
     conn: conn,
-    project: proj
+    project: proj,
+    user: user
   } do
     draft_comment_state()
+    # A reviewer, so the draft is what refuses the `r+`, not permission.
+    Repo.insert!(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
 
     Repo.insert!(%Patch{
       project_id: proj.id,
@@ -937,6 +940,40 @@ defmodule BorsNG.WebhookControllerTest do
     assert [comment] = pr_comments(1)
     assert comment =~ "is a draft"
     assert comment =~ "`bors r+`"
+  end
+
+  # Permission comes first: telling someone who could not approve anyway
+  # that the pull request is a draft would only lead to the same answer.
+  test "an r+ on a draft PR from someone who could not approve is denied, not told it is a draft",
+       %{conn: conn, project: proj} do
+    draft_comment_state()
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "C",
+      into_branch: "master",
+      open: true,
+      is_draft: true
+    })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "issue" => %{"number" => 1, "draft" => true, "pull_request" => %{}},
+      "comment" => %{
+        "body" => "bors r+",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn
+    |> put_req_header("x-github-event", "issue_comment")
+    |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert [comment] = pr_comments(1)
+    assert comment =~ "Permission denied"
+    refute comment =~ "is a draft"
   end
 
   test "an issue comment on a draft PR with no command says nothing", %{
@@ -971,8 +1008,14 @@ defmodule BorsNG.WebhookControllerTest do
     assert [] == pr_comments(1)
   end
 
-  test "an r+ in a review on a draft PR is refused with a warning", %{conn: conn} do
+  test "an r+ in a review on a draft PR is refused with a warning", %{
+    conn: conn,
+    project: proj,
+    user: user
+  } do
     draft_comment_state()
+    # A reviewer, so the draft is what refuses the `r+`, not permission.
+    Repo.insert!(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
 
     body_params = %{
       "repository" => %{"id" => 13},
@@ -992,8 +1035,14 @@ defmodule BorsNG.WebhookControllerTest do
     assert comment =~ "is a draft"
   end
 
-  test "an r+ in a review comment on a draft PR is refused with a warning", %{conn: conn} do
+  test "an r+ in a review comment on a draft PR is refused with a warning", %{
+    conn: conn,
+    project: proj,
+    user: user
+  } do
     draft_comment_state()
+    # A reviewer, so the draft is what refuses the `r+`, not permission.
+    Repo.insert!(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
 
     body_params = %{
       "repository" => %{"id" => 13},
@@ -1013,8 +1062,14 @@ defmodule BorsNG.WebhookControllerTest do
     assert comment =~ "is a draft"
   end
 
-  test "an r+ in the body of a PR opened as a draft is refused with a warning", %{conn: conn} do
+  test "an r+ in the body of a PR opened as a draft is refused with a warning", %{
+    conn: conn,
+    project: proj,
+    user: user
+  } do
     draft_comment_state()
+    # A reviewer, so the draft is what refuses the `r+`, not permission.
+    Repo.insert!(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj.id})
 
     body_params = %{
       "repository" => %{"id" => 13},

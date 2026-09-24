@@ -253,7 +253,7 @@ defmodule BorsNG.CommandTest do
     assert [{:malformed_args, {:no_for, "d-=alice for=24h"}}] ==
              Command.parse("bors d-=alice for=24h")
 
-    assert :member ==
+    assert :reviewer ==
              Command.required_permission_level([
                {:malformed_args, {:bad_names, "d=alice p=5", ["p=5"]}}
              ])
@@ -295,13 +295,22 @@ defmodule BorsNG.CommandTest do
              Command.parse("bors:r+ now")
   end
 
-  # The hint is gated like other hints, except that `ping` needs nothing.
-  test "a leftover is member-gated unless its command needs no permission" do
-    [ping_now] = Command.parse("bors ping now")
-    [r_plus_now] = Command.parse("bors r+ now")
+  test "a leftover needs what its command needs" do
+    for {comment, level} <- [
+          {"bors ping now", :none},
+          {"bors r- now", :member},
+          {"bors try- now", :member},
+          {"bors r+ now", :reviewer},
+          {"bors r=alice bob", :reviewer}
+        ] do
+      assert level == Command.required_permission_level(Command.parse(comment)), comment
+    end
+  end
 
-    assert :none == Command.required_permission_level([ping_now])
-    assert :member == Command.required_permission_level([r_plus_now])
+  test "a correction needs what its corrected command needs" do
+    assert :none == Command.required_permission_level(Command.parse("bors Ping"))
+    assert :member == Command.required_permission_level(Command.parse("bors R-"))
+    assert :reviewer == Command.required_permission_level(Command.parse("bors R+"))
   end
 
   # The link-argument check asks the parser, so a word that is no longer a
@@ -431,11 +440,20 @@ defmodule BorsNG.CommandTest do
              Command.parse("bors r+ single maybe")
   end
 
-  test "the malformed-argument hint is member-gated, below the delegation merge gate" do
-    assert :member == Command.required_permission_level([{:malformed_args, {:priority, "p=x"}}])
-    assert :member == Command.required_permission_level([{:malformed_args, {:single, "single"}}])
+  # Someone who could not run `p=` or `single` is told so, not how to spell
+  # them. The refusal still never reaches the merge-time gate.
+  test "a refusal needs its command's permission, but never reaches the merge gate" do
+    refute Command.merge_gate?([{:malformed_args, {:priority, "r+ p=x"}}])
+    refute Command.merge_gate?(Command.parse("bors r+ now"))
+    refute Command.merge_gate?(Command.parse("bors R+"))
+    assert Command.merge_gate?(Command.parse("bors r+"))
 
-    assert :member ==
+    assert :reviewer == Command.required_permission_level([{:malformed_args, {:priority, "p=x"}}])
+
+    assert :reviewer ==
+             Command.required_permission_level([{:malformed_args, {:single, "single"}}])
+
+    assert :reviewer ==
              Command.required_permission_level([
                {:malformed_args, {:undelegate, "d- alice", ["alice"]}}
              ])
@@ -464,7 +482,7 @@ defmodule BorsNG.CommandTest do
     assert [{:malformed_args, {:priority_range, "r=me p=99999999999"}}] ==
              Command.parse("bors r=me p=99999999999")
 
-    assert :member ==
+    assert :reviewer ==
              Command.required_permission_level([{:malformed_args, {:priority_range, "p=9e99"}}])
   end
 
@@ -486,7 +504,7 @@ defmodule BorsNG.CommandTest do
 
     assert [{:malformed_args, {:delegate, "d+ p=5", [], []}}] == Command.parse("bors d+ p=5")
 
-    assert :member ==
+    assert :reviewer ==
              Command.required_permission_level([
                {:malformed_args, {:delegate, "d+ alice", ["alice"], []}}
              ])
@@ -534,7 +552,7 @@ defmodule BorsNG.CommandTest do
     assert [{:malformed_args, {:bad_names, "d= for=24h", ["for=24h"]}}] ==
              Command.parse("bors d= for=24h")
 
-    assert :member ==
+    assert :reviewer ==
              Command.required_permission_level([{:malformed_args, {:no_names, "r="}}])
   end
 
@@ -1404,7 +1422,9 @@ defmodule BorsNG.CommandTest do
     assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
   end
 
-  test "someone who could not run the command is not offered the correction",
+  # Permission first: a correction to a command they cannot run would only
+  # lead to the same answer.
+  test "someone who could not run the corrected command is denied, not corrected",
        %{proj: proj} do
     undelegate_note_setup(proj)
     outsider = Repo.insert!(%BorsNG.Database.User{user_xref: 9, login: "outsider"})
@@ -1413,7 +1433,52 @@ defmodule BorsNG.CommandTest do
       Command.run(%Command{project: proj, commenter: outsider, comment: comment, pr_xref: 1})
     end
 
-    assert [] == mock_comments(1)
+    assert 4 == length(mock_comments(1))
+    assert Enum.all?(mock_comments(1), &String.contains?(&1, "Permission denied"))
+  end
+
+  test "a member who could not approve is denied, not told how to spell r+", %{proj: proj} do
+    undelegate_note_setup(proj)
+    member = Repo.insert!(%BorsNG.Database.User{user_xref: 9, login: "member"})
+    Repo.insert!(%BorsNG.Database.LinkMemberProject{user_id: member.id, project_id: proj.id})
+
+    Command.run(%Command{project: proj, commenter: member, comment: "bors r+ now", pr_xref: 1})
+
+    assert [comment] = mock_comments(1)
+    assert comment =~ "Permission denied"
+
+    # `r-` is theirs to run, so its refusal is too.
+    Command.run(%Command{project: proj, commenter: member, comment: "bors r- now", pr_xref: 1})
+
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "bors did not run `bors r- now`"))
+  end
+
+  test "several refusals from someone without permission get one denial", %{proj: proj} do
+    undelegate_note_setup(proj)
+    outsider = Repo.insert!(%BorsNG.Database.User{user_xref: 9, login: "outsider"})
+
+    Command.run(%Command{
+      project: proj,
+      commenter: outsider,
+      comment: "bors r+ now\nbors p=abc\nbors R+",
+      pr_xref: 1
+    })
+
+    assert [comment] = mock_comments(1)
+    assert comment =~ "Permission denied"
+  end
+
+  # A delegate may run `r+` here, so they get the refusal. It never reaches
+  # the merge-time gate, so the delegation is untouched.
+  test "a delegate is told what was left over after r+", %{proj: proj} do
+    undelegate_note_setup(proj)
+    delegate = Repo.get_by!(BorsNG.Database.User, login: "pr_author")
+
+    Command.run(%Command{project: proj, commenter: delegate, comment: "bors r+ now", pr_xref: 1})
+
+    assert [comment] = mock_comments(1)
+    assert comment =~ "bors did not run `bors r+ now`"
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
   end
 
   test "a correction to a command anyone may run is offered to anyone", %{proj: proj} do

@@ -808,26 +808,22 @@ defmodule BorsNG.Command do
   """
   @spec run(t) :: :ok
   def run(c) do
-    cmd_list = parse(c.comment)
-
-    cond do
-      cmd_list == [] ->
-        :ok
-
-      # Ahead of the permission block: a refused command must not reach
-      # `verify_for_merge/2`, which revokes and comments as a side effect.
-      # The list check comes first because `draft?/1` may hit the database.
-      Enum.any?(cmd_list, &draft_blocked?/1) and draft?(c) ->
-        draft_refused(c, cmd_list)
-
-      true ->
-        run_permitted(c, cmd_list)
+    case parse(c.comment) do
+      [] -> :ok
+      cmd_list -> run_permitted(c, cmd_list)
     end
   end
 
+  # Permission comes first. A comment needs what every command it spells, or
+  # tries to spell, needs (`required_permission_level/1`), and someone short
+  # of that is told so once, whatever else is wrong with it: being told how
+  # to spell a command they cannot run, or that the pull request is a draft,
+  # would only lead to the same answer. See COMMAND_PARSING.md.
   defp run_permitted(c, cmd_list) do
     required_permission = required_permission_level(cmd_list)
 
+    # Nothing a draft refuses needs no permission, so this branch has no
+    # draft check.
     if required_permission == :none do
       c = fetch_patch_local(c)
       Enum.each(cmd_list, &run(c, &1))
@@ -843,6 +839,16 @@ defmodule BorsNG.Command do
         :ok
       else
         cond do
+          # The plain check, with no side effects. Only once it passes may the
+          # comment reach the merge-time gate below.
+          not Permission.permission?(required_permission, c.commenter, c.patch) ->
+            permission_denied(c)
+
+          # Ahead of the gate: a refused command must not reach
+          # `verify_for_merge/2`, which revokes and comments as a side effect.
+          Enum.any?(cmd_list, &draft_blocked?/1) and draft?(c) ->
+            draft_refused(c, cmd_list)
+
           # Merge-time gate: a reviewer-level command relying on a delegation
           # is re-checked against the current head and fails closed. If the
           # gate denies, it has already revoked + commented (or explained an
@@ -854,20 +860,26 @@ defmodule BorsNG.Command do
           # until the rest of the bundle is approved, and is not re-checked
           # when the bundle later queues. See DELEGATION_INVALIDATION.md,
           # "standing approvals".
-          required_permission == :reviewer and
+          merge_gate?(cmd_list) and
               DelegationInvalidator.verify_for_merge(c.patch, c.commenter) == :deny ->
             :ok
 
-          Permission.permission?(required_permission, c.commenter, c.patch) ->
+          true ->
             cmd_list = resolve_delegation_logins(c, cmd_list)
             Enum.each(cmd_list, &run(c, &1))
             Enum.each(cmd_list, &log(c, &1))
-
-          true ->
-            permission_denied(c)
         end
       end
     end
+  end
+
+  @doc """
+  Whether a comment's commands must pass the merge-time delegation gate.
+  Keyed on the commands alone: a refusal or a correction needs its command's
+  permission, but never reaches the gate, which revokes as a side effect.
+  """
+  def merge_gate?(cmd_list) do
+    cmd_list |> Enum.reject(&hint?/1) |> required_permission_level() == :reviewer
   end
 
   # Looks up every login the delegation commands name before any of them
@@ -913,11 +925,6 @@ defmodule BorsNG.Command do
     end
   end
 
-  defp may_run?(_c, :none), do: true
-  defp may_run?(%Command{commenter: nil}, _level), do: false
-  defp may_run?(%Command{patch: nil}, _level), do: false
-  defp may_run?(c, level), do: Permission.permission?(level, c.commenter, c.patch)
-
   defp delegation_login({:delegate_to, login}), do: [login]
   defp delegation_login({:delegate_to, login, _duration}), do: [login]
   defp delegation_login({:undelegate_to, login}), do: [login]
@@ -954,22 +961,12 @@ defmodule BorsNG.Command do
   defp undelegation?(typed), do: String.starts_with?(typed, ["d-=", "delegate-="])
 
   # `is_draft: nil` means the caller did not say, not "not a draft", so it
-  # falls through to the next source. The last clause queries instead of
-  # storing the row on `c`, which would rob `fetch_patch/1` of its
-  # `author_id` backfill.
+  # falls through to the next source. `run_permitted/2` asks only once
+  # `fetch_patch/1` has found the patch.
   @spec draft?(t) :: boolean
   defp draft?(%Command{is_draft: is_draft}) when is_boolean(is_draft), do: is_draft
   defp draft?(%Command{pr: %{draft: draft}}) when is_boolean(draft), do: draft
   defp draft?(%Command{patch: %Patch{is_draft: is_draft}}), do: is_draft
-
-  defp draft?(%Command{patch: nil, project: project, pr_xref: pr_xref})
-       when not is_nil(project) and not is_nil(pr_xref) do
-    case Repo.get_by(Patch, project_id: project.id, pr_xref: pr_xref) do
-      %Patch{is_draft: is_draft} -> is_draft
-      nil -> false
-    end
-  end
-
   defp draft?(_), do: false
 
   # Not logged: `bors retry` would later replay a command that never ran.
@@ -989,8 +986,11 @@ defmodule BorsNG.Command do
     :none
   end
 
-  def required_permission_level_cmd({:autocorrect, _}) do
-    :none
+  # A reply needs what the command it is about needs, so someone who could
+  # not run that command is told that, not how to spell it. `merge_gate?/1`
+  # keeps replies away from the merge-time gate.
+  def required_permission_level_cmd({:autocorrect, command}) do
+    command |> parse_cmd() |> required_permission_level()
   end
 
   def required_permission_level_cmd({:try, _}) do
@@ -1032,20 +1032,15 @@ defmodule BorsNG.Command do
     :project_member
   end
 
-  # `ping` needs no permission, so neither does being told `ping now` is
-  # not `ping`.
   def required_permission_level_cmd({:malformed_args, {:leftover, _typed, understood, _rest}}) do
-    case understood |> parse_cmd() |> required_permission_level() do
-      :none -> :none
-      _ -> :member
-    end
+    understood |> parse_cmd() |> required_permission_level()
   end
 
-  # The hint about an unreadable argument is gated at :member — enough to
-  # keep outsiders from making bors post comments — and deliberately below
-  # :reviewer, so a typo never trips the delegation merge-time gate.
+  # Every other refusal is of a reviewer-level command: `p=`, `single`, `r=`
+  # and the delegation forms. A new kind that belongs lower needs a clause;
+  # without one it fails closed.
   def required_permission_level_cmd({:malformed_args, _}) do
-    :member
+    :reviewer
   end
 
   def required_permission_level_cmd(_) do
@@ -1222,24 +1217,15 @@ defmodule BorsNG.Command do
     Attemptor.cancel(attemptor, c.patch.id)
   end
 
-  # Only someone who could run the corrected command is told about it. The
-  # correction is `:none` to `required_permission_level/1`, so the check is
-  # made here, and with `Permission.permission?/3` alone: the merge-time
-  # delegation gate revokes as a side effect, and a typo must not trip it.
+  # Only someone who could run the corrected command gets this far:
+  # `required_permission_level/1` counts a correction at its command's level.
   def run(c, {:autocorrect, command}) do
-    level = command |> parse_cmd() |> required_permission_level()
-    c = if level == :none, do: c, else: fetch_patch(c)
-
-    if may_run?(c, level) do
-      c.project.repo_xref
-      |> Project.installation_connection(Repo)
-      |> GitHub.post_comment!(
-        c.pr_xref,
-        "Did you mean `#{command_trigger()} #{command}`?"
-      )
-    end
-
-    :ok
+    c.project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.post_comment!(
+      c.pr_xref,
+      "Did you mean `#{command_trigger()} #{command}`?"
+    )
   end
 
   def run(c, :ping) do

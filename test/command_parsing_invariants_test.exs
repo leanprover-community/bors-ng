@@ -191,14 +191,22 @@ defmodule BorsNG.CommandParsingInvariantsTest do
     end
   end
 
-  # A refusal must never reach `DelegationInvalidator.verify_for_merge/2`,
-  # which revokes as a side effect, so no hint may need `:reviewer`.
-  test "no reply is gated at reviewer level" do
-    for line <- @attempts, cmd <- Command.parse(line), hint?(cmd) do
-      level = Command.required_permission_level([cmd])
+  # A reply needs its command's permission, but must never reach
+  # `DelegationInvalidator.verify_for_merge/2`, which revokes as a side effect.
+  test "no reply reaches the merge-time gate" do
+    for line <- @attempts, cmds = Command.parse(line), Enum.all?(cmds, &hint?/1) do
+      refute Command.merge_gate?(cmds), "#{inspect(line)}: #{inspect(cmds)} reaches the gate"
+    end
+  end
 
-      assert level in [:none, :member, :project_member],
-             "#{inspect(line)}: #{inspect(cmd)} needs #{inspect(level)}"
+  # Permission first: someone who could not run the command is told that,
+  # not how to spell it, so a reply never needs less than its command.
+  test "a leftover needs the permission of the command it is about" do
+    for line <- @attempts,
+        {:malformed_args, {:leftover, _, understood, _}} = hint <- Command.parse(line) do
+      assert Command.required_permission_level([hint]) ==
+               Command.required_permission_level(Command.parse("bors " <> understood)),
+             inspect(line)
     end
   end
 

@@ -42,8 +42,10 @@ it does not recognize; it replies to what is recognizably a command.
    below). Anything left over makes the line a refusal.
 6. A line that reads as nothing, or only as a refusal, is tried again as a
    correction (see "Corrections are suggestions").
-7. `run/1` then refuses a merge-bound command on a draft, checks permission,
-   resolves every login a delegation names, and runs the commands in order.
+7. `run/1` checks the commenter's permission for the whole comment, then
+   refuses a merge-bound command on a draft, passes reviewer-level commands
+   through the merge-time delegation gate, resolves every login a delegation
+   names, and runs the commands in order.
 
 ## Principles
 
@@ -143,29 +145,42 @@ runs nothing. If it would only be refused, the line gets that refusal instead
 spaces, so `bors Try -` is corrected to `try -`, a build of `-`, as it would be
 if typed in lowercase.
 
-The correction goes only to someone who could run the corrected command. It is
-checked with `Permission.permission?/3` when it runs, never through the
-merge-time delegation gate, which revokes as a side effect.
+The correction goes only to someone who could run the corrected command;
+anyone else gets "Permission denied", as they would for the command itself
+(see below).
 
-### A reply never needs more than its command
+### Permission comes first
 
-| Line | Required level |
+A comment needs the permission of every command it spells, or tries to spell.
+A refusal or a correction counts at the level of the command it is about, so
+`bors r+ now` and `bors R+` need what `bors r+` needs. Someone short of it gets
+one "Permission denied", whatever else is wrong with the comment and however
+many lines it refused: telling them how to spell a command they cannot run,
+or that the pull request is a draft, would only lead to the same answer.
+
+| Command | Required level |
 |---|---|
 | `ping` | `:none` |
 | `try`, `try-`, `r-`, `retry` | `:member` |
-| `link`, `stack`, `unlink`, and their refusals | `:project_member` |
+| `link`, `stack`, `unlink` | `:project_member` |
 | everything else (`r+`, `r=`, `p=`, `single`, delegation) | `:reviewer` |
-| a refusal | `:member`, or `:none` for a refusal of `ping` |
-| a correction | `:none` to parse; checked at run time against the corrected command |
+| a refusal or correction | the level of its command |
 
-A per-patch delegate satisfies `:member` and `:reviewer` on their own pull
-request, never the `:project_*` levels. A refusal is gated at `:member` so an
-outsider cannot make bors post comments, and never at `:reviewer`, so a typo
-never reaches `DelegationInvalidator.verify_for_merge/2`.
+A refusal takes its command's level from what bors read before the leftover
+(`r- now` is `r-`), or else is `:reviewer`: every other refusal is of `p=`,
+`single`, `r=` or a delegation form, and a new kind without a clause fails
+closed. A per-patch delegate satisfies `:member` and `:reviewer` on their own
+pull request, never the `:project_*` levels.
+
+The check is `Permission.permission?/3` alone. Only the comment's real commands
+decide whether it passes the merge-time delegation gate (`merge_gate?/1`),
+which revokes as a side effect: a refusal or a correction needs its command's
+permission but never reaches the gate, so a typo cannot revoke a delegation.
 
 ### Drafts
 
-A draft refuses every command that can lead to a merge, and runs the rest:
+After permission, a draft refuses every command that can lead to a merge, and
+runs the rest:
 `try`, `try-`, `r-` (and `merge-`, `cancel`), `unlink`, `delegate-`,
 `delegate-=` and `ping`. A refusal is
 allowed on a draft exactly when the command it refuses would be: `bors r- now`
@@ -191,13 +206,15 @@ corpus of command attempts and a corpus of prose:
 
 1. Every attempt at a command reads as something: commands or a reply.
 2. A line that starts with the trigger but is a sentence reads as nothing.
-3. A line reads as commands or as replies, never both. A refused line runs
+3. A line under the `bros` trigger never runs, in any capitalization.
+4. A line reads as commands or as replies, never both. A refused line runs
    nothing from that line.
-4. Every refusal opens with `bors did not run` and the command as typed.
-5. No reply, and no draft refusal of a reply, reads as a command.
-6. No reply is gated at `:reviewer`.
-7. A draft refusal names a refused command as typed.
-8. A line under the `bros` trigger never runs, in any capitalization.
+5. Every refusal opens with `bors did not run` and the command as typed.
+6. No reply, and no draft refusal of a reply, reads as a command.
+7. No reply reaches the merge-time gate.
+8. A refusal of leftover text needs the permission of the command it is
+   about.
+9. A draft refusal names a refused command as typed.
 
 ## Syntax reference
 
@@ -229,8 +246,10 @@ from `1h` up to `90d`. A name is a GitHub login, with an optional `@`.
   trigger.
 - A new command word goes into `run_on_word?/1`, or `bors <word>ed` becomes a
   command.
-- Decide its permission level and whether a draft allows it, and make its
-  refusals agree (see the tables above).
+- Decide its permission level and whether a draft allows it. A refusal of it
+  needs the same level: add a `required_permission_level_cmd/1` clause if
+  that is below `:reviewer`, and a `draft_blocked?/1` clause if a draft allows
+  it.
 - Add lines to the corpora in `command_parsing_invariants_test.exs`: the command
   well formed, with something left over, miscased, and run into a longer word.
 
@@ -250,8 +269,5 @@ These are not handled yet:
   `bors`.
 - `link` and `stack` tolerate any plain word between references, not a fixed
   list of connectives.
-- A refusal of a reviewer-level command is shown to members who could not run
-  the command, and an outsider gets the permission-denied reply for it, where a
-  correction is shown only to those who could run it.
 - Text echoed in a reply is quoted with single backticks, so a backtick in it
   breaks the quoting.
