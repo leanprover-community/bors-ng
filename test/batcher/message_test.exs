@@ -777,6 +777,10 @@ defmodule BorsNG.Worker.BatcherMessageTest do
           {:try_cancel, "try-", :try_cancel},
           {:undelegate, "delegate-", :undelegate},
           {{:undelegate_to, "bob"}, "delegate-=bob", {:undelegate_to, "bob"}},
+          # Refused for its arguments. Named as typed, so running it again
+          # gets the hint instead of removing every delegation.
+          {{:malformed_args, {:undelegate, "d- bob", ["bob"]}}, "d- bob",
+           {:malformed_args, {:undelegate, "d- bob", ["bob"]}}},
           # `unlink #3` is refused *because* of the arguments, so the text to
           # run again is bare `unlink`, which parses back to `:unlink`.
           {:unlink_with_args, "unlink", :unlink}
@@ -804,6 +808,97 @@ defmodule BorsNG.Worker.BatcherMessageTest do
       refute msg =~ "`bors autocorrect`"
       refute msg =~ "`bors bros`"
     end
+  end
+
+  test "the delegate- refusal suggests delegate-= with the names" do
+    msg =
+      Message.generate_message(
+        {:malformed_args, {:undelegate, "d- alice, bob", ["alice", "bob"]}}
+      )
+
+    assert msg =~ "`bors d-=alice,bob`"
+    assert msg =~ "just `bors d-`"
+
+    msg = Message.generate_message({:malformed_args, {:undelegate, "delegate- alice", ["alice"]}})
+
+    assert msg =~ "`bors delegate-=alice`"
+    assert msg =~ "just `bors delegate-`"
+  end
+
+  test "the delegate- refusal without names gives an example" do
+    msg = Message.generate_message({:malformed_args, {:undelegate, "d- for=24h", []}})
+
+    assert msg =~ "`bors d-=alice,bob`"
+    refute msg =~ "for=24h"
+  end
+
+  test "the delegation refusals name each login" do
+    assert Message.generate_message({:delegation_refused, :unknown_users, ["alcie"]}) =~
+             "no GitHub user named `alcie`"
+
+    assert Message.generate_message({:delegation_refused, :unknown_users, ["alcie", "bbo"]}) =~
+             "no GitHub users named `alcie`, `bbo`"
+
+    assert Message.generate_message({:delegation_refused, :lookup_failed, ["alice"]}) =~
+             "could not look up `alice`"
+  end
+
+  test "the delegation refusals cannot be parsed as a bors command" do
+    for msg <- [
+          {:malformed_args, {:undelegate, "d- alice", ["alice"]}},
+          {:malformed_args, {:undelegate, "d-!", []}},
+          {:malformed_args, {:delegate, "d+ alice for=24h", ["alice"], ["for=24h"]}},
+          {:malformed_args, {:delegate, "d+ p=5", [], []}},
+          {:malformed_args, :priority_range},
+          {:delegation_refused, :unknown_users, ["alcie"]},
+          {:delegation_refused, :lookup_failed, ["alice"]}
+        ] do
+      assert [] == BorsNG.Command.parse(Message.generate_message(msg))
+    end
+  end
+
+  test "the delegate+ refusal suggests delegate= and keeps the for=" do
+    msg =
+      Message.generate_message(
+        {:malformed_args, {:delegate, "d+ alice, bob for=24h", ["alice", "bob"], ["for=24h"]}}
+      )
+
+    assert msg =~ "`bors d=alice,bob for=24h`"
+    assert msg =~ "just `bors d+ for=24h`"
+
+    msg =
+      Message.generate_message({:malformed_args, {:delegate, "delegate+ alice", ["alice"], []}})
+
+    assert msg =~ "`bors delegate=alice`"
+    assert msg =~ "just `bors delegate+`"
+  end
+
+  test "the delegate+ refusal without names gives an example" do
+    msg = Message.generate_message({:malformed_args, {:delegate, "d+ p=5", [], []}})
+
+    assert msg =~ "`bors d=alice,bob`"
+    refute msg =~ "p=5"
+  end
+
+  test "the priority range hint gives the range" do
+    assert Message.generate_message({:malformed_args, :priority_range}) =~
+             "from -2147483648 to 2147483647"
+  end
+
+  # Unlike `d-`, `d+` is blocked on a draft, so its refusal lands in the
+  # blocked list. Named as typed, so running it again gets the hint.
+  test "the draft refusal names a refused delegate+ and p= the way they were typed" do
+    msg =
+      Message.generate_message(
+        {:draft_refused,
+         [
+           {:malformed_args, {:delegate, "d+ bob", ["bob"], []}},
+           {:malformed_args, :priority_range}
+         ], []}
+      )
+
+    assert msg =~ "`bors d+ bob`"
+    assert msg =~ "`bors p=`"
   end
 
   test "a pseudo-command does not hide a real dropped command beside it" do

@@ -273,8 +273,60 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: `p=` takes an integer, e.g. `bors p=10`."
   end
 
+  def generate_message({:malformed_args, :priority_range}) do
+    {min, max} = BorsNG.Command.priority_range()
+    ":-1: `p=` takes an integer from #{min} to #{max}, e.g. `bors p=10`."
+  end
+
   def generate_message({:malformed_args, :single}) do
     ":-1: `single` takes `on` or `off`, e.g. `bors single on`."
+  end
+
+  def generate_message({:malformed_args, {:delegate, typed, logins, for_tokens}}) do
+    {cmd, named} =
+      if String.starts_with?(typed, "delegate"),
+        do: {"delegate+", "delegate="},
+        else: {"d+", "d="}
+
+    for_suffix = Enum.map_join(for_tokens, &" #{&1}")
+
+    suggestion =
+      case logins do
+        [] ->
+          "To delegate someone else, reply with `bors #{named}alice,bob#{for_suffix}`."
+
+        _ ->
+          "If you meant to delegate #{Enum.map_join(logins, ", ", &"`#{&1}`")}, reply with `bors #{named}#{Enum.join(logins, ",")}#{for_suffix}`."
+      end
+
+    ":-1: `bors #{cmd}` delegates the PR author and takes no names, so bors did not delegate anyone. #{suggestion} To delegate the PR author, reply with just `bors #{cmd}#{for_suffix}`."
+  end
+
+  def generate_message({:malformed_args, {:undelegate, typed, logins}}) do
+    cmd = if String.starts_with?(typed, "delegate"), do: "delegate-", else: "d-"
+
+    suggestion =
+      case logins do
+        [] ->
+          "To remove only some, reply with `bors #{cmd}=alice,bob`."
+
+        _ ->
+          "If you meant to remove only #{Enum.map_join(logins, ", ", &"`#{&1}`")}, reply with `bors #{cmd}=#{Enum.join(logins, ",")}`."
+      end
+
+    ":-1: `bors #{cmd}` takes no arguments, so bors did not remove any delegations. #{suggestion} To remove every delegation, reply with just `bors #{cmd}`."
+  end
+
+  def generate_message({:delegation_refused, :unknown_users, [login]}) do
+    ":-1: There is no GitHub user named `#{login}`, so bors made no delegation changes. Check the spelling and try again."
+  end
+
+  def generate_message({:delegation_refused, :unknown_users, logins}) do
+    ":-1: There are no GitHub users named #{Enum.map_join(logins, ", ", &"`#{&1}`")}, so bors made no delegation changes. Check the spelling and try again."
+  end
+
+  def generate_message({:delegation_refused, :lookup_failed, logins}) do
+    ":-1: bors could not look up #{Enum.map_join(logins, ", ", &"`#{&1}`")} on GitHub, so it made no delegation changes. Try again in a few minutes."
   end
 
   def generate_message({:link_error, :nothing_to_link}) do
@@ -536,6 +588,8 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name({:stack, _}), do: "stack"
   defp draft_refused_name({:link_malformed, cmd, _}), do: to_string(cmd)
   defp draft_refused_name({:malformed_args, :priority}), do: "p="
+  defp draft_refused_name({:malformed_args, :priority_range}), do: "p="
+  defp draft_refused_name({:malformed_args, {:delegate, typed, _, _}}), do: typed
   defp draft_refused_name({:malformed_args, :single}), do: "single"
   defp draft_refused_name(:retry), do: "retry"
 
@@ -548,6 +602,8 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name(:try_cancel), do: "try-"
   defp draft_refused_name(:undelegate), do: "delegate-"
   defp draft_refused_name({:undelegate_to, login}), do: "delegate-=#{login}"
+  # Named as typed: run again, it gets the hint rather than removing them all.
+  defp draft_refused_name({:malformed_args, {:undelegate, typed, _}}), do: typed
   defp draft_refused_name(:unlink_with_args), do: "unlink"
 
   defp draft_refused_name(cmd) when is_atom(cmd), do: to_string(cmd)

@@ -162,7 +162,12 @@ defmodule BorsNG.Command do
           | {:link, [pos_integer()]}
           | {:stack, [pos_integer()]}
           | {:link_malformed, :link | :stack, [binary]}
-          | {:malformed_args, :priority | :single}
+          | {:malformed_args,
+             :priority
+             | :priority_range
+             | :single
+             | {:delegate, binary, [binary], [binary]}
+             | {:undelegate, binary, [binary]}}
           | :unlink
           | :unlink_with_args
 
@@ -218,14 +223,14 @@ defmodule BorsNG.Command do
   def parse_cmd("merge" <> _), do: [:activate]
   def parse_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
   def parse_cmd("delegate+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  def parse_cmd("delegate+" <> rest), do: parse_delegate_self(rest)
+  def parse_cmd("delegate+" <> rest), do: parse_delegate_self("delegate+", rest)
   def parse_cmd("delegate-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
-  def parse_cmd("delegate-" <> _), do: [:undelegate]
+  def parse_cmd("delegate-" <> rest), do: parse_undelegate_all("delegate-", rest)
   def parse_cmd("d=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
   def parse_cmd("d+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  def parse_cmd("d+" <> rest), do: parse_delegate_self(rest)
+  def parse_cmd("d+" <> rest), do: parse_delegate_self("d+", rest)
   def parse_cmd("d-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
-  def parse_cmd("d-" <> _), do: [:undelegate]
+  def parse_cmd("d-" <> rest), do: parse_undelegate_all("d-", rest)
   def parse_cmd("+r" <> _), do: [{:autocorrect, "r+"}]
   def parse_cmd("-r" <> _), do: [{:autocorrect, "r-"}]
   def parse_cmd("+"), do: [{:autocorrect, "r+"}]
@@ -401,9 +406,9 @@ defmodule BorsNG.Command do
 
     case params do
       ["p", priority_s] ->
-        case Integer.parse(priority_s) do
-          {priority_i, _} -> {mentions, %{p: priority_i}}
-          :error -> :malformed_priority
+        case read_priority(priority_s) do
+          {:ok, priority_i} -> {mentions, %{p: priority_i}}
+          {:error, kind} -> {:malformed_priority, kind}
         end
 
       _ ->
@@ -416,7 +421,7 @@ defmodule BorsNG.Command do
 
     case arguments do
       "" -> []
-      :malformed_priority -> [{:malformed_args, :priority}]
+      {:malformed_priority, kind} -> [{:malformed_args, kind}]
       {mentions, %{p: p}} -> [{:set_priority, p}, {:activate_by, mentions}]
       arguments -> [{:activate_by, arguments}]
     end
@@ -542,10 +547,7 @@ defmodule BorsNG.Command do
   # are rejoined with ", " for parse_delegation_args/2, which expects comma
   # separation (a literal space terminates a name).
   defp extract_delegate_extras(s) do
-    {for_tokens, name_tokens} =
-      s
-      |> String.split(~r/[\s,]+/, trim: true)
-      |> Enum.split_with(&String.starts_with?(&1, "for="))
+    {for_tokens, name_tokens} = split_for_tokens(s)
 
     duration =
       for_tokens
@@ -560,6 +562,12 @@ defmodule BorsNG.Command do
     {Enum.join(name_tokens, ", "), duration}
   end
 
+  defp split_for_tokens(s) do
+    s
+    |> String.split(~r/[\s,]+/, trim: true)
+    |> Enum.split_with(&String.starts_with?(&1, "for="))
+  end
+
   defp parse_delegate_with(arguments, action) do
     {names, duration} = extract_delegate_extras(arguments)
 
@@ -571,17 +579,73 @@ defmodule BorsNG.Command do
     end)
   end
 
-  defp parse_delegate_self(rest) do
-    case extract_delegate_extras(rest) do
-      {_, nil} -> [:delegate]
-      {_, duration} -> [{:delegate, duration}]
+  # `d+` delegates the PR author. Names after it most likely mean `d=`, so
+  # refuse rather than delegate someone else. The refusal keeps what was
+  # typed, and its suggestion keeps any `for=`.
+  defp parse_delegate_self(typed, rest) do
+    case split_for_tokens(rest) do
+      {_, []} ->
+        case extract_delegate_extras(rest) do
+          {_, nil} -> [:delegate]
+          {_, duration} -> [{:delegate, duration}]
+        end
+
+      {for_tokens, name_tokens} ->
+        [{:malformed_args, {:delegate, typed <> rest, suggested_logins(name_tokens), for_tokens}}]
     end
   end
 
+  # `d-` removes every delegation. Anything after it most likely names the
+  # users meant to lose theirs, which is `d-=`, so refuse rather than remove
+  # them all. The refusal keeps what was typed.
+  defp parse_undelegate_all(_typed, ""), do: [:undelegate]
+
+  defp parse_undelegate_all(typed, rest) do
+    tokens = String.split(rest, ~r/[\s,]+/, trim: true)
+    [{:malformed_args, {:undelegate, typed <> rest, suggested_logins(tokens)}}]
+  end
+
+  # The names a refusal can suggest: all of the tokens, or none when any of
+  # them could not be a GitHub login.
+  defp suggested_logins(tokens) do
+    logins = Enum.map(tokens, &String.trim_leading(&1, "@"))
+    if Enum.all?(logins, &login_shaped?/1), do: logins, else: []
+  end
+
+  # Loose on purpose: this only decides whether the suggestion repeats the
+  # names. GitHub logins are letters, digits and hyphens; Enterprise managed
+  # users add `_shortcode`, and app accounts a `[bot]` suffix.
+  defp login_shaped?(token) do
+    String.match?(token, ~r/^[A-Za-z0-9][A-Za-z0-9_-]*(\[bot\])?$/)
+  end
+
   def parse_priority(binary) do
+    case read_priority(binary) do
+      {:ok, p} -> [{:set_priority, p}]
+      {:error, kind} -> [{:malformed_args, kind}]
+    end
+  end
+
+  # `Patch.priority` and `Batch.priority` are 32-bit columns. A value outside
+  # that range crashes the batcher's write instead of reaching the queue.
+  @min_priority -2_147_483_648
+  @max_priority 2_147_483_647
+
+  def priority_range, do: {@min_priority, @max_priority}
+
+  # The number must end at whitespace or the end of the text, so `p=5abc` is
+  # refused rather than read as 5.
+  defp read_priority(binary) do
     case Integer.parse(binary) do
-      {p, _} -> [{:set_priority, p}]
-      :error -> [{:malformed_args, :priority}]
+      {p, rest} ->
+        cond do
+          not String.match?(rest, ~r/^(\s|$)/) -> {:error, :priority}
+          p < @min_priority or p > @max_priority -> {:error, :priority_range}
+          true -> {:ok, p}
+        end
+
+      :error ->
+        {:error, :priority}
     end
   end
 
@@ -659,6 +723,7 @@ defmodule BorsNG.Command do
             :ok
 
           Permission.permission?(required_permission, c.commenter, c.patch) ->
+            cmd_list = resolve_delegation_logins(c, cmd_list)
             Enum.each(cmd_list, &run(c, &1))
             Enum.each(cmd_list, &log(c, &1))
 
@@ -668,6 +733,57 @@ defmodule BorsNG.Command do
       end
     end
   end
+
+  # Looks up every login the delegation commands name before any of them
+  # runs. One that GitHub does not know, or cannot look up, refuses every
+  # delegation command in the comment: half-applying `d=alice,alcie`, or
+  # applying `d-` without the `d=` meant to follow it, is the surprise being
+  # refused. The other commands still run. The lookup settles each login's
+  # spelling as GitHub has it, so `d=Alice` finds the stored `alice`.
+  defp resolve_delegation_logins(c, cmd_list) do
+    lookups =
+      cmd_list
+      |> Enum.flat_map(&delegation_login/1)
+      |> Enum.uniq()
+      |> Enum.map(&{&1, lookup_user(c, &1)})
+
+    unknown = for {login, :not_found} <- lookups, do: login
+    failed = for {login, :error} <- lookups, do: login
+
+    refusal =
+      cond do
+        unknown != [] -> {:delegation_refused, :unknown_users, unknown}
+        failed != [] -> {:delegation_refused, :lookup_failed, failed}
+        true -> nil
+      end
+
+    if refusal do
+      c.project.repo_xref
+      |> Project.installation_connection(Repo)
+      |> GitHub.post_comment!(c.pr_xref, Batcher.Message.generate_message(refusal))
+
+      Enum.reject(cmd_list, &delegation_cmd?/1)
+    else
+      Enum.map(cmd_list, fn cmd ->
+        case delegation_login(cmd) do
+          [login] ->
+            {_, {:ok, user}} = List.keyfind(lookups, login, 0)
+            put_elem(cmd, 1, user.login)
+
+          [] ->
+            cmd
+        end
+      end)
+    end
+  end
+
+  defp delegation_login({:delegate_to, login}), do: [login]
+  defp delegation_login({:delegate_to, login, _duration}), do: [login]
+  defp delegation_login({:undelegate_to, login}), do: [login]
+  defp delegation_login(_), do: []
+
+  defp delegation_cmd?(cmd) when is_tuple(cmd), do: delegation_cmd?(elem(cmd, 0))
+  defp delegation_cmd?(tag), do: tag in [:delegate, :delegate_to, :undelegate, :undelegate_to]
 
   # The `false` clauses are the commands that cannot lead to a merge: a trial
   # build, and taking state away.
@@ -681,6 +797,7 @@ defmodule BorsNG.Command do
   defp draft_blocked?(:unlink_with_args), do: false
   defp draft_blocked?(:undelegate), do: false
   defp draft_blocked?({:undelegate_to, _}), do: false
+  defp draft_blocked?({:malformed_args, {:undelegate, _, _}}), do: false
   defp draft_blocked?(:bros), do: false
   defp draft_blocked?(_), do: true
 
@@ -1058,24 +1175,29 @@ defmodule BorsNG.Command do
     )
   end
 
+  # `run/1` has already resolved the login, so this is a database hit.
   defp get_or_insert_user_by_login(c, login) do
+    {:ok, user} = lookup_user(c, login)
+    user
+  end
+
+  # Postgres compares logins case-sensitively, so `Alice` can miss a stored
+  # `alice`, and a renamed user misses under the new login. `sync_user/1`
+  # matches GitHub's answer by id, so neither inserts a duplicate.
+  @spec lookup_user(t, binary) :: {:ok, User.t()} | :not_found | :error
+  defp lookup_user(c, login) do
     case Repo.get_by(User, login: login) do
       nil ->
         installation = Repo.get!(Installation, c.project.installation_id)
 
-        gh_user =
-          GitHub.get_user_by_login!(
-            {:installation, installation.installation_xref},
-            login
-          )
-
-        Repo.insert!(%User{
-          login: gh_user.login,
-          user_xref: gh_user.id
-        })
+        case GitHub.get_user_by_login({:installation, installation.installation_xref}, login) do
+          {:ok, nil} -> :not_found
+          {:ok, gh_user} -> {:ok, Syncer.sync_user(gh_user)}
+          {:error, _} -> :error
+        end
 
       user ->
-        user
+        {:ok, user}
     end
   end
 

@@ -880,6 +880,8 @@ defmodule BorsNG.GitHub.ServerMock do
       do: {:ok, users[login]}
     )
     |> case do
+      # A test maps a login to `:error` to simulate a failed lookup.
+      {:ok, :error} -> {{:error, :get_user_by_login}, state}
       {:ok, user} -> {{:ok, user}, state}
       _ -> {{:ok, nil}, state}
     end

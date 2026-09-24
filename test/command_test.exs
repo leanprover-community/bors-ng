@@ -171,6 +171,78 @@ defmodule BorsNG.CommandTest do
   test "the malformed-argument hint is member-gated, below the delegation merge gate" do
     assert :member == Command.required_permission_level([{:malformed_args, :priority}])
     assert :member == Command.required_permission_level([{:malformed_args, :single}])
+
+    assert :member ==
+             Command.required_permission_level([
+               {:malformed_args, {:undelegate, "d- alice", ["alice"]}}
+             ])
+  end
+
+  test "a priority outside the 32-bit column is refused with its own hint" do
+    assert [{:set_priority, 2_147_483_647}] == Command.parse("bors p=2147483647")
+    assert [{:set_priority, -2_147_483_648}] == Command.parse("bors p=-2147483648")
+    assert [{:malformed_args, :priority_range}] == Command.parse("bors p=2147483648")
+    assert [{:malformed_args, :priority_range}] == Command.parse("bors p=-2147483649")
+    assert [{:malformed_args, :priority_range}] == Command.parse("bors p=99999999999")
+    # A modifier that cannot be applied swallows its activation.
+    assert [{:malformed_args, :priority_range}] == Command.parse("bors r+ p=99999999999")
+    assert [{:malformed_args, :priority_range}] == Command.parse("bors merge p=99999999999")
+    assert [{:malformed_args, :priority_range}] == Command.parse("bors r=me p=99999999999")
+    assert :member == Command.required_permission_level([{:malformed_args, :priority_range}])
+  end
+
+  test "a priority with letters stuck to it is refused, not truncated" do
+    assert [{:malformed_args, :priority}] == Command.parse("bors p=5abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors p=5.5")
+    assert [{:malformed_args, :priority}] == Command.parse("bors r+ p=5abc")
+    assert [{:malformed_args, :priority}] == Command.parse("bors r=me p=5abc")
+  end
+
+  test "delegate+ with names is refused, not taken as delegating the author" do
+    assert [{:malformed_args, {:delegate, "d+ alice", ["alice"], []}}] ==
+             Command.parse("bors d+ alice")
+
+    assert [
+             {:malformed_args,
+              {:delegate, "delegate+ @alice, @bob for=24h", ["alice", "bob"], ["for=24h"]}}
+           ] == Command.parse("bors delegate+ @alice, @bob for=24h")
+
+    assert [{:malformed_args, {:delegate, "d+ p=5", [], []}}] == Command.parse("bors d+ p=5")
+
+    assert :member ==
+             Command.required_permission_level([
+               {:malformed_args, {:delegate, "d+ alice", ["alice"], []}}
+             ])
+  end
+
+  test "bare delegate- removes every delegation" do
+    assert [:undelegate] == Command.parse("bors d-")
+    assert [:undelegate] == Command.parse("bors delegate-")
+    assert [:undelegate] == Command.parse("bors d-   ")
+  end
+
+  test "delegate- with arguments is refused, not taken as remove-all" do
+    assert [{:malformed_args, {:undelegate, "d- alice", ["alice"]}}] ==
+             Command.parse("bors d- alice")
+
+    assert [{:malformed_args, {:undelegate, "delegate- @alice, @bob", ["alice", "bob"]}}] ==
+             Command.parse("bors delegate- @alice, @bob")
+
+    assert [{:malformed_args, {:undelegate, "d-alice", ["alice"]}}] ==
+             Command.parse("bors d-alice")
+
+    assert [{:malformed_args, {:undelegate, "d- dependabot[bot]", ["dependabot[bot]"]}}] ==
+             Command.parse("bors d- dependabot[bot]")
+  end
+
+  test "delegate- with arguments that cannot be logins offers no names" do
+    assert [{:malformed_args, {:undelegate, "d- for=24h", []}}] ==
+             Command.parse("bors d- for=24h")
+
+    assert [{:malformed_args, {:undelegate, "d- alice p=5", []}}] ==
+             Command.parse("bors d- alice p=5")
+
+    assert [{:malformed_args, {:undelegate, "d-!", []}}] == Command.parse("bors d-!")
   end
 
   test "accept priority" do
@@ -893,6 +965,149 @@ defmodule BorsNG.CommandTest do
 
     assert Enum.any?(mock_comments(1), &String.contains?(&1, "All delegations have been removed"))
     refute Enum.any?(mock_comments(1), &String.contains?(&1, "still counts"))
+  end
+
+  defp put_mock_users(users) do
+    GitHub.ServerMock.get_state()
+    |> Map.put(:users, users)
+    |> GitHub.ServerMock.put_state()
+  end
+
+  test "delegate- with a name keeps every delegation and suggests delegate-=",
+       %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors d- pr_author", pr_xref: 1})
+
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=pr_author`"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "All delegations have been removed"))
+  end
+
+  test "an out-of-range priority replies with the range and leaves the patch alone",
+       %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors p=99999999999",
+      pr_xref: 1
+    })
+
+    assert 0 == Repo.get_by!(BorsNG.Database.Patch, pr_xref: 1, project_id: proj.id).priority
+
+    assert Enum.any?(
+             mock_comments(1),
+             &String.contains?(&1, "from -2147483648 to 2147483647")
+           )
+  end
+
+  test "delegate+ with a name delegates nobody and suggests delegate=", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+    Repo.delete_all(BorsNG.Database.UserPatchDelegation)
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d+ pr_author for=24h",
+      pr_xref: 1
+    })
+
+    assert [] == Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d=pr_author for=24h`"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "can now approve"))
+  end
+
+  # `d-` works on a draft, so its refusal must too, rather than being folded
+  # into the draft refusal.
+  test "delegate- with a name gets its hint on a draft", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d- pr_author",
+      pr_xref: 1,
+      is_draft: true
+    })
+
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=pr_author`"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
+  end
+
+  test "delegating to an unknown user says so instead of crashing", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors d=alcie", pr_xref: 1})
+
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "no GitHub user named `alcie`"))
+  end
+
+  test "undelegating an unknown user says so instead of crashing", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors d-=alcie", pr_xref: 1})
+
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "no GitHub user named `alcie`"))
+  end
+
+  # A typo refuses every delegation command in the comment, including the
+  # `d-` that was meant to clear the way for the new names.
+  test "one unknown login refuses every delegation command in the comment",
+       %{proj: proj} do
+    user = undelegate_note_setup(proj)
+    Repo.insert!(%BorsNG.Database.User{user_xref: 3, login: "reviewer"})
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d-\nbors d=reviewer,alcie,bbo",
+      pr_xref: 1
+    })
+
+    [delegation] = Repo.all(BorsNG.Database.UserPatchDelegation) |> Repo.preload(:user)
+    assert delegation.user.login == "pr_author"
+
+    assert Enum.any?(
+             mock_comments(1),
+             &String.contains?(&1, "no GitHub users named `alcie`, `bbo`")
+           )
+
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "All delegations have been removed"))
+  end
+
+  test "a failed user lookup says so and changes nothing", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+    put_mock_users(%{"alice" => :error})
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors d=alice", pr_xref: 1})
+
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "could not look up `alice`"))
+  end
+
+  # Postgres compares logins case-sensitively, so `Reviewer` misses the
+  # stored `reviewer`. GitHub's answer carries the same id, which must find
+  # that row instead of inserting a duplicate.
+  test "a login typed in another case delegates the stored user", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+    reviewer = Repo.insert!(%BorsNG.Database.User{user_xref: 3, login: "reviewer"})
+    put_mock_users(%{"Reviewer" => %GitHub.User{id: 3, login: "reviewer"}})
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors d=Reviewer", pr_xref: 1})
+
+    assert 3 == Repo.aggregate(BorsNG.Database.User, :count)
+
+    assert Enum.any?(
+             Repo.all(BorsNG.Database.UserPatchDelegation),
+             &(&1.user_id == reviewer.id)
+           )
+
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "reviewer can now approve"))
   end
 
   test "retry fails for non-members", %{proj: proj} do
