@@ -72,6 +72,55 @@ defmodule BorsNG.CommandTest do
     end
   end
 
+  test "a command typed in the wrong case gets a correction" do
+    assert [{:autocorrect, "r+"}] == Command.parse("bors R+")
+    assert [{:autocorrect, "merge"}] == Command.parse("bors MERGE")
+    assert [{:autocorrect, "p=5"}] == Command.parse("bors P=5")
+    assert [{:autocorrect, "d+"}] == Command.parse("bors D+")
+    assert [{:autocorrect, "link #2"}] == Command.parse("bors Link #2")
+    # Only the command word changes case: `try` passes its argument as typed.
+    assert [{:autocorrect, "r=Alice"}] == Command.parse("bors R=Alice")
+    assert [{:autocorrect, "try --Layout"}] == Command.parse("bors TRY --Layout")
+  end
+
+  test "a command with a space before its + - or = gets a correction" do
+    assert [{:autocorrect, "r+"}] == Command.parse("bors r +")
+    assert [{:autocorrect, "p=5"}] == Command.parse("bors p = 5")
+    assert [{:autocorrect, "r=alice"}] == Command.parse("bors r = alice")
+    # Bare `d` would otherwise answer these with its own refusal.
+    assert [{:autocorrect, "d+"}] == Command.parse("bors d +")
+    assert [{:autocorrect, "d=alice"}] == Command.parse("bors d =alice")
+    # `try -` builds `-`, so `Try -` is corrected to that, not to `try-`.
+    assert [{:autocorrect, "try -"}] == Command.parse("bors Try -")
+    assert [{:try, " -"}] == Command.parse("bors try -")
+  end
+
+  test "a command with no space after the colon gets a correction" do
+    assert [{:autocorrect, "r+"}] == Command.parse("bors:r+")
+    assert [{:autocorrect, "merge"}] == Command.parse("bors:Merge")
+    assert [:activate] == Command.parse("bors: r+")
+    assert [] == Command.parse("bors:doink")
+    assert [] == Command.parse("bors:")
+  end
+
+  test "a correction is only offered for something bors would run" do
+    assert [] == Command.parse("bors Doink")
+    assert [] == Command.parse("bors Merged this")
+    # Already a hint, and correcting the case would not change it.
+    assert [{:malformed_args, :single}] == Command.parse("bors single On")
+
+    assert [{:malformed_args, {:delegate, "d alice", ["alice"], []}}] ==
+             Command.parse("bors d alice")
+
+    # The existing `+r` corrections are unchanged.
+    assert [{:autocorrect, "r+"}] == Command.parse("bors +r")
+    assert [{:autocorrect, "r-"}] == Command.parse("bors -")
+  end
+
+  test "a miscased command among link arguments is refused like the command" do
+    assert [{:link_malformed, :link, ["R+"]}] == Command.parse("bors link #1 R+")
+  end
+
   test "punctuation after a command word still ends it" do
     assert [:activate] == Command.parse("bors merge!")
     assert [:activate] == Command.parse("bors merge.")
@@ -1135,6 +1184,50 @@ defmodule BorsNG.CommandTest do
     assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
     assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=pr_author`"))
     refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
+  end
+
+  defp posted_correction?(text),
+    do: Enum.any?(mock_comments(1) || [], &(&1 == "Did you mean `bors #{text}`?"))
+
+  test "a reviewer is offered the correction", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors R+", pr_xref: 1})
+
+    assert posted_correction?("r+")
+  end
+
+  # A delegate may run `r+` on this pull request, so they hear about it. The
+  # delegation is untouched: the correction never reaches the merge-time gate.
+  test "a delegate is offered a correction to r+", %{proj: proj} do
+    undelegate_note_setup(proj)
+    delegate = Repo.get_by!(BorsNG.Database.User, login: "pr_author")
+
+    Command.run(%Command{project: proj, commenter: delegate, comment: "bors R+", pr_xref: 1})
+
+    assert posted_correction?("r+")
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+  end
+
+  test "someone who could not run the command is not offered the correction",
+       %{proj: proj} do
+    undelegate_note_setup(proj)
+    outsider = Repo.insert!(%BorsNG.Database.User{user_xref: 9, login: "outsider"})
+
+    for comment <- ["bors R+", "bors r = alice", "bors +r", "bors:retry"] do
+      Command.run(%Command{project: proj, commenter: outsider, comment: comment, pr_xref: 1})
+    end
+
+    assert [] == mock_comments(1)
+  end
+
+  test "a correction to a command anyone may run is offered to anyone", %{proj: proj} do
+    undelegate_note_setup(proj)
+    outsider = Repo.insert!(%BorsNG.Database.User{user_xref: 9, login: "outsider"})
+
+    Command.run(%Command{project: proj, commenter: outsider, comment: "bors Ping", pr_xref: 1})
+
+    assert posted_correction?("ping")
   end
 
   # `d-=` works on a draft, so its hint must too.

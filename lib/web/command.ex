@@ -192,7 +192,10 @@ defmodule BorsNG.Command do
     comment
     |> String.splitter("\n")
     |> Enum.flat_map(fn string ->
-      trim_and_parse_cmd(Regex.named_captures(regex(), string))
+      case Regex.named_captures(regex(), string) do
+        nil -> parse_unspaced(string)
+        captures -> trim_and_parse_cmd(captures)
+      end
     end)
   end
 
@@ -203,12 +206,59 @@ defmodule BorsNG.Command do
   end
 
   def trim_and_parse_cmd(%{"command" => cmd}) do
-    cmd
-    |> String.trim()
-    |> parse_cmd()
+    cmd = String.trim(cmd)
+    cmds = parse_cmd(cmd)
+
+    # A line that reads as nothing, or only as a hint, may be a real
+    # command typed a little wrong. The hint case matters for bare `d`,
+    # which would otherwise answer `d +` with its own refusal.
+    with true <- Enum.all?(cmds, &hint?/1),
+         corrected when is_binary(corrected) <- correction(cmd) do
+      [{:autocorrect, corrected}]
+    else
+      _ -> cmds
+    end
   end
 
   def trim_and_parse_cmd(_), do: []
+
+  # `bors:r+`: the trigger pattern needs a space after the colon.
+  defp parse_unspaced(string) do
+    with %{"command" => cmd} <-
+           Regex.named_captures(~r/^#{command_trigger()}:(?<command>\S.*)/i, string),
+         cmd = String.trim(cmd),
+         corrected when is_binary(corrected) <-
+           if(real_cmds?(parse_cmd(cmd)), do: cmd, else: correction(cmd)) do
+      [{:autocorrect, corrected}]
+    else
+      _ -> []
+    end
+  end
+
+  # The command text bors would read, if it can be had by lowercasing the
+  # command word (`R+`, `Merge`) or else by also closing up the spaces around
+  # its `+`, `-` or `=` (`r +`, `p = 5`). Only the command word changes case:
+  # `try` passes its argument to CI as typed. Trying the lowercase alone
+  # first keeps `Try -` a build of `-`, as `try -` is.
+  defp correction(cmd) do
+    lowered = Regex.replace(~r/^[A-Za-z]+/, cmd, &String.downcase/1)
+
+    closed =
+      lowered
+      |> String.replace(~r/^([a-z]+)\s+([+-])(?=\s|=|$)/, "\\1\\2")
+      |> String.replace(~r/^([a-z]+[+-]?)\s*=\s*/, "\\1=")
+
+    Enum.find([lowered, closed], &(&1 != cmd and real_cmds?(parse_cmd(&1))))
+  end
+
+  defp real_cmds?(cmds), do: cmds != [] and not Enum.any?(cmds, &hint?/1)
+
+  # Replies about what bors could not read, rather than commands.
+  defp hint?({:malformed_args, _}), do: true
+  defp hint?({:link_malformed, _, _}), do: true
+  defp hint?(:unlink_with_args), do: true
+  defp hint?({:autocorrect, _}), do: true
+  defp hint?(_), do: false
 
   def parse_cmd(cmd) do
     if run_on_word?(cmd), do: [], else: match_cmd(cmd)
@@ -347,10 +397,10 @@ defmodule BorsNG.Command do
   # Tokens that read as another bors command or its argument on the same
   # line. Refuse rather than guess which pull requests were meant. Asking
   # the real parser keeps this list from drifting as commands are added.
-  # The extra check catches key=value fragments the parser does not read on
-  # their own, like `for=2w`.
+  # The extra checks catch a command typed a little wrong (`R+`), and
+  # key=value fragments the parser does not read on their own, like `for=2w`.
   defp other_command?(token) do
-    parse_cmd(token) != [] or String.contains?(token, "=")
+    parse_cmd(token) != [] or correction(token) != nil or String.contains?(token, "=")
   end
 
   defp ref_tokens(arguments) do
@@ -818,6 +868,11 @@ defmodule BorsNG.Command do
     end
   end
 
+  defp may_run?(_c, :none), do: true
+  defp may_run?(%Command{commenter: nil}, _level), do: false
+  defp may_run?(%Command{patch: nil}, _level), do: false
+  defp may_run?(c, level), do: Permission.permission?(level, c.commenter, c.patch)
+
   defp delegation_login({:delegate_to, login}), do: [login]
   defp delegation_login({:delegate_to, login, _duration}), do: [login]
   defp delegation_login({:undelegate_to, login}), do: [login]
@@ -1104,13 +1159,24 @@ defmodule BorsNG.Command do
     Attemptor.cancel(attemptor, c.patch.id)
   end
 
+  # Only someone who could run the corrected command is told about it. The
+  # correction is `:none` to `required_permission_level/1`, so the check is
+  # made here, and with `Permission.permission?/3` alone: the merge-time
+  # delegation gate revokes as a side effect, and a typo must not trip it.
   def run(c, {:autocorrect, command}) do
-    c.project.repo_xref
-    |> Project.installation_connection(Repo)
-    |> GitHub.post_comment!(
-      c.pr_xref,
-      ~s/Did you mean "#{command}"?/
-    )
+    level = command |> parse_cmd() |> required_permission_level()
+    c = if level == :none, do: c, else: fetch_patch(c)
+
+    if may_run?(c, level) do
+      c.project.repo_xref
+      |> Project.installation_connection(Repo)
+      |> GitHub.post_comment!(
+        c.pr_xref,
+        "Did you mean `#{command_trigger()} #{command}`?"
+      )
+    end
+
+    :ok
   end
 
   def run(c, :ping) do
