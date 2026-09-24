@@ -168,7 +168,9 @@ defmodule BorsNG.Command do
              | :single
              | {:delegate, binary, [binary], [binary]}
              | {:undelegate, binary, [binary]}
-             | {:no_names, binary}}
+             | {:no_names, binary}
+             | {:leftover, binary, binary, binary}
+             | {:bad_names, binary, [binary]}}
           | :unlink
           | :unlink_with_args
 
@@ -211,12 +213,16 @@ defmodule BorsNG.Command do
 
     # A line that reads as nothing, or only as a hint, may be a real
     # command typed a little wrong. The hint case matters for bare `d`,
-    # which would otherwise answer `d +` with its own refusal.
-    with true <- Enum.all?(cmds, &hint?/1),
-         corrected when is_binary(corrected) <- correction(cmd) do
-      [{:autocorrect, corrected}]
+    # which would otherwise answer `d +` with its own refusal. A line that
+    # reads as nothing but corrects to a hint (`R+ now`) gets that hint.
+    if real_cmds?(cmds) do
+      cmds
     else
-      _ -> cmds
+      case correction(cmd) do
+        {:ok, corrected} -> [{:autocorrect, corrected}]
+        {:hints, hints} when cmds == [] -> hints
+        _ -> cmds
+      end
     end
   end
 
@@ -224,22 +230,32 @@ defmodule BorsNG.Command do
 
   # `bors:r+`: the trigger pattern needs a space after the colon.
   defp parse_unspaced(string) do
-    with %{"command" => cmd} <-
-           Regex.named_captures(~r/^#{command_trigger()}:(?<command>\S.*)/i, string),
-         cmd = String.trim(cmd),
-         corrected when is_binary(corrected) <-
-           if(real_cmds?(parse_cmd(cmd)), do: cmd, else: correction(cmd)) do
-      [{:autocorrect, corrected}]
-    else
-      _ -> []
+    case Regex.named_captures(~r/^#{command_trigger()}:(?<command>\S.*)/i, string) do
+      %{"command" => cmd} ->
+        cmd = String.trim(cmd)
+        cmds = parse_cmd(cmd)
+
+        cond do
+          real_cmds?(cmds) -> [{:autocorrect, cmd}]
+          cmds != [] -> cmds
+          true -> unspaced_correction(correction(cmd))
+        end
+
+      nil ->
+        []
     end
   end
+
+  defp unspaced_correction({:ok, corrected}), do: [{:autocorrect, corrected}]
+  defp unspaced_correction({:hints, hints}), do: hints
+  defp unspaced_correction(nil), do: []
 
   # The command text bors would read, if it can be had by lowercasing the
   # command word (`R+`, `Merge`) or else by also closing up the spaces around
   # its `+`, `-` or `=` (`r +`, `p = 5`). Only the command word changes case:
   # `try` passes its argument to CI as typed. Trying the lowercase alone
-  # first keeps `Try -` a build of `-`, as `try -` is.
+  # first keeps `Try -` a build of `-`, as `try -` is. Failing that, the
+  # hints the first changed text reads as, such as a leftover for `R+ now`.
   defp correction(cmd) do
     lowered = Regex.replace(~r/^[A-Za-z]+/, cmd, &String.downcase/1)
 
@@ -248,7 +264,22 @@ defmodule BorsNG.Command do
       |> String.replace(~r/^([a-z]+)\s+([+-])(?=\s|=|$)/, "\\1\\2")
       |> String.replace(~r/^([a-z]+[+-]?)\s*=\s*/, "\\1=")
 
-    Enum.find([lowered, closed], &(&1 != cmd and real_cmds?(parse_cmd(&1))))
+    parsed =
+      [lowered, closed]
+      |> Enum.uniq()
+      |> Enum.reject(&(&1 == cmd))
+      |> Enum.map(&{&1, parse_cmd(&1)})
+
+    case Enum.find(parsed, fn {_, cmds} -> real_cmds?(cmds) end) do
+      {corrected, _} ->
+        {:ok, corrected}
+
+      nil ->
+        case Enum.find(parsed, fn {_, cmds} -> cmds != [] end) do
+          {_, hints} -> {:hints, hints}
+          nil -> nil
+        end
+    end
   end
 
   defp real_cmds?(cmds), do: cmds != [] and not Enum.any?(cmds, &hint?/1)
@@ -267,30 +298,38 @@ defmodule BorsNG.Command do
   # A command word running on into a longer word is a sentence about bors,
   # not a command to it: `bors merged this`, `bors unlinked them`. A `-`
   # continues the word too (`single-handedly`, `merge-conflicts`), except as
-  # the `-` of `merge-`, `link-` and a bare `try-`. So `try` arguments need
-  # a space: `try-cancel` is a mistyped `try-`, not a build of `-cancel`.
+  # the `-` of `merge-`, `link-`, and of `try-` before a space or the end of
+  # the line. So `try` arguments need a space: `try-cancel` is a mistyped
+  # `try-`, not a build of `-cancel`.
   # Bare `delegate` and `d` end only at a space or the end of the line, or
   # else `d` would read `bors does` and `bors d'oh`. Their `+`, `-` and `=`
   # forms are unaffected.
   defp run_on_word?(cmd) do
     Regex.match?(
-      ~r/^(?:(?:merge|link)-?[\p{L}\p{N}_]|try(?:[\p{L}\p{N}_]|-.)|(?:single|ping|retry|cancel|unlink|stack)[\p{L}\p{N}_-]|(?:delegate|d(?!elegate))[^\s+=-])/u,
+      ~r/^(?:(?:merge|link)-?[\p{L}\p{N}_]|try(?:[\p{L}\p{N}_]|-\S)|(?:single|ping|retry|cancel|unlink|stack)[\p{L}\p{N}_-]|(?:delegate|d(?!elegate))[^\s+=-])/u,
       cmd
     )
   end
 
-  defp match_cmd("try-"), do: [:try_cancel]
+  defp match_cmd("try-" <> rest), do: no_args([:try_cancel], "try-", rest)
   defp match_cmd("try" <> arguments), do: [{:try, arguments}]
-  defp match_cmd("single" <> rest), do: parse_single_patch(rest)
-  defp match_cmd("r+ single" <> rest), do: with_activation(parse_single_patch(rest))
-  defp match_cmd("r+ p=" <> rest), do: with_activation(parse_priority(rest))
-  defp match_cmd("r+" <> _), do: [:activate]
-  defp match_cmd("r-" <> _), do: [:deactivate]
+  defp match_cmd("single" <> rest), do: parse_single_patch("single", rest)
+
+  defp match_cmd("r+ single" <> rest),
+    do: with_activation(parse_single_patch("r+ single", rest))
+
+  defp match_cmd("r+ p=" <> rest), do: with_activation(parse_priority("r+ p=", rest))
+  defp match_cmd("r+" <> rest), do: no_args([:activate], "r+", rest)
+  defp match_cmd("r-" <> rest), do: no_args([:deactivate], "r-", rest)
   defp match_cmd("r=" <> arguments), do: activation_args(arguments, "r=")
-  defp match_cmd("merge-" <> _), do: [:deactivate]
-  defp match_cmd("merge p=" <> rest), do: with_activation(parse_priority(rest))
+  defp match_cmd("merge-" <> rest), do: no_args([:deactivate], "merge-", rest)
+
+  defp match_cmd("merge single" <> rest),
+    do: with_activation(parse_single_patch("merge single", rest))
+
+  defp match_cmd("merge p=" <> rest), do: with_activation(parse_priority("merge p=", rest))
   defp match_cmd("merge=" <> arguments), do: activation_args(arguments, "merge=")
-  defp match_cmd("merge" <> _), do: [:activate]
+  defp match_cmd("merge" <> rest), do: no_args([:activate], "merge", rest)
   defp match_cmd("delegate=" <> arguments), do: delegate_to_args(arguments, "delegate=")
   defp match_cmd("delegate+=" <> arguments), do: delegate_to_args(arguments, "delegate+=")
   defp match_cmd("delegate+" <> rest), do: parse_delegate_self("delegate+", rest)
@@ -308,24 +347,30 @@ defmodule BorsNG.Command do
   defp match_cmd("-r" <> _), do: [{:autocorrect, "r-"}]
   defp match_cmd("+"), do: [{:autocorrect, "r+"}]
   defp match_cmd("-"), do: [{:autocorrect, "r-"}]
-  defp match_cmd("ping" <> _), do: [:ping]
-  defp match_cmd("p=" <> rest), do: parse_priority(rest)
-  defp match_cmd("retry" <> _), do: [:retry]
-  defp match_cmd("cancel" <> _), do: [:deactivate]
+  defp match_cmd("ping" <> rest), do: no_args([:ping], "ping", rest)
+  defp match_cmd("p=" <> rest), do: parse_priority("p=", rest)
+  defp match_cmd("retry" <> rest), do: no_args([:retry], "retry", rest)
+  defp match_cmd("cancel" <> rest), do: no_args([:deactivate], "cancel", rest)
   defp match_cmd("unlink" <> arguments), do: parse_unlink(arguments)
   defp match_cmd("link-" <> arguments), do: parse_unlink(arguments)
   defp match_cmd("link" <> arguments), do: parse_bundle_refs(:link, arguments)
   defp match_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
   defp match_cmd(_), do: []
 
-  # `unlink` dissolves the whole bundle. Naming pull requests suggests the
-  # user expects to remove just those, so refuse rather than surprise them.
-  defp parse_unlink(arguments) do
-    case parse_pr_refs(arguments) ++ malformed_pr_refs(arguments) do
-      [] -> [:unlink]
-      _ -> [:unlink_with_args]
-    end
-  end
+  # `unlink` dissolves the whole bundle and takes nothing after it. Naming
+  # pull requests suggests the user expects to remove just those, so refuse
+  # rather than surprise them.
+  defp parse_unlink(""), do: [:unlink]
+  defp parse_unlink(_arguments), do: [:unlink_with_args]
+
+  # A command that takes nothing after it refuses anything that follows,
+  # punctuation included: `r- now` is not `r-`, and the reply says so.
+  defp no_args(cmds, _understood, ""), do: cmds
+  defp no_args(_cmds, understood, rest), do: [leftover(understood, rest)]
+
+  # `understood` is the command read before `rest`, which was left over.
+  defp leftover(understood, rest),
+    do: {:malformed_args, {:leftover, understood <> rest, understood, String.trim(rest)}}
 
   # A silent mistype would link the wrong pull requests. Refuse if any
   # argument was plausibly meant as a reference or another bors command.
@@ -415,26 +460,19 @@ defmodule BorsNG.Command do
   end
 
   @doc ~S"""
-  The username part of an activation-by command is defined like this:
+  The arguments of an activation-by command (`r=` or `merge=`): reviewer
+  names separated by commas, then optionally a space and `p=N`. Nothing else
+  may follow.
 
-    * It may start with whitespace
     * @-signs are stripped
-    * ", " is converted to ","
-    * Otherwise, whitespace ends it.
+    * ", " is read as ","
+    * Every name must look like a GitHub login
 
       iex> alias BorsNG.Command
-      iex> Command.parse_activation_args("", " this, is, whitespace heavy")
-      "this,is,whitespace"
-      iex> Command.parse_activation_args("", " @this, @has, @ats")
-      "this,has,ats"
-      iex> Command.parse_activation_args("", " trimmed ")
-      "trimmed"
-      iex> Command.parse_activation_args("", "what\never")
-      "what"
-      iex> Command.parse_activation_args("", "")
-      ""
       iex> Command.parse_activation_args("somebody")
       [{:activate_by, "somebody"}]
+      iex> Command.parse_activation_args(" @this, @has, @ats")
+      [{:activate_by, "this,has,ats"}]
       iex> Command.parse_activation_args("")
       []
       iex> Command.parse_activation_args("  ")
@@ -442,58 +480,42 @@ defmodule BorsNG.Command do
       iex> Command.parse_activation_args("somebody p=10")
       [{:set_priority, 10}, {:activate_by, "somebody"}]
   """
-  def parse_activation_args("", string) do
-    {rest, mentions} =
-      string
-      |> String.trim()
-      |> String.replace(~r/, */, ",")
-      |> String.split("\n", parts: 2)
-      |> List.first()
-      |> String.trim()
-      |> String.split(~r/, */)
-      |> Enum.map(fn s -> String.replace(s, "@", "") end)
-      |> List.pop_at(-1)
+  def parse_activation_args(arguments), do: read_activation(arguments, "r=")
 
-    [last_mention | rest_list] =
-      rest
+  defp read_activation(arguments, typed) do
+    [names_part | rest] =
+      arguments
       |> String.trim()
+      |> String.replace(~r/,\s*/, ",")
       |> String.split(~r/\s+/, parts: 2)
 
-    mentions = mentions ++ [last_mention]
-    mentions = Enum.join(mentions, ",")
+    names =
+      names_part
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.replace(&1, "@", ""))
+      |> Enum.reject(&(&1 == ""))
 
-    params =
-      case rest_list do
-        [] ->
-          nil
+    mentions = Enum.join(names, ",")
 
-        [rest] ->
-          rest
-          |> String.trim()
-          |> String.split("=", parts: 2)
-          |> Enum.map(&String.trim(&1))
-      end
+    case {names, Enum.reject(names, &login_shaped?/1), rest} do
+      {[], _, _} ->
+        []
 
-    case params do
-      ["p", priority_s] ->
-        case read_priority(priority_s) do
-          {:ok, priority_i} -> {mentions, %{p: priority_i}}
-          {:error, kind} -> {:malformed_priority, kind}
+      {_, [_ | _] = bad, _} ->
+        [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+
+      {_, [], []} ->
+        [{:activate_by, mentions}]
+
+      {_, [], ["p=" <> priority]} ->
+        case read_priority(priority) do
+          {:ok, p, ""} -> [{:set_priority, p}, {:activate_by, mentions}]
+          {:ok, p, more} -> [leftover("#{typed}#{mentions} p=#{p}", more)]
+          {:error, kind} -> [{:malformed_args, kind}]
         end
 
-      _ ->
-        mentions
-    end
-  end
-
-  def parse_activation_args(arguments) do
-    arguments = parse_activation_args("", arguments)
-
-    case arguments do
-      "" -> []
-      {:malformed_priority, kind} -> [{:malformed_args, kind}]
-      {mentions, %{p: p}} -> [{:set_priority, p}, {:activate_by, mentions}]
-      arguments -> [{:activate_by, arguments}]
+      {_, [], [more]} ->
+        [leftover(typed <> mentions, " " <> more)]
     end
   end
 
@@ -675,13 +697,41 @@ defmodule BorsNG.Command do
 
   # A `=` form with no names does nothing, so say what it needs instead.
   defp activation_args(arguments, typed),
-    do: arguments |> parse_activation_args() |> or_no_names(typed)
+    do: arguments |> read_activation(typed) |> or_no_names(typed)
 
-  defp delegate_to_args(arguments, typed),
-    do: arguments |> parse_delegate_with(:delegate_to) |> or_no_names(typed)
+  # A token that cannot be a login is refused before GitHub is asked about
+  # it: `d=alice p=5` is a command run on, not a user named `p=5`.
+  defp delegate_to_args(arguments, typed) do
+    {_for_tokens, name_tokens} = split_for_tokens(arguments)
 
-  defp undelegate_to_args(arguments, typed),
-    do: arguments |> parse_delegation_args(:undelegate_to) |> or_no_names(typed)
+    case bad_logins(name_tokens) do
+      [] -> arguments |> parse_delegate_with(:delegate_to) |> or_no_names(typed)
+      bad -> [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+    end
+  end
+
+  # Names separated by commas or spaces, as `d=` takes them.
+  defp undelegate_to_args(arguments, typed) do
+    tokens = String.split(arguments, ~r/[\s,]+/, trim: true)
+
+    case bad_logins(tokens) do
+      [] ->
+        tokens
+        |> Enum.map(&String.replace(&1, "@", ""))
+        |> Enum.reject(&(&1 == ""))
+        |> Enum.map(&{:undelegate_to, &1})
+        |> or_no_names(typed)
+
+      bad ->
+        [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+    end
+  end
+
+  defp bad_logins(tokens) do
+    tokens
+    |> Enum.map(&String.replace(&1, "@", ""))
+    |> Enum.reject(&(&1 == "" or login_shaped?(&1)))
+  end
 
   defp or_no_names([], typed), do: [{:malformed_args, {:no_names, typed}}]
   defp or_no_names(cmds, _typed), do: cmds
@@ -710,9 +760,11 @@ defmodule BorsNG.Command do
     String.match?(token, ~r/^[A-Za-z0-9][A-Za-z0-9_-]*(\[bot\])?$/)
   end
 
-  def parse_priority(binary) do
+  # `prefix` is the command text before the number, such as `r+ p=`.
+  defp parse_priority(prefix, binary) do
     case read_priority(binary) do
-      {:ok, p} -> [{:set_priority, p}]
+      {:ok, p, ""} -> [{:set_priority, p}]
+      {:ok, p, rest} -> [leftover("#{prefix}#{p}", rest)]
       {:error, kind} -> [{:malformed_args, kind}]
     end
   end
@@ -725,14 +777,15 @@ defmodule BorsNG.Command do
   def priority_range, do: {@min_priority, @max_priority}
 
   # The number must end at whitespace or the end of the text, so `p=5abc` is
-  # refused rather than read as 5.
+  # refused rather than read as 5. What follows the whitespace is returned
+  # for the caller to refuse.
   defp read_priority(binary) do
     case Integer.parse(binary) do
       {p, rest} ->
         cond do
           not String.match?(rest, ~r/^(\s|$)/) -> {:error, :priority}
           p < @min_priority or p > @max_priority -> {:error, :priority_range}
-          true -> {:ok, p}
+          true -> {:ok, p, rest}
         end
 
       :error ->
@@ -740,16 +793,12 @@ defmodule BorsNG.Command do
     end
   end
 
-  def parse_single_patch(binary) do
-    case String.trim(binary) do
-      "on" <> _ ->
-        [{:set_is_single, true}]
-
-      "off" <> _ ->
-        [{:set_is_single, false}]
-
-      _ ->
-        [{:malformed_args, :single}]
+  # `prefix` is the command text before `on` or `off`, such as `r+ single`.
+  defp parse_single_patch(prefix, binary) do
+    case Regex.run(~r/^\s+(on|off)((?:\s.*)?)$/s, binary, capture: :all_but_first) do
+      [value, ""] -> [{:set_is_single, value == "on"}]
+      [value, rest] -> [leftover("#{prefix} #{value}", rest)]
+      nil -> [{:malformed_args, :single}]
     end
   end
 
@@ -896,6 +945,14 @@ defmodule BorsNG.Command do
   defp draft_blocked?({:malformed_args, {:undelegate, _, _}}), do: false
   defp draft_blocked?({:malformed_args, {:no_names, "d-="}}), do: false
   defp draft_blocked?({:malformed_args, {:no_names, "delegate-="}}), do: false
+
+  # A refusal of a command a draft allows (`r- now`) is allowed too.
+  defp draft_blocked?({:malformed_args, {:leftover, _typed, understood, _rest}}),
+    do: understood |> parse_cmd() |> Enum.any?(&draft_blocked?/1)
+
+  defp draft_blocked?({:malformed_args, {:bad_names, typed, _}}),
+    do: not String.starts_with?(typed, ["d-=", "delegate-="])
+
   defp draft_blocked?(:bros), do: false
   defp draft_blocked?(_), do: true
 
@@ -976,6 +1033,15 @@ defmodule BorsNG.Command do
 
   def required_permission_level_cmd(:unlink_with_args) do
     :project_member
+  end
+
+  # `ping` needs no permission, so neither does being told `ping now` is
+  # not `ping`.
+  def required_permission_level_cmd({:malformed_args, {:leftover, _typed, understood, _rest}}) do
+    case understood |> parse_cmd() |> required_permission_level() do
+      :none -> :none
+      _ -> :member
+    end
   end
 
   # The hint about an unreadable argument is gated at :member — enough to

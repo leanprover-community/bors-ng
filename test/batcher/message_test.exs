@@ -35,7 +35,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
              "Could not read `#2x` in `bors link`"
 
     assert Message.generate_message({:link_error, :unlink_args}) =~
-             "takes no pull request numbers"
+             "takes nothing after it"
 
     assert Message.generate_message({:unlinked, :fresh_approval_needed}) =~
              "no longer linked. The approval it held"
@@ -918,6 +918,64 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     msg = Message.generate_message({:draft_refused, [{:malformed_args, {:no_names, "r="}}], []})
 
     assert msg =~ "`bors r=`"
+  end
+
+  test "the leftover hint says what was run, what was not, and what to do" do
+    msg = Message.generate_message({:malformed_args, {:leftover, "r- now", "r-", "now"}})
+
+    assert msg =~ "bors did not run `bors r- now`"
+    assert msg =~ "`bors r-` takes nothing after it, but `now` followed"
+    assert msg =~ "Reply with just `bors r-`"
+    refute msg =~ "commas"
+  end
+
+  # `r=alice bob` most likely meant two reviewers.
+  test "the leftover hint after r= names reviewers the way r= takes them" do
+    msg =
+      Message.generate_message({:malformed_args, {:leftover, "r=alice bob", "r=alice", "bob"}})
+
+    assert msg =~ "`bors r=alice,bob`"
+
+    msg =
+      Message.generate_message(
+        {:malformed_args, {:leftover, "merge=alice bob", "merge=alice", "bob"}}
+      )
+
+    assert msg =~ "`bors merge=alice,bob`"
+
+    msg =
+      Message.generate_message(
+        {:malformed_args, {:leftover, "r=alice p=5 now", "r=alice p=5", "now"}}
+      )
+
+    refute msg =~ "commas"
+  end
+
+  test "the bad-name hint names each token" do
+    assert Message.generate_message({:malformed_args, {:bad_names, "d=alice p=5", ["p=5"]}}) =~
+             "`p=5` cannot be a GitHub username."
+
+    assert Message.generate_message({:malformed_args, {:bad_names, "d=p=5 r+", ["p=5", "r+"]}}) =~
+             "`p=5`, `r+` cannot be GitHub usernames."
+  end
+
+  test "the leftover and bad-name hints cannot be parsed as a bors command" do
+    for msg <- [
+          {:malformed_args, {:leftover, "r- now", "r-", "now"}},
+          {:malformed_args, {:leftover, "r=alice bob", "r=alice", "bob"}},
+          {:malformed_args, {:bad_names, "d=alice p=5", ["p=5"]}}
+        ] do
+      assert [] == BorsNG.Command.parse(Message.generate_message(msg))
+    end
+  end
+
+  test "the draft refusal names a leftover the way it was typed" do
+    msg =
+      Message.generate_message(
+        {:draft_refused, [{:malformed_args, {:leftover, "r+ now", "r+", "now"}}], []}
+      )
+
+    assert msg =~ "`bors r+ now`"
   end
 
   test "the delegate+ refusal without names gives an example" do

@@ -333,6 +333,30 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: `bors #{typed}` needs the users to delegate, e.g. `bors #{typed}alice,bob`. To delegate the PR author, reply with `bors #{self_cmd}`."
   end
 
+  def generate_message({:malformed_args, {:leftover, typed, understood, rest}}) do
+    # `r=alice bob` most likely meant two reviewers.
+    commas =
+      case String.split(understood, "=", parts: 2) do
+        [cmd, names] when cmd in ["r", "merge"] ->
+          if String.contains?(names, " "),
+            do: "",
+            else:
+              " To name several reviewers, separate them with commas, e.g. `bors #{cmd}=alice,bob`."
+
+        _ ->
+          ""
+      end
+
+    ":-1: bors did not run `bors #{typed}`: `bors #{understood}` takes nothing after it, but `#{rest}` followed. Reply with just `bors #{understood}`, and put any other command on a line of its own.#{commas}"
+  end
+
+  def generate_message({:malformed_args, {:bad_names, typed, bad}}) do
+    what =
+      if match?([_], bad), do: "cannot be a GitHub username", else: "cannot be GitHub usernames"
+
+    ":-1: bors did not run `bors #{typed}`: #{Enum.map_join(bad, ", ", &"`#{&1}`")} #{what}. Put any other command on a line of its own."
+  end
+
   def generate_message({:delegation_refused, :unknown_users, [login]}) do
     ":-1: There is no GitHub user named `#{login}`, so bors made no delegation changes. Check the spelling and try again."
   end
@@ -396,7 +420,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:link_error, :unlink_args}) do
-    ":-1: `bors unlink` takes no pull request numbers: it dissolves this pull request's whole bundle. To drop one member, `bors unlink` and then `bors link` the ones that still belong together."
+    ":-1: `bors unlink` takes nothing after it: it dissolves this pull request's whole bundle. To drop one member, `bors unlink` and then `bors link` the ones that still belong together."
   end
 
   def generate_message({:stack_stale, child_xref, parent_xref}) do
@@ -607,6 +631,8 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name({:malformed_args, :priority_range}), do: "p="
   defp draft_refused_name({:malformed_args, {:delegate, typed, _, _}}), do: typed
   defp draft_refused_name({:malformed_args, {:no_names, typed}}), do: typed
+  defp draft_refused_name({:malformed_args, {:leftover, typed, _, _}}), do: typed
+  defp draft_refused_name({:malformed_args, {:bad_names, typed, _}}), do: typed
   defp draft_refused_name({:malformed_args, :single}), do: "single"
   defp draft_refused_name(:retry), do: "retry"
 

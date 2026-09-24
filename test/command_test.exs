@@ -121,17 +121,120 @@ defmodule BorsNG.CommandTest do
     assert [{:link_malformed, :link, ["R+"]}] == Command.parse("bors link #1 R+")
   end
 
-  test "punctuation after a command word still ends it" do
-    assert [:activate] == Command.parse("bors merge!")
-    assert [:activate] == Command.parse("bors merge.")
-    assert [:activate] == Command.parse("bors merge, please")
-    assert [:ping] == Command.parse("bors ping?")
-    assert [:retry] == Command.parse("bors retry.")
-    assert [:deactivate] == Command.parse("bors cancel!")
+  # Punctuation is not part of the word, so `merge!` is not prose. It is
+  # still something after the command, so it is refused, not ignored.
+  test "punctuation after a command word is left over, not part of the word" do
+    assert [{:malformed_args, {:leftover, "merge!", "merge", "!"}}] ==
+             Command.parse("bors merge!")
+
+    assert [{:malformed_args, {:leftover, "merge, please", "merge", ", please"}}] ==
+             Command.parse("bors merge, please")
+
+    assert [{:malformed_args, {:leftover, "ping?", "ping", "?"}}] == Command.parse("bors ping?")
     assert [:deactivate] == Command.parse("bors merge-")
     assert [:unlink] == Command.parse("bors link-")
     assert [{:link, [12]}] == Command.parse("bors link#12")
     assert [{:malformed_args, :single}] == Command.parse("bors single")
+  end
+
+  test "a command that takes nothing refuses whatever follows it" do
+    for {comment, understood, rest} <- [
+          {"bors r+ now", "r+", "now"},
+          {"bors r+ thanks!", "r+", "thanks!"},
+          {"bors r+!", "r+", "!"},
+          {"bors merge queue is slow", "merge", "queue is slow"},
+          {"bors r- now", "r-", "now"},
+          {"bors merge- x", "merge-", "x"},
+          {"bors cancel!", "cancel", "!"},
+          {"bors try- now", "try-", "now"},
+          {"bors retry (flaky)", "retry", "(flaky)"},
+          # Only one space may separate `r+` from its modifier.
+          {"bors r+  p=5", "r+", "p=5"}
+        ] do
+      "bors " <> typed = comment
+
+      assert [{:malformed_args, {:leftover, typed, understood, rest}}] == Command.parse(comment),
+             comment
+    end
+  end
+
+  test "a command with an argument refuses whatever follows the argument" do
+    for {comment, understood, rest} <- [
+          {"bors p=5 r+", "p=5", "r+"},
+          {"bors single on p=5", "single on", "p=5"},
+          {"bors r+ single on p=5", "r+ single on", "p=5"},
+          {"bors r+ p=5 single on", "r+ p=5", "single on"},
+          {"bors merge p=5 now", "merge p=5", "now"},
+          {"bors r=alice bob", "r=alice", "bob"},
+          {"bors r=alice single on", "r=alice", "single on"},
+          {"bors r=alice p=5 now", "r=alice p=5", "now"},
+          {"bors merge=alice bob", "merge=alice", "bob"}
+        ] do
+      "bors " <> typed = comment
+
+      assert [{:malformed_args, {:leftover, typed, understood, rest}}] == Command.parse(comment),
+             comment
+    end
+
+    # A glued word is not an `on`.
+    assert [{:malformed_args, :single}] == Command.parse("bors single onion")
+  end
+
+  test "merge takes the single modifier, as r+ does" do
+    assert [{:set_is_single, true}, :activate] == Command.parse("bors merge single on")
+    assert [{:set_is_single, false}, :activate] == Command.parse("bors merge single off")
+  end
+
+  test "try arguments are free text, so nothing after try is left over" do
+    assert [{:try, " again later"}] == Command.parse("bors try again later")
+  end
+
+  test "a name that cannot be a GitHub login is refused before any lookup" do
+    assert [{:malformed_args, {:bad_names, "r= p=5", ["p=5"]}}] == Command.parse("bors r= p=5")
+    assert [{:malformed_args, {:bad_names, "r=a.b", ["a.b"]}}] == Command.parse("bors r=a.b")
+
+    assert [{:malformed_args, {:bad_names, "d=alice p=5", ["p=5"]}}] ==
+             Command.parse("bors d=alice p=5")
+
+    assert [{:malformed_args, {:bad_names, "d=alice r+", ["r+"]}}] ==
+             Command.parse("bors d=alice r+")
+
+    assert [{:malformed_args, {:bad_names, "d-=alice for=24h", ["for=24h"]}}] ==
+             Command.parse("bors d-=alice for=24h")
+
+    assert :member ==
+             Command.required_permission_level([
+               {:malformed_args, {:bad_names, "d=alice p=5", ["p=5"]}}
+             ])
+  end
+
+  test "delegate-= takes names separated by spaces, as delegate= does" do
+    assert [{:undelegate_to, "alice"}, {:undelegate_to, "bob"}] ==
+             Command.parse("bors d-=alice bob")
+
+    assert [{:delegate_to, "alice"}, {:delegate_to, "bob"}] == Command.parse("bors d=alice bob")
+  end
+
+  test "unlink refuses anything after it" do
+    assert [:unlink_with_args] == Command.parse("bors unlink now")
+    assert [:unlink_with_args] == Command.parse("bors link- x")
+  end
+
+  test "a correction that is itself left over gets the leftover hint" do
+    assert [{:malformed_args, {:leftover, "r+ now", "r+", "now"}}] ==
+             Command.parse("bors R+ now")
+
+    assert [{:malformed_args, {:leftover, "r+ now", "r+", "now"}}] ==
+             Command.parse("bors:r+ now")
+  end
+
+  # The hint is gated like other hints, except that `ping` needs nothing.
+  test "a leftover is member-gated unless its command needs no permission" do
+    [ping_now] = Command.parse("bors ping now")
+    [r_plus_now] = Command.parse("bors r+ now")
+
+    assert :none == Command.required_permission_level([ping_now])
+    assert :member == Command.required_permission_level([r_plus_now])
   end
 
   # The link-argument check asks the parser, so a word that is no longer a
@@ -1228,6 +1331,40 @@ defmodule BorsNG.CommandTest do
     Command.run(%Command{project: proj, commenter: outsider, comment: "bors Ping", pr_xref: 1})
 
     assert posted_correction?("ping")
+  end
+
+  # `r-` works on a draft, so its refusal must too.
+  test "r- with something after it gets its hint on a draft", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors r- now",
+      pr_xref: 1,
+      is_draft: true
+    })
+
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "bors did not run `bors r- now`"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
+  end
+
+  # A token that cannot be a login never reaches GitHub, which would answer
+  # "no such user" for it.
+  test "delegating to something that cannot be a login delegates nobody", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+    Repo.delete_all(BorsNG.Database.UserPatchDelegation)
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d=pr_author p=5",
+      pr_xref: 1
+    })
+
+    assert [] == Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`p=5` cannot be a GitHub username"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "no GitHub user"))
   end
 
   # `d-=` works on a draft, so its hint must too.
