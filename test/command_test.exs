@@ -257,6 +257,51 @@ defmodule BorsNG.CommandTest do
              ])
   end
 
+  test "bare delegate and d are delegate+" do
+    assert [:delegate] == Command.parse("bors delegate")
+    assert [:delegate] == Command.parse("bors d")
+    assert [{:delegate, 86_400}] == Command.parse("bors delegate for=24h")
+    assert [{:delegate, 1_209_600}] == Command.parse("bors d for=2w")
+  end
+
+  test "bare delegate with names is refused like delegate+ with names" do
+    assert [{:malformed_args, {:delegate, "delegate alice", ["alice"], []}}] ==
+             Command.parse("bors delegate alice")
+
+    assert [{:malformed_args, {:delegate, "d alice", ["alice"], []}}] ==
+             Command.parse("bors d alice")
+
+    # The `to` of the natural sentence is not suggested as a login.
+    assert [{:malformed_args, {:delegate, "delegate to alice", ["alice"], []}}] ==
+             Command.parse("bors delegate to alice")
+  end
+
+  # `d` alone would otherwise read `bors does` as a command.
+  test "bare delegate and d only end at a space or the end of the line" do
+    for comment <- [
+          "bors delegated this",
+          "bors delegates",
+          "bors delegation is on",
+          "bors does this work",
+          "bors d'oh",
+          "bors d."
+        ] do
+      assert [] == Command.parse(comment), comment
+    end
+  end
+
+  test "a = form with no names says what it needs" do
+    for typed <- ~w(r= merge= d= d+= delegate= delegate+= d-= delegate-=) do
+      assert [{:malformed_args, {:no_names, typed}}] == Command.parse("bors #{typed}"), typed
+    end
+
+    # `for=` is not a name.
+    assert [{:malformed_args, {:no_names, "d="}}] == Command.parse("bors d= for=24h")
+
+    assert :member ==
+             Command.required_permission_level([{:malformed_args, {:no_names, "r="}}])
+  end
+
   test "bare delegate- removes every delegation" do
     assert [:undelegate] == Command.parse("bors d-")
     assert [:undelegate] == Command.parse("bors delegate-")
@@ -553,7 +598,10 @@ defmodule BorsNG.CommandTest do
   end do
     [
       {"delegate+"},
-      {"d+"}
+      {"d+"},
+      # Bare `delegate` is `delegate+`, as bare `merge` is `r+`.
+      {"delegate"},
+      {"d"}
     ]
   end
 
@@ -1086,6 +1134,23 @@ defmodule BorsNG.CommandTest do
 
     assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
     assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=pr_author`"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
+  end
+
+  # `d-=` works on a draft, so its hint must too.
+  test "an empty delegate-= gets its hint on a draft", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d-=",
+      pr_xref: 1,
+      is_draft: true
+    })
+
+    assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=` needs the users"))
     refute Enum.any?(mock_comments(1), &String.contains?(&1, "is a draft"))
   end
 

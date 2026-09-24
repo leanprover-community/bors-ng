@@ -167,7 +167,8 @@ defmodule BorsNG.Command do
              | :priority_range
              | :single
              | {:delegate, binary, [binary], [binary]}
-             | {:undelegate, binary, [binary]}}
+             | {:undelegate, binary, [binary]}
+             | {:no_names, binary}}
           | :unlink
           | :unlink_with_args
 
@@ -218,9 +219,12 @@ defmodule BorsNG.Command do
   # continues the word too (`single-handedly`, `merge-conflicts`), except as
   # the `-` of `merge-`, `link-` and a bare `try-`. So `try` arguments need
   # a space: `try-cancel` is a mistyped `try-`, not a build of `-cancel`.
+  # Bare `delegate` and `d` end only at a space or the end of the line, or
+  # else `d` would read `bors does` and `bors d'oh`. Their `+`, `-` and `=`
+  # forms are unaffected.
   defp run_on_word?(cmd) do
     Regex.match?(
-      ~r/^(?:(?:merge|link)-?[\p{L}\p{N}_]|try(?:[\p{L}\p{N}_]|-.)|(?:single|ping|retry|cancel|unlink|stack)[\p{L}\p{N}_-])/u,
+      ~r/^(?:(?:merge|link)-?[\p{L}\p{N}_]|try(?:[\p{L}\p{N}_]|-.)|(?:single|ping|retry|cancel|unlink|stack)[\p{L}\p{N}_-]|(?:delegate|d(?!elegate))[^\s+=-])/u,
       cmd
     )
   end
@@ -232,21 +236,24 @@ defmodule BorsNG.Command do
   defp match_cmd("r+ p=" <> rest), do: with_activation(parse_priority(rest))
   defp match_cmd("r+" <> _), do: [:activate]
   defp match_cmd("r-" <> _), do: [:deactivate]
-  defp match_cmd("r=" <> arguments), do: parse_activation_args(arguments)
+  defp match_cmd("r=" <> arguments), do: activation_args(arguments, "r=")
   defp match_cmd("merge-" <> _), do: [:deactivate]
   defp match_cmd("merge p=" <> rest), do: with_activation(parse_priority(rest))
-  defp match_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
+  defp match_cmd("merge=" <> arguments), do: activation_args(arguments, "merge=")
   defp match_cmd("merge" <> _), do: [:activate]
-  defp match_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  defp match_cmd("delegate+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  defp match_cmd("delegate=" <> arguments), do: delegate_to_args(arguments, "delegate=")
+  defp match_cmd("delegate+=" <> arguments), do: delegate_to_args(arguments, "delegate+=")
   defp match_cmd("delegate+" <> rest), do: parse_delegate_self("delegate+", rest)
-  defp match_cmd("delegate-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
+  defp match_cmd("delegate-=" <> arguments), do: undelegate_to_args(arguments, "delegate-=")
   defp match_cmd("delegate-" <> rest), do: parse_undelegate_all("delegate-", rest)
-  defp match_cmd("d=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  defp match_cmd("d+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  # Bare `delegate` is `delegate+`, as bare `merge` is `r+`.
+  defp match_cmd("delegate" <> rest), do: parse_delegate_self("delegate", rest)
+  defp match_cmd("d=" <> arguments), do: delegate_to_args(arguments, "d=")
+  defp match_cmd("d+=" <> arguments), do: delegate_to_args(arguments, "d+=")
   defp match_cmd("d+" <> rest), do: parse_delegate_self("d+", rest)
-  defp match_cmd("d-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
+  defp match_cmd("d-=" <> arguments), do: undelegate_to_args(arguments, "d-=")
   defp match_cmd("d-" <> rest), do: parse_undelegate_all("d-", rest)
+  defp match_cmd("d" <> rest), do: parse_delegate_self("d", rest)
   defp match_cmd("+r" <> _), do: [{:autocorrect, "r+"}]
   defp match_cmd("-r" <> _), do: [{:autocorrect, "r-"}]
   defp match_cmd("+"), do: [{:autocorrect, "r+"}]
@@ -340,13 +347,10 @@ defmodule BorsNG.Command do
   # Tokens that read as another bors command or its argument on the same
   # line. Refuse rather than guess which pull requests were meant. Asking
   # the real parser keeps this list from drifting as commands are added.
-  # The two extra checks catch tokens the parser alone would not: key=value
-  # fragments whose argument is empty or unreadable (`r=`, `d=`, `for=2w`),
-  # and a bare `delegate`.
+  # The extra check catches key=value fragments the parser does not read on
+  # their own, like `for=2w`.
   defp other_command?(token) do
-    parse_cmd(token) != [] or
-      String.contains?(token, "=") or
-      String.starts_with?(token, "delegate")
+    parse_cmd(token) != [] or String.contains?(token, "=")
   end
 
   defp ref_tokens(arguments) do
@@ -607,9 +611,30 @@ defmodule BorsNG.Command do
         end
 
       {for_tokens, name_tokens} ->
-        [{:malformed_args, {:delegate, typed <> rest, suggested_logins(name_tokens), for_tokens}}]
+        # `delegate to alice` is how the sentence goes, so the `to` is not a
+        # login to suggest.
+        names =
+          case name_tokens do
+            ["to" | [_ | _] = after_to] -> after_to
+            _ -> name_tokens
+          end
+
+        [{:malformed_args, {:delegate, typed <> rest, suggested_logins(names), for_tokens}}]
     end
   end
+
+  # A `=` form with no names does nothing, so say what it needs instead.
+  defp activation_args(arguments, typed),
+    do: arguments |> parse_activation_args() |> or_no_names(typed)
+
+  defp delegate_to_args(arguments, typed),
+    do: arguments |> parse_delegate_with(:delegate_to) |> or_no_names(typed)
+
+  defp undelegate_to_args(arguments, typed),
+    do: arguments |> parse_delegation_args(:undelegate_to) |> or_no_names(typed)
+
+  defp or_no_names([], typed), do: [{:malformed_args, {:no_names, typed}}]
+  defp or_no_names(cmds, _typed), do: cmds
 
   # `d-` removes every delegation. Anything after it most likely names the
   # users meant to lose theirs, which is `d-=`, so refuse rather than remove
@@ -814,6 +839,8 @@ defmodule BorsNG.Command do
   defp draft_blocked?(:undelegate), do: false
   defp draft_blocked?({:undelegate_to, _}), do: false
   defp draft_blocked?({:malformed_args, {:undelegate, _, _}}), do: false
+  defp draft_blocked?({:malformed_args, {:no_names, "d-="}}), do: false
+  defp draft_blocked?({:malformed_args, {:no_names, "delegate-="}}), do: false
   defp draft_blocked?(:bros), do: false
   defp draft_blocked?(_), do: true
 

@@ -283,10 +283,9 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_message({:malformed_args, {:delegate, typed, logins, for_tokens}}) do
-    {cmd, named} =
-      if String.starts_with?(typed, "delegate"),
-        do: {"delegate+", "delegate="},
-        else: {"d+", "d="}
+    # `delegate`, `delegate+`, `d` or `d+`, as typed.
+    [cmd] = Regex.run(~r/^(?:delegate|d)\+?/, typed)
+    named = if String.starts_with?(cmd, "delegate"), do: "delegate=", else: "d="
 
     for_suffix = Enum.map_join(for_tokens, &" #{&1}")
 
@@ -315,6 +314,23 @@ defmodule BorsNG.Worker.Batcher.Message do
       end
 
     ":-1: `bors #{cmd}` takes no arguments, so bors did not remove any delegations. #{suggestion} To remove every delegation, reply with just `bors #{cmd}`."
+  end
+
+  def generate_message({:malformed_args, {:no_names, typed}}) when typed in ["r=", "merge="] do
+    self_cmd = if typed == "r=", do: "r+", else: "merge"
+
+    ":-1: `bors #{typed}` needs the reviewers to approve on behalf of, e.g. `bors #{typed}alice`. To approve as yourself, reply with `bors #{self_cmd}`."
+  end
+
+  def generate_message({:malformed_args, {:no_names, typed}})
+      when typed in ["d-=", "delegate-="] do
+    ":-1: `bors #{typed}` needs the users whose delegation to remove, e.g. `bors #{typed}alice`. To remove every delegation, reply with `bors #{String.trim_trailing(typed, "=")}`."
+  end
+
+  def generate_message({:malformed_args, {:no_names, typed}}) do
+    self_cmd = if String.starts_with?(typed, "delegate"), do: "delegate+", else: "d+"
+
+    ":-1: `bors #{typed}` needs the users to delegate, e.g. `bors #{typed}alice,bob`. To delegate the PR author, reply with `bors #{self_cmd}`."
   end
 
   def generate_message({:delegation_refused, :unknown_users, [login]}) do
@@ -590,6 +606,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name({:malformed_args, :priority}), do: "p="
   defp draft_refused_name({:malformed_args, :priority_range}), do: "p="
   defp draft_refused_name({:malformed_args, {:delegate, typed, _, _}}), do: typed
+  defp draft_refused_name({:malformed_args, {:no_names, typed}}), do: typed
   defp draft_refused_name({:malformed_args, :single}), do: "single"
   defp draft_refused_name(:retry), do: "retry"
 

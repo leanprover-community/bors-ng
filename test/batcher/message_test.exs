@@ -873,6 +873,53 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert msg =~ "just `bors delegate+`"
   end
 
+  test "the delegate+ refusal names bare delegate and d as typed" do
+    msg =
+      Message.generate_message({:malformed_args, {:delegate, "delegate alice", ["alice"], []}})
+
+    assert msg =~ "`bors delegate` delegates the PR author"
+    assert msg =~ "`bors delegate=alice`"
+    assert msg =~ "just `bors delegate`."
+
+    msg = Message.generate_message({:malformed_args, {:delegate, "d alice", ["alice"], []}})
+
+    assert msg =~ "`bors d` delegates the PR author"
+    assert msg =~ "`bors d=alice`"
+  end
+
+  test "the empty = hints say what each form needs" do
+    msg = Message.generate_message({:malformed_args, {:no_names, "r="}})
+    assert msg =~ "`bors r=alice`"
+    assert msg =~ "`bors r+`"
+
+    msg = Message.generate_message({:malformed_args, {:no_names, "merge="}})
+    assert msg =~ "`bors merge=alice`"
+    assert msg =~ "`bors merge`"
+
+    msg = Message.generate_message({:malformed_args, {:no_names, "delegate+="}})
+    assert msg =~ "`bors delegate+=alice,bob`"
+    assert msg =~ "`bors delegate+`"
+
+    msg = Message.generate_message({:malformed_args, {:no_names, "d-="}})
+    assert msg =~ "`bors d-=alice`"
+    assert msg =~ "`bors d-`"
+  end
+
+  test "the empty = hints cannot be parsed as a bors command" do
+    for typed <- ~w(r= merge= d= d+= delegate= delegate+= d-= delegate-=) do
+      assert [] ==
+               BorsNG.Command.parse(
+                 Message.generate_message({:malformed_args, {:no_names, typed}})
+               )
+    end
+  end
+
+  test "the draft refusal names an empty = form the way it was typed" do
+    msg = Message.generate_message({:draft_refused, [{:malformed_args, {:no_names, "r="}}], []})
+
+    assert msg =~ "`bors r=`"
+  end
+
   test "the delegate+ refusal without names gives an example" do
     msg = Message.generate_message({:malformed_args, {:delegate, "d+ p=5", [], []}})
 
