@@ -978,6 +978,26 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert msg =~ "`bors r+ now`"
   end
 
+  test "the for= hints name the token and give the range" do
+    msg = Message.generate_message({:malformed_args, {:bad_for, "d+ for=24m", ["for=24m"]}})
+
+    assert msg =~ "bors did not run `bors d+ for=24m`"
+    assert msg =~ "it cannot read `for=24m`"
+    assert msg =~ "up to `for=90d`"
+
+    assert Message.generate_message({:malformed_args, {:repeated_for, "d+ for=1h for=2h"}}) =~
+             "more than one `for=`"
+  end
+
+  test "the for= hints cannot be parsed as a bors command" do
+    for msg <- [
+          {:malformed_args, {:bad_for, "d+ for=24m", ["for=24m"]}},
+          {:malformed_args, {:repeated_for, "d+ for=1h for=2h"}}
+        ] do
+      assert [] == BorsNG.Command.parse(Message.generate_message(msg))
+    end
+  end
+
   test "the delegate+ refusal without names gives an example" do
     msg = Message.generate_message({:malformed_args, {:delegate, "d+ p=5", [], []}})
 

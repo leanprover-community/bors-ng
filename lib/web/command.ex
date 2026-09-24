@@ -170,7 +170,9 @@ defmodule BorsNG.Command do
              | {:undelegate, binary, [binary]}
              | {:no_names, binary}
              | {:leftover, binary, binary, binary}
-             | {:bad_names, binary, [binary]}}
+             | {:bad_names, binary, [binary]}
+             | {:bad_for, binary, [binary]}
+             | {:repeated_for, binary}}
           | :unlink
           | :unlink_with_args
 
@@ -635,16 +637,14 @@ defmodule BorsNG.Command do
 
   # Splits a delegate argument list into {names_part, duration_seconds_or_nil}.
   # A `for=<duration>` token may appear anywhere among the comma/space-separated
-  # tokens; if multiple appear, the last valid one wins. The remaining tokens
-  # are rejoined with ", " for parse_delegation_args/2, which expects comma
-  # separation (a literal space terminates a name).
+  # tokens. `for_refusal/2` has already refused an unreadable or repeated one.
+  # The remaining tokens are rejoined with ", " for parse_delegation_args/2,
+  # which expects comma separation (a literal space terminates a name).
   defp extract_delegate_extras(s) do
     {for_tokens, name_tokens} = split_for_tokens(s)
 
     duration =
-      for_tokens
-      |> Enum.reverse()
-      |> Enum.find_value(fn token ->
+      Enum.find_value(for_tokens, fn token ->
         case parse_duration(String.replace_prefix(token, "for=", "")) do
           {:ok, secs} -> secs
           :error -> nil
@@ -654,10 +654,29 @@ defmodule BorsNG.Command do
     {Enum.join(name_tokens, ", "), duration}
   end
 
+  # A `for=` bors cannot read, or more than one, refuses the command: falling
+  # back to the default expiry would grant something other than what was
+  # asked for, and picking one of two would guess.
+  defp for_refusal(typed, for_tokens) do
+    unreadable =
+      Enum.reject(for_tokens, fn token ->
+        match?({:ok, _}, parse_duration(String.replace_prefix(token, "for=", "")))
+      end)
+
+    cond do
+      unreadable != [] -> {:malformed_args, {:bad_for, typed, unreadable}}
+      match?([_, _ | _], for_tokens) -> {:malformed_args, {:repeated_for, typed}}
+      true -> nil
+    end
+  end
+
+  # A bare `for` is a `for=` typed with a space (`for 24h`). Counted as an
+  # unreadable one, it is refused, rather than `for` and `24h` being taken
+  # for logins.
   defp split_for_tokens(s) do
     s
     |> String.split(~r/[\s,]+/, trim: true)
-    |> Enum.split_with(&String.starts_with?(&1, "for="))
+    |> Enum.split_with(&(&1 == "for" or String.starts_with?(&1, "for=")))
   end
 
   defp parse_delegate_with(arguments, action) do
@@ -675,14 +694,20 @@ defmodule BorsNG.Command do
   # refuse rather than delegate someone else. The refusal keeps what was
   # typed, and its suggestion keeps any `for=`.
   defp parse_delegate_self(typed, rest) do
-    case split_for_tokens(rest) do
-      {_, []} ->
+    {for_tokens, name_tokens} = split_for_tokens(rest)
+
+    case {for_refusal(typed <> rest, for_tokens), name_tokens} do
+      {nil, []} ->
         case extract_delegate_extras(rest) do
           {_, nil} -> [:delegate]
           {_, duration} -> [{:delegate, duration}]
         end
 
-      {for_tokens, name_tokens} ->
+      # Before the names, so `d+ for 24h` is not told to delegate `24h`.
+      {refusal, _} when not is_nil(refusal) ->
+        [refusal]
+
+      {nil, name_tokens} ->
         # `delegate to alice` is how the sentence goes, so the `to` is not a
         # login to suggest.
         names =
@@ -702,11 +727,12 @@ defmodule BorsNG.Command do
   # A token that cannot be a login is refused before GitHub is asked about
   # it: `d=alice p=5` is a command run on, not a user named `p=5`.
   defp delegate_to_args(arguments, typed) do
-    {_for_tokens, name_tokens} = split_for_tokens(arguments)
+    {for_tokens, name_tokens} = split_for_tokens(arguments)
 
-    case bad_logins(name_tokens) do
-      [] -> arguments |> parse_delegate_with(:delegate_to) |> or_no_names(typed)
-      bad -> [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+    case {bad_logins(name_tokens), for_refusal(typed <> arguments, for_tokens)} do
+      {[_ | _] = bad, _} -> [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+      {[], nil} -> arguments |> parse_delegate_with(:delegate_to) |> or_no_names(typed)
+      {[], refusal} -> [refusal]
     end
   end
 

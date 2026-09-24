@@ -1367,6 +1367,17 @@ defmodule BorsNG.CommandTest do
     refute Enum.any?(mock_comments(1), &String.contains?(&1, "no GitHub user"))
   end
 
+  test "an unreadable for= delegates nobody instead of using the default", %{proj: proj} do
+    user = undelegate_note_setup(proj)
+    Repo.delete_all(BorsNG.Database.UserPatchDelegation)
+
+    Command.run(%Command{project: proj, commenter: user, comment: "bors d+ for=24m", pr_xref: 1})
+
+    assert [] == Repo.all(BorsNG.Database.UserPatchDelegation)
+    assert Enum.any?(mock_comments(1), &String.contains?(&1, "it cannot read `for=24m`"))
+    refute Enum.any?(mock_comments(1), &String.contains?(&1, "can now approve"))
+  end
+
   # `d-=` works on a draft, so its hint must too.
   test "an empty delegate-= gets its hint on a draft", %{proj: proj} do
     user = undelegate_note_setup(proj)
@@ -1815,15 +1826,36 @@ defmodule BorsNG.CommandTest do
                Command.parse("bors d=alice,bob")
     end
 
-    test "rejects out-of-range or malformed durations" do
-      # Too long (>90d cap)
-      assert [:delegate] == Command.parse("bors delegate+ for=100d")
-      # Zero
-      assert [:delegate] == Command.parse("bors delegate+ for=0h")
-      # Unrecognized unit
-      assert [:delegate] == Command.parse("bors delegate+ for=24m")
-      # Garbage
-      assert [:delegate] == Command.parse("bors delegate+ for=foo")
+    # Falling back to the default expiry would grant something other than
+    # what was asked for.
+    test "refuses out-of-range or malformed durations" do
+      for {comment, token} <- [
+            # Too long (>90d cap)
+            {"bors delegate+ for=100d", "for=100d"},
+            # Zero
+            {"bors delegate+ for=0h", "for=0h"},
+            # Unrecognized unit
+            {"bors delegate+ for=24m", "for=24m"},
+            # Garbage
+            {"bors delegate+ for=foo", "for=foo"},
+            {"bors d+ for=", "for="},
+            {"bors d=alice for=24m", "for=24m"},
+            # Refused for the duration before the names are looked at.
+            {"bors d+ alice for=24m", "for=24m"}
+          ] do
+        "bors " <> typed = comment
+        assert [{:malformed_args, {:bad_for, typed, [token]}}] == Command.parse(comment), comment
+      end
+    end
+
+    # Otherwise `for` and `24h` would be taken for logins, which GitHub may
+    # well have.
+    test "refuses a for typed with a space instead of =" do
+      assert [{:malformed_args, {:bad_for, "d=alice for 24h", ["for"]}}] ==
+               Command.parse("bors d=alice for 24h")
+
+      assert [{:malformed_args, {:bad_for, "d+ for 24h", ["for"]}}] ==
+               Command.parse("bors d+ for 24h")
     end
 
     test "for= token may appear anywhere in the argument list" do
@@ -1846,12 +1878,16 @@ defmodule BorsNG.CommandTest do
              ] == Command.parse("bors d=alice,for=24h,bob")
     end
 
-    test "with multiple for= tokens, the last valid one wins" do
-      assert [{:delegate_to, "alice", 604_800}] ==
+    # Picking one of two would be a guess.
+    test "refuses more than one for=" do
+      assert [{:malformed_args, {:repeated_for, "d=alice for=24h for=7d"}}] ==
                Command.parse("bors d=alice for=24h for=7d")
 
-      # Last malformed → falls back to earlier valid
-      assert [{:delegate_to, "alice", 86_400}] ==
+      assert [{:malformed_args, {:repeated_for, "d+ for=24h for=7d"}}] ==
+               Command.parse("bors d+ for=24h for=7d")
+
+      # An unreadable one is named, rather than the earlier one used.
+      assert [{:malformed_args, {:bad_for, "d=alice for=24h for=garbage", ["for=garbage"]}}] ==
                Command.parse("bors d=alice for=24h for=garbage")
     end
   end

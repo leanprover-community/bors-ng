@@ -357,6 +357,16 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: bors did not run `bors #{typed}`: #{Enum.map_join(bad, ", ", &"`#{&1}`")} #{what}. Put any other command on a line of its own."
   end
 
+  def generate_message({:malformed_args, {:bad_for, typed, tokens}}) do
+    max_days = div(BorsNG.Command.delegation_max_duration_sec(), 24 * 60 * 60)
+
+    ":-1: bors did not run `bors #{typed}`: it cannot read #{Enum.map_join(tokens, ", ", &"`#{&1}`")}. `for=` takes a number of hours, days or weeks, from `for=1h` up to `for=#{max_days}d`, e.g. `for=24h`, `for=7d` or `for=2w`."
+  end
+
+  def generate_message({:malformed_args, {:repeated_for, typed}}) do
+    ":-1: bors did not run `bors #{typed}`: it has more than one `for=`. Give just one, e.g. `for=24h`."
+  end
+
   def generate_message({:delegation_refused, :unknown_users, [login]}) do
     ":-1: There is no GitHub user named `#{login}`, so bors made no delegation changes. Check the spelling and try again."
   end
@@ -633,6 +643,8 @@ defmodule BorsNG.Worker.Batcher.Message do
   defp draft_refused_name({:malformed_args, {:no_names, typed}}), do: typed
   defp draft_refused_name({:malformed_args, {:leftover, typed, _, _}}), do: typed
   defp draft_refused_name({:malformed_args, {:bad_names, typed, _}}), do: typed
+  defp draft_refused_name({:malformed_args, {:bad_for, typed, _}}), do: typed
+  defp draft_refused_name({:malformed_args, {:repeated_for, typed}}), do: typed
   defp draft_refused_name({:malformed_args, :single}), do: "single"
   defp draft_refused_name(:retry), do: "retry"
 
