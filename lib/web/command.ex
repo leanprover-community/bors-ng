@@ -209,41 +209,57 @@ defmodule BorsNG.Command do
 
   def trim_and_parse_cmd(_), do: []
 
-  def parse_cmd("try-"), do: [:try_cancel]
-  def parse_cmd("try" <> arguments), do: [{:try, arguments}]
-  def parse_cmd("single" <> rest), do: parse_single_patch(rest)
-  def parse_cmd("r+ single" <> rest), do: with_activation(parse_single_patch(rest))
-  def parse_cmd("r+ p=" <> rest), do: with_activation(parse_priority(rest))
-  def parse_cmd("r+" <> _), do: [:activate]
-  def parse_cmd("r-" <> _), do: [:deactivate]
-  def parse_cmd("r=" <> arguments), do: parse_activation_args(arguments)
-  def parse_cmd("merge-" <> _), do: [:deactivate]
-  def parse_cmd("merge p=" <> rest), do: with_activation(parse_priority(rest))
-  def parse_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
-  def parse_cmd("merge" <> _), do: [:activate]
-  def parse_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  def parse_cmd("delegate+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  def parse_cmd("delegate+" <> rest), do: parse_delegate_self("delegate+", rest)
-  def parse_cmd("delegate-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
-  def parse_cmd("delegate-" <> rest), do: parse_undelegate_all("delegate-", rest)
-  def parse_cmd("d=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  def parse_cmd("d+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
-  def parse_cmd("d+" <> rest), do: parse_delegate_self("d+", rest)
-  def parse_cmd("d-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
-  def parse_cmd("d-" <> rest), do: parse_undelegate_all("d-", rest)
-  def parse_cmd("+r" <> _), do: [{:autocorrect, "r+"}]
-  def parse_cmd("-r" <> _), do: [{:autocorrect, "r-"}]
-  def parse_cmd("+"), do: [{:autocorrect, "r+"}]
-  def parse_cmd("-"), do: [{:autocorrect, "r-"}]
-  def parse_cmd("ping" <> _), do: [:ping]
-  def parse_cmd("p=" <> rest), do: parse_priority(rest)
-  def parse_cmd("retry" <> _), do: [:retry]
-  def parse_cmd("cancel" <> _), do: [:deactivate]
-  def parse_cmd("unlink" <> arguments), do: parse_unlink(arguments)
-  def parse_cmd("link-" <> arguments), do: parse_unlink(arguments)
-  def parse_cmd("link" <> arguments), do: parse_bundle_refs(:link, arguments)
-  def parse_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
-  def parse_cmd(_), do: []
+  def parse_cmd(cmd) do
+    if run_on_word?(cmd), do: [], else: match_cmd(cmd)
+  end
+
+  # A command word running on into a longer word is a sentence about bors,
+  # not a command to it: `bors merged this`, `bors unlinked them`. A `-`
+  # continues the word too (`single-handedly`, `merge-conflicts`), except as
+  # the `-` of `merge-`, `link-` and a bare `try-`. So `try` arguments need
+  # a space: `try-cancel` is a mistyped `try-`, not a build of `-cancel`.
+  defp run_on_word?(cmd) do
+    Regex.match?(
+      ~r/^(?:(?:merge|link)-?[\p{L}\p{N}_]|try(?:[\p{L}\p{N}_]|-.)|(?:single|ping|retry|cancel|unlink|stack)[\p{L}\p{N}_-])/u,
+      cmd
+    )
+  end
+
+  defp match_cmd("try-"), do: [:try_cancel]
+  defp match_cmd("try" <> arguments), do: [{:try, arguments}]
+  defp match_cmd("single" <> rest), do: parse_single_patch(rest)
+  defp match_cmd("r+ single" <> rest), do: with_activation(parse_single_patch(rest))
+  defp match_cmd("r+ p=" <> rest), do: with_activation(parse_priority(rest))
+  defp match_cmd("r+" <> _), do: [:activate]
+  defp match_cmd("r-" <> _), do: [:deactivate]
+  defp match_cmd("r=" <> arguments), do: parse_activation_args(arguments)
+  defp match_cmd("merge-" <> _), do: [:deactivate]
+  defp match_cmd("merge p=" <> rest), do: with_activation(parse_priority(rest))
+  defp match_cmd("merge=" <> arguments), do: parse_activation_args(arguments)
+  defp match_cmd("merge" <> _), do: [:activate]
+  defp match_cmd("delegate=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  defp match_cmd("delegate+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  defp match_cmd("delegate+" <> rest), do: parse_delegate_self("delegate+", rest)
+  defp match_cmd("delegate-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
+  defp match_cmd("delegate-" <> rest), do: parse_undelegate_all("delegate-", rest)
+  defp match_cmd("d=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  defp match_cmd("d+=" <> arguments), do: parse_delegate_with(arguments, :delegate_to)
+  defp match_cmd("d+" <> rest), do: parse_delegate_self("d+", rest)
+  defp match_cmd("d-=" <> arguments), do: parse_delegation_args(arguments, :undelegate_to)
+  defp match_cmd("d-" <> rest), do: parse_undelegate_all("d-", rest)
+  defp match_cmd("+r" <> _), do: [{:autocorrect, "r+"}]
+  defp match_cmd("-r" <> _), do: [{:autocorrect, "r-"}]
+  defp match_cmd("+"), do: [{:autocorrect, "r+"}]
+  defp match_cmd("-"), do: [{:autocorrect, "r-"}]
+  defp match_cmd("ping" <> _), do: [:ping]
+  defp match_cmd("p=" <> rest), do: parse_priority(rest)
+  defp match_cmd("retry" <> _), do: [:retry]
+  defp match_cmd("cancel" <> _), do: [:deactivate]
+  defp match_cmd("unlink" <> arguments), do: parse_unlink(arguments)
+  defp match_cmd("link-" <> arguments), do: parse_unlink(arguments)
+  defp match_cmd("link" <> arguments), do: parse_bundle_refs(:link, arguments)
+  defp match_cmd("stack" <> arguments), do: parse_bundle_refs(:stack, arguments)
+  defp match_cmd(_), do: []
 
   # `unlink` dissolves the whole bundle. Naming pull requests suggests the
   # user expects to remove just those, so refuse rather than surprise them.

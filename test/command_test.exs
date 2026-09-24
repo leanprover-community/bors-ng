@@ -50,6 +50,48 @@ defmodule BorsNG.CommandTest do
     assert [] == Command.parse("bors doink")
   end
 
+  test "a command word running on into a longer word is not a command" do
+    for comment <- [
+          "bors merged this yesterday",
+          "bors mergeable?",
+          "bors merge-conflicts are fixed now",
+          "bors cancelled it",
+          "bors retrying now",
+          "bors trying again",
+          "bors tryout",
+          "bors linked #12 already",
+          "bors link-rot",
+          "bors unlinked them",
+          "bors stacked on #5",
+          "bors pinged me",
+          "bors single-handedly",
+          "bors singles",
+          "bros merged"
+        ] do
+      assert [] == Command.parse(comment), comment
+    end
+  end
+
+  test "punctuation after a command word still ends it" do
+    assert [:activate] == Command.parse("bors merge!")
+    assert [:activate] == Command.parse("bors merge.")
+    assert [:activate] == Command.parse("bors merge, please")
+    assert [:ping] == Command.parse("bors ping?")
+    assert [:retry] == Command.parse("bors retry.")
+    assert [:deactivate] == Command.parse("bors cancel!")
+    assert [:deactivate] == Command.parse("bors merge-")
+    assert [:unlink] == Command.parse("bors link-")
+    assert [{:link, [12]}] == Command.parse("bors link#12")
+    assert [{:malformed_args, :single}] == Command.parse("bors single")
+  end
+
+  # The link-argument check asks the parser, so a word that is no longer a
+  # command is tolerated like any other connective word.
+  test "a run-on command word among link arguments is just a word" do
+    assert [{:link, [1]}] == Command.parse("bors link #1 merged")
+    assert [{:link_malformed, :link, ["merge"]}] == Command.parse("bors link #1 merge")
+  end
+
   test "accept the bare command" do
     assert [{:try, ""}] == Command.parse("bors try")
     assert [:activate] == Command.parse("bors r+")
@@ -299,7 +341,17 @@ defmodule BorsNG.CommandTest do
   end
 
   test "accept the try command with an argument" do
-    assert [{:try, "-layout"}] == Command.parse("bors try-layout")
+    assert [{:try, " -layout"}] == Command.parse("bors try -layout")
+    assert [{:try, " --layout"}] == Command.parse("bors try --layout")
+  end
+
+  # Without the space, `try-cancel` would start a build of `-cancel` for
+  # someone who meant `try-`.
+  test "try arguments need a space after try" do
+    assert [] == Command.parse("bors try-layout")
+    assert [] == Command.parse("bors try-cancel")
+    assert [] == Command.parse("bors try--")
+    assert [:try_cancel] == Command.parse("bors try-")
   end
 
   test "accept more than one command in a single comment" do
