@@ -244,11 +244,11 @@ defmodule BorsNG.CommandTest do
     assert [{:malformed_args, {:bad_names, "r= p=5", ["p=5"]}}] == Command.parse("bors r= p=5")
     assert [{:malformed_args, {:bad_names, "r=a.b", ["a.b"]}}] == Command.parse("bors r=a.b")
 
-    assert [{:malformed_args, {:bad_names, "d=alice p=5", ["p=5"]}}] ==
-             Command.parse("bors d=alice p=5")
+    assert [{:malformed_args, {:bad_names, "d=alice,p=5", ["p=5"]}}] ==
+             Command.parse("bors d=alice,p=5")
 
-    assert [{:malformed_args, {:bad_names, "d=alice r+", ["r+"]}}] ==
-             Command.parse("bors d=alice r+")
+    assert [{:malformed_args, {:bad_names, "d-=alice,r+", ["r+"]}}] ==
+             Command.parse("bors d-=alice,r+")
 
     assert [{:malformed_args, {:no_for, "d-=alice for=24h"}}] ==
              Command.parse("bors d-=alice for=24h")
@@ -259,11 +259,27 @@ defmodule BorsNG.CommandTest do
              ])
   end
 
-  test "delegate-= takes names separated by spaces, as delegate= does" do
-    assert [{:undelegate_to, "alice"}, {:undelegate_to, "bob"}] ==
-             Command.parse("bors d-=alice bob")
+  # A space ends the names, as it does for `r=`, so `d=alice thanks` cannot
+  # delegate a GitHub user called `thanks`.
+  test "names are separated by commas in r=, d= and d-= alike" do
+    assert [{:delegate_to, "alice"}, {:delegate_to, "bob"}] == Command.parse("bors d=alice, bob")
 
-    assert [{:delegate_to, "alice"}, {:delegate_to, "bob"}] == Command.parse("bors d=alice bob")
+    assert [{:undelegate_to, "alice"}, {:undelegate_to, "bob"}] ==
+             Command.parse("bors d-=alice,bob")
+
+    for {comment, understood} <- [
+          {"bors d=alice thanks", "d=alice"},
+          {"bors d=alice bob", "d=alice"},
+          {"bors d-=alice bob", "d-=alice"},
+          {"bors r=alice bob", "r=alice"},
+          {"bors d=alice p=5", "d=alice"}
+        ] do
+      "bors " <> typed = comment
+      [_, rest] = String.split(typed, " ", parts: 2)
+
+      assert [{:malformed_args, {:leftover, typed, understood, rest}}] == Command.parse(comment),
+             comment
+    end
   end
 
   test "unlink refuses anything after it" do
@@ -514,8 +530,9 @@ defmodule BorsNG.CommandTest do
       assert [{:malformed_args, {:no_names, typed}}] == Command.parse("bors #{typed}"), typed
     end
 
-    # `for=` is not a name.
-    assert [{:malformed_args, {:no_names, "d= for=24h"}}] == Command.parse("bors d= for=24h")
+    # `for=` is not a name, and goes after them.
+    assert [{:malformed_args, {:bad_names, "d= for=24h", ["for=24h"]}}] ==
+             Command.parse("bors d= for=24h")
 
     assert :member ==
              Command.required_permission_level([{:malformed_args, {:no_names, "r="}}])
@@ -1433,7 +1450,7 @@ defmodule BorsNG.CommandTest do
     Command.run(%Command{
       project: proj,
       commenter: user,
-      comment: "bors d=pr_author p=5",
+      comment: "bors d=pr_author,p=5",
       pr_xref: 1
     })
 
@@ -1933,24 +1950,22 @@ defmodule BorsNG.CommandTest do
                Command.parse("bors d+ for 24h")
     end
 
-    test "for= token may appear anywhere in the argument list" do
-      # for= in the middle
+    # The names come first, separated by commas, then the one `for=`.
+    test "for= goes after the names" do
       assert [
                {:delegate_to, "alice", 86_400},
                {:delegate_to, "bob", 86_400}
+             ] == Command.parse("bors d=alice,bob for=24h")
+
+      assert [
+               {:malformed_args, {:leftover, "d=alice for=24h bob", "d=alice for=24h", "bob"}}
              ] == Command.parse("bors d=alice for=24h bob")
 
-      # for= at the very front
-      assert [
-               {:delegate_to, "alice", 86_400},
-               {:delegate_to, "bob", 86_400}
-             ] == Command.parse("bors d=for=24h alice,bob")
+      assert [{:malformed_args, {:bad_names, "d=for=24h alice,bob", ["for=24h"]}}] ==
+               Command.parse("bors d=for=24h alice,bob")
 
-      # Mixed comma/space separators with for= mid-list
-      assert [
-               {:delegate_to, "alice", 86_400},
-               {:delegate_to, "bob", 86_400}
-             ] == Command.parse("bors d=alice,for=24h,bob")
+      assert [{:malformed_args, {:bad_names, "d=alice,for=24h,bob", ["for=24h"]}}] ==
+               Command.parse("bors d=alice,for=24h,bob")
     end
 
     # Picking one of two would be a guess.

@@ -930,7 +930,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
   end
 
   # `r=alice bob` most likely meant two reviewers.
-  test "the leftover hint after r= names reviewers the way r= takes them" do
+  test "the leftover hint after names points at commas" do
     msg =
       Message.generate_message({:malformed_args, {:leftover, "r=alice bob", "r=alice", "bob"}})
 
@@ -943,12 +943,27 @@ defmodule BorsNG.Worker.BatcherMessageTest do
 
     assert msg =~ "`bors merge=alice,bob`"
 
+    # The example keeps what followed the names.
     msg =
       Message.generate_message(
-        {:malformed_args, {:leftover, "r=alice p=5 now", "r=alice p=5", "now"}}
+        {:malformed_args, {:leftover, "d=alice for=24h bob", "d=alice for=24h", "bob"}}
       )
 
+    assert msg =~ "`bors d=alice,bob for=24h`"
+
+    # Only a leftover that could be a name gets the hint.
+    msg = Message.generate_message({:malformed_args, {:leftover, "r=alice !", "r=alice", "!"}})
     refute msg =~ "commas"
+
+    msg = Message.generate_message({:malformed_args, {:leftover, "r- now", "r-", "now"}})
+    refute msg =~ "commas"
+  end
+
+  test "the bad-name hint for a for= among the names says where it goes" do
+    msg =
+      Message.generate_message({:malformed_args, {:bad_names, "d=for=24h alice", ["for=24h"]}})
+
+    assert msg =~ "Put `for=` after the names, e.g. `bors d=alice,bob for=24h`."
   end
 
   test "the bad-name hint names each token" do

@@ -509,7 +509,37 @@ defmodule BorsNG.Command do
   def parse_activation_args(arguments), do: read_activation(arguments, "r=")
 
   defp read_activation(arguments, typed) do
-    [names_part | rest] =
+    {names, tail} = split_names(arguments)
+    mentions = Enum.join(names, ",")
+
+    case {names, bad_logins(names), tail} do
+      {[], _, _} ->
+        []
+
+      {_, [_ | _] = bad, _} ->
+        [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+
+      {_, [], ""} ->
+        [{:activate_by, mentions}]
+
+      {_, [], "p=" <> priority} ->
+        case read_priority(priority) do
+          {:ok, p, ""} -> [{:set_priority, p}, {:activate_by, mentions}]
+          {:ok, p, more} -> [leftover(typed <> arguments, "#{typed}#{mentions} p=#{p}", more)]
+          {:error, kind} -> [{:malformed_args, {kind, typed <> arguments}}]
+        end
+
+      {_, [], more} ->
+        [leftover(typed <> arguments, typed <> mentions, more)]
+    end
+  end
+
+  # Names separated by commas (`, ` too), as `r=`, `d=` and `d-=` all take
+  # them, with any `@` dropped. A space ends them: the text after it comes
+  # back for the caller to read or refuse, so `d=alice thanks` cannot
+  # delegate a user called `thanks`.
+  defp split_names(arguments) do
+    [names_part | tail] =
       arguments
       |> String.trim()
       |> String.replace(~r/,\s*/, ",")
@@ -521,98 +551,7 @@ defmodule BorsNG.Command do
       |> Enum.map(&String.replace(&1, "@", ""))
       |> Enum.reject(&(&1 == ""))
 
-    mentions = Enum.join(names, ",")
-
-    case {names, Enum.reject(names, &login_shaped?/1), rest} do
-      {[], _, _} ->
-        []
-
-      {_, [_ | _] = bad, _} ->
-        [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
-
-      {_, [], []} ->
-        [{:activate_by, mentions}]
-
-      {_, [], ["p=" <> priority]} ->
-        case read_priority(priority) do
-          {:ok, p, ""} -> [{:set_priority, p}, {:activate_by, mentions}]
-          {:ok, p, more} -> [leftover(typed <> arguments, "#{typed}#{mentions} p=#{p}", more)]
-          {:error, kind} -> [{:malformed_args, {kind, typed <> arguments}}]
-        end
-
-      {_, [], [more]} ->
-        [leftover(typed <> arguments, typed <> mentions, more)]
-    end
-  end
-
-  @doc ~S"""
-  The username part of a delegate-to command is defined like this:
-
-    * It may start with whitespace
-    * @-signs are stripped
-    * ", " is converted to ","
-    * Otherwise, whitespace ends it.
-    * It's split on comma.
-
-      iex> alias BorsNG.Command
-      iex> Command.parse_delegation_args(" this, is, whitespace heavy", :delegate_to)
-      [
-        {:delegate_to, "this"},
-        {:delegate_to, "is"},
-        {:delegate_to, "whitespace"}]
-      iex> Command.parse_delegation_args(" @this, @has, @ats", :undelegate_to)
-      [{:undelegate_to, "this"}, {:undelegate_to, "has"}, {:undelegate_to, "ats"}]
-      iex> Command.parse_delegation_args(" trimmed ", :delegate_to)
-      [{:delegate_to, "trimmed"}]
-      iex> Command.parse_delegation_args("what\never", :undelegate_to)
-      [{:undelegate_to, "what"}]
-      iex> Command.parse_delegation_args("somebody", :delegate_to)
-      [{:delegate_to, "somebody"}]
-      iex> Command.parse_delegation_args("", :undelegate_to)
-      []
-      iex> Command.parse_delegation_args("  ", :delegate_to)
-      []
-  """
-  def parse_delegation_args([], "", " " <> rest) do
-    parse_delegation_args([], "", rest)
-  end
-
-  def parse_delegation_args(l, nick, "@" <> rest) do
-    parse_delegation_args(l, nick, rest)
-  end
-
-  def parse_delegation_args(l, nick, ", " <> rest) do
-    parse_delegation_args([nick | l], "", rest)
-  end
-
-  def parse_delegation_args(l, nick, "," <> rest) do
-    parse_delegation_args([nick | l], "", rest)
-  end
-
-  def parse_delegation_args(l, nick, "\n" <> _) do
-    [nick | l]
-  end
-
-  def parse_delegation_args(l, nick, "") do
-    [nick | l]
-  end
-
-  def parse_delegation_args(l, nick, " " <> _) do
-    [nick | l]
-  end
-
-  def parse_delegation_args(l, nick, <<c::8, rest::binary>>) do
-    parse_delegation_args(l, <<nick::binary, c::8>>, rest)
-  end
-
-  def parse_delegation_args(arguments, action) do
-    []
-    |> parse_delegation_args("", arguments)
-    |> :lists.reverse()
-    |> Enum.flat_map(fn
-      "" -> []
-      nick -> [{action, nick}]
-    end)
+    {names, List.first(tail, "")}
   end
 
   @doc ~S"""
@@ -659,25 +598,6 @@ defmodule BorsNG.Command do
     end
   end
 
-  # Splits a delegate argument list into {names_part, duration_seconds_or_nil}.
-  # A `for=<duration>` token may appear anywhere among the comma/space-separated
-  # tokens. `for_refusal/2` has already refused an unreadable or repeated one.
-  # The remaining tokens are rejoined with ", " for parse_delegation_args/2,
-  # which expects comma separation (a literal space terminates a name).
-  defp extract_delegate_extras(s) do
-    {for_tokens, name_tokens} = split_for_tokens(s)
-
-    duration =
-      Enum.find_value(for_tokens, fn token ->
-        case parse_duration(String.replace_prefix(token, "for=", "")) do
-          {:ok, secs} -> secs
-          :error -> nil
-        end
-      end)
-
-    {Enum.join(name_tokens, ", "), duration}
-  end
-
   # A `for=` bors cannot read, or more than one, refuses the command: falling
   # back to the default expiry would grant something other than what was
   # asked for, and picking one of two would guess.
@@ -703,17 +623,6 @@ defmodule BorsNG.Command do
     |> Enum.split_with(&(&1 == "for" or String.starts_with?(&1, "for=")))
   end
 
-  defp parse_delegate_with(arguments, action) do
-    {names, duration} = extract_delegate_extras(arguments)
-
-    names
-    |> parse_delegation_args(action)
-    |> Enum.map(fn
-      {^action, login} when not is_nil(duration) -> {action, login, duration}
-      cmd -> cmd
-    end)
-  end
-
   # `d+` delegates the PR author. Names after it most likely mean `d=`, so
   # refuse rather than delegate someone else. The refusal keeps what was
   # typed, and its suggestion keeps any `for=`.
@@ -722,9 +631,9 @@ defmodule BorsNG.Command do
 
     case {for_refusal(typed <> rest, for_tokens), name_tokens} do
       {nil, []} ->
-        case extract_delegate_extras(rest) do
-          {_, nil} -> [:delegate]
-          {_, duration} -> [{:delegate, duration}]
+        case for_tokens do
+          [] -> [:delegate]
+          [for_token] -> [{:delegate, duration!(for_token)}]
         end
 
       # Before the names, so `d+ for 24h` is not told to delegate `24h`.
@@ -748,43 +657,70 @@ defmodule BorsNG.Command do
   defp activation_args(arguments, typed),
     do: arguments |> read_activation(typed) |> or_no_names(typed <> arguments)
 
-  # A token that cannot be a login is refused before GitHub is asked about
-  # it: `d=alice p=5` is a command run on, not a user named `p=5`.
-  defp delegate_to_args(arguments, typed) do
-    {for_tokens, name_tokens} = split_for_tokens(arguments)
+  # Names separated by commas, then optionally a space and one `for=`. A name
+  # that cannot be a login is refused before GitHub is asked about it.
+  defp delegate_to_args(arguments, prefix) do
+    typed = prefix <> arguments
+    {names, tail} = split_names(arguments)
+    {for_tokens, _} = split_for_tokens(tail)
+    bad = bad_logins(names)
 
-    case {bad_logins(name_tokens), for_refusal(typed <> arguments, for_tokens)} do
-      {[_ | _] = bad, _} ->
-        [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+    cond do
+      bad != [] ->
+        [{:malformed_args, {:bad_names, typed, bad}}]
 
-      {[], nil} ->
-        arguments |> parse_delegate_with(:delegate_to) |> or_no_names(typed <> arguments)
+      names == [] ->
+        [{:malformed_args, {:no_names, typed}}]
 
-      {[], refusal} ->
-        [refusal]
+      true ->
+        case for_refusal(typed, for_tokens) do
+          nil -> delegate_to_tail(typed, prefix <> Enum.join(names, ","), names, tail)
+          refusal -> [refusal]
+        end
     end
   end
 
-  # Names separated by commas or spaces, as `d=` takes them. Removing a
-  # delegation has no duration, so a `for=` (or a spaced `for 24h`, whose
-  # `24h` would otherwise be looked up as a login) is refused.
-  defp undelegate_to_args(arguments, typed) do
-    {for_tokens, tokens} = split_for_tokens(arguments)
+  # What may follow the names: nothing, or one readable `for=`, and nothing
+  # after that. `for_refusal/2` has already refused an unreadable or second
+  # `for=`.
+  defp delegate_to_tail(typed, understood, names, tail) do
+    case String.split(tail, " ", parts: 2) do
+      [""] ->
+        Enum.map(names, &{:delegate_to, &1})
 
-    case {for_tokens, bad_logins(tokens)} do
-      {[_ | _], _} ->
-        [{:malformed_args, {:no_for, typed <> arguments}}]
+      ["for=" <> _ = for_token] ->
+        secs = duration!(for_token)
+        Enum.map(names, &{:delegate_to, &1, secs})
 
-      {[], []} ->
-        tokens
-        |> Enum.map(&String.replace(&1, "@", ""))
-        |> Enum.reject(&(&1 == ""))
-        |> Enum.map(&{:undelegate_to, &1})
-        |> or_no_names(typed <> arguments)
+      ["for=" <> _ = for_token, more] ->
+        [leftover(typed, "#{understood} #{for_token}", more)]
 
-      {[], bad} ->
-        [{:malformed_args, {:bad_names, typed <> arguments, bad}}]
+      _ ->
+        [leftover(typed, understood, tail)]
     end
+  end
+
+  # Names separated by commas, and nothing after them. Removing a delegation
+  # has no duration, so a `for=`, among the names or after them, is refused.
+  defp undelegate_to_args(arguments, prefix) do
+    typed = prefix <> arguments
+    {names, tail} = split_names(arguments)
+    {for_tokens, _} = split_for_tokens(Enum.join(names, " ") <> " " <> tail)
+    bad = bad_logins(names)
+
+    cond do
+      for_tokens != [] -> [{:malformed_args, {:no_for, typed}}]
+      bad != [] -> [{:malformed_args, {:bad_names, typed, bad}}]
+      names == [] -> [{:malformed_args, {:no_names, typed}}]
+      tail != "" -> [leftover(typed, prefix <> Enum.join(names, ","), tail)]
+      true -> Enum.map(names, &{:undelegate_to, &1})
+    end
+  end
+
+  # For a `for=` token `for_refusal/2` has passed.
+  defp duration!(for_token) do
+    {:ok, secs} = parse_duration(String.replace_prefix(for_token, "for=", ""))
+    secs
   end
 
   defp bad_logins(tokens) do

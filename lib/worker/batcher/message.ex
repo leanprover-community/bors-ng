@@ -349,18 +349,22 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: bors did not run `bors #{typed}`: `#{prefix}` removes delegations, so it takes no `for=`. Reply with just the names, e.g. `bors #{prefix}alice`."
   end
 
-  def generate_message({:malformed_args, {:leftover, typed, understood, rest}}) do
-    # `r=alice bob` most likely meant two reviewers.
-    commas =
-      case String.split(understood, "=", parts: 2) do
-        [cmd, names] when cmd in ["r", "merge"] ->
-          if String.contains?(names, " "),
-            do: "",
-            else:
-              " To name several reviewers, separate them with commas, e.g. `bors #{cmd}=alice,bob`."
+  # The commands that take names, all separated by commas.
+  @name_cmds ~w(r merge d d+ delegate delegate+ d- delegate-)
 
-        _ ->
-          ""
+  def generate_message({:malformed_args, {:leftover, typed, understood, rest}}) do
+    # `r=alice bob` and `d=alice for=24h bob` most likely meant another name.
+    # The example keeps whatever followed the names, such as the `for=`.
+    commas =
+      with [cmd, names_and_more] when cmd in @name_cmds <-
+             String.split(understood, "=", parts: 2),
+           true <- String.match?(rest, ~r/^@?[A-Za-z0-9][A-Za-z0-9_-]*(\[bot\])?(\s|$)/) do
+        more =
+          names_and_more |> String.split(" ", parts: 2) |> Enum.drop(1) |> Enum.map(&" #{&1}")
+
+        " To name more than one, separate the names with commas, e.g. `bors #{cmd}=alice,bob#{more}`."
+      else
+        _ -> ""
       end
 
     ":-1: bors did not run `bors #{typed}`: `bors #{understood}` takes nothing after it, but `#{rest}` followed. Reply with just `bors #{understood}`, and put any other command on a line of its own.#{commas}"
@@ -370,7 +374,19 @@ defmodule BorsNG.Worker.Batcher.Message do
     what =
       if match?([_], bad), do: "cannot be a GitHub username", else: "cannot be GitHub usernames"
 
-    ":-1: bors did not run `bors #{typed}`: #{Enum.map_join(bad, ", ", &"`#{&1}`")} #{what}. Put any other command on a line of its own."
+    # `d=for=24h alice`: the duration goes after the names.
+    advice =
+      case Regex.run(~r/^(?:delegate|d)\+?=/, typed) do
+        [prefix] when is_binary(prefix) ->
+          if Enum.any?(bad, &String.starts_with?(&1, "for=")),
+            do: "Put `for=` after the names, e.g. `bors #{prefix}alice,bob for=24h`.",
+            else: "Put any other command on a line of its own."
+
+        nil ->
+          "Put any other command on a line of its own."
+      end
+
+    ":-1: bors did not run `bors #{typed}`: #{Enum.map_join(bad, ", ", &"`#{&1}`")} #{what}. #{advice}"
   end
 
   def generate_message({:malformed_args, {:bad_for, typed, tokens}}) do

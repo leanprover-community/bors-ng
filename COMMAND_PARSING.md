@@ -19,8 +19,8 @@ per-command behavior is tested in `test/command_test.exs`.
 Two failures motivate this. A silently ignored command (`bors delegate`,
 `bors r+ p=5 single on` never setting `single`) leaves the author believing
 something happened. A silently *misread* one is worse: `bors d- alice` used to
-remove every delegation, and `bors r= p=5` approved on behalf of a reviewer
-called `p=5`.
+remove every delegation, and `bors d=alice thanks` could delegate a GitHub user
+called `thanks`.
 
 The limit is prose. Any line that starts with the trigger is read, so
 `bors is slow today` has to stay quiet. The parser cannot reply to everything
@@ -72,8 +72,9 @@ most likely meant. It never picks one.
   Refused, suggesting `bors d-=alice`.
 - `bors d+ alice` could mean "delegate alice" (`d=alice`) or "delegate the
   author". Refused, suggesting `bors d=alice`.
-- `bors r=alice bob` does not say whether bob is a reviewer. Refused, pointing
-  at `bors r=alice,bob`.
+- `bors r=alice bob` and `bors d=alice bob` do not say whether bob is a name.
+  Names are separated by commas, so both are refused, pointing at
+  `bors r=alice,bob`. A word after the names can never become a login.
 - Two `for=` durations disagree. Refused.
 - An unreadable argument is never replaced by a default. `bors d+ for=24m` is
   refused, not granted the `bors.toml` default expiry.
@@ -213,9 +214,9 @@ from `1h` up to `90d`. A name is a GitHub login, with an optional `@`.
 | `try` | nothing, or a space and any text for CI |
 | `try-`, `retry`, `ping` | nothing after |
 | `d+`, `delegate+`, `d`, `delegate` | nothing after, or one `for=DURATION` |
-| `d=`, `d+=`, `delegate=`, `delegate+=` | names separated by commas or spaces, with at most one `for=DURATION` among them |
+| `d=`, `d+=`, `delegate=`, `delegate+=` | names separated by commas (`, ` too), then optionally ` for=DURATION` |
 | `d-`, `delegate-` | nothing after |
-| `d-=`, `delegate-=` | names separated by commas or spaces, no `for=` |
+| `d-=`, `delegate-=` | names separated by commas (`, ` too), nothing after |
 | `link`, `stack` | `#N` references, with connective words between them; bare `stack` infers its parent |
 | `unlink`, `link-` | nothing after |
 
@@ -247,9 +248,6 @@ These are not handled yet:
 - A line inside a fenced code block is read as a command.
 - Only the correction reply names the configured trigger; other replies say
   `bors`.
-- `d=` and `d-=` take names separated by spaces as well as commas, where `r=`
-  takes commas only and refuses `r=alice bob`. So `bors d=alice thanks`
-  delegates a GitHub user called `thanks`, if there is one.
 - `link` and `stack` tolerate any plain word between references, not a fixed
   list of connectives.
 - A refusal of a reviewer-level command is shown to members who could not run
