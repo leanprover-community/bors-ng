@@ -1795,8 +1795,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
     end
   end
 
-  describe "dependency label" do
-    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"/
+  describe "dependencies" do
+    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"\nkeywords = ["depends on:"]/
 
     defp pr(xref, body) do
       %Pr{
@@ -1825,11 +1825,11 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       })
     end
 
-    test "a bundle queues when the label waits only on a member", %{proj: proj} do
+    test "a bundle queues when its only dependency is a member", %{proj: proj} do
       put_dependency_state("- [ ] depends on: #1")
       {_bundle, [p1, p2]} = insert_bundle(proj, [insert_patch(proj, 1), insert_patch(proj, 2)])
 
-      # PR 2's own preflight passes the label, so it holds its approval.
+      # PR 2's own preflight passes, so it holds its approval.
       Batcher.handle_cast({:reviewed, p2.id, "r2"}, proj.id)
       assert Repo.get!(Patch, p2.id).bundle_reviewer == "r2"
       refute Enum.any?(comments_for(2), &(&1 =~ "Rejected"))
@@ -1846,8 +1846,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
                Enum.sort([p1.id, p2.id])
     end
 
-    test "r+ is refused while the label waits on a pull request outside the bundle",
-         %{proj: proj} do
+    test "r+ is refused while a dependency is outside the bundle", %{proj: proj} do
       put_dependency_state("- [ ] depends on: #1\n- [ ] depends on: #3")
       insert_patch(proj, 3)
       {_bundle, [_p1, p2]} = insert_bundle(proj, [insert_patch(proj, 1), insert_patch(proj, 2)])
@@ -1855,11 +1854,11 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       Batcher.handle_cast({:reviewed, p2.id, "r2"}, proj.id)
 
       assert [comment] = comments_for(2)
-      assert comment =~ "Rejected by label `blocked`, which waits on #3."
+      assert comment =~ "Rejected: this pull request depends on #3."
       assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
     end
 
-    test "the bundle holds when a member's label waits outside it", %{proj: proj} do
+    test "the bundle holds when a member's dependency is outside it", %{proj: proj} do
       # PR 2 held its approval before its description gained a dependency on #3.
       put_dependency_state("- [ ] depends on: #1\n- [ ] depends on: #3")
       insert_patch(proj, 3)
@@ -1874,9 +1873,31 @@ defmodule BorsNG.Worker.BatcherBundleTest do
 
       assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
       assert [rejected] = comments_for(2)
-      assert rejected =~ "Rejected by label `blocked`, which waits on #3."
+      assert rejected =~ "Rejected: this pull request depends on #3."
       assert [held] = comments_for(1)
       assert held =~ "Waiting on #2 before the bundle can queue"
+    end
+
+    test "an edit that adds a dependency outside the bundle pulls the whole bundle",
+         %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1\n- [ ] depends on: #3")
+      insert_patch(proj, 3)
+
+      {_bundle, [p1, p2]} =
+        insert_bundle(proj, [
+          insert_patch(proj, 1),
+          insert_patch(proj, 2, %{body: "- [ ] depends on: #1\n- [ ] depends on: #3"})
+        ])
+
+      insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_cast({:recheck_dependencies, p2.id}, proj.id)
+
+      assert [] == Repo.all(LinkPatchBatch)
+      assert [canceled] = comments_for(2)
+      assert canceled =~ "the description now depends on #3."
+      assert [pulled] = comments_for(1)
+      assert pulled =~ "linked with #2, which gained a dependency outside the bundle"
     end
   end
 end

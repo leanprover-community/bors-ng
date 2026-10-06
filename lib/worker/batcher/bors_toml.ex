@@ -10,15 +10,18 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
       pr_status = [ "continuous-integration/travis-ci/pull" ]
 
-  A `[dependencies]` table makes one label conditional. A pull request with
-  `label` is blocked unless every pull request its description lists after one
-  of `keywords` is merged, closed, or in its bundle (see
-  `BorsNG.Worker.Batcher.Dependencies`). `keywords` defaults to
-  `["depends on", "blocked by"]`. The label must not also be in `block_labels`.
+  A `[dependencies]` table makes bors read the dependencies a pull request's
+  description lists after one of `keywords`, as in `- [ ] depends on: #123`,
+  and block while any is open and outside the pull request's bundle (see
+  `BorsNG.Worker.Batcher.Dependencies`). `label` is the label a tool such as
+  dependent-issues puts on those pull requests. It blocks only when the
+  description lists no dependency bors can read, so it must not be in
+  `block_labels`. `keywords` should be the tool's, and default to
+  dependent-issues' defaults, `["depends on", "blocked by"]`.
 
       [dependencies]
       label = "blocked-by-other-PR"
-      keywords = [ "depends on" ]
+      keywords = [ "- [ ] depends on:", "- [x] depends on:" ]
   """
 
   alias BorsNG.GitHub

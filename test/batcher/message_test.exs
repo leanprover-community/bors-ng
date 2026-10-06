@@ -169,15 +169,24 @@ defmodule BorsNG.Worker.BatcherMessageTest do
              Message.generate_message({:linked, [1, 2]})
   end
 
-  test "the dependency label refusal names what it waits on, and runs nothing" do
-    msg =
-      Message.generate_message(
-        {:preflight, {:blocked_dependencies, "blocked-by-other-PR", ["#3", "a/b#4"]}}
-      )
+  test "the dependency replies name what blocks, and run nothing" do
+    refs = ["#3", "a/b#4"]
+    refused = Message.generate_message({:preflight, {:blocked_dependencies, refs}})
+    assert refused =~ "Rejected: this pull request depends on #3, a/b#4."
 
-    assert msg =~ "Rejected by label `blocked-by-other-PR`, which waits on #3, a/b#4."
+    label = Message.generate_message({:preflight, {:blocked_dependency_label, "blocked"}})
+    assert label =~ "Rejected by label `blocked`"
+
+    canceled = Message.generate_message({:canceled, :failed, {:dependencies, refs}})
+    assert canceled =~ "the description now depends on #3, a/b#4."
+
+    pulled = Message.generate_message({:bundle_pulled, 2, {:dependencies, refs}})
+    assert pulled =~ "which gained a dependency outside the bundle"
+
     # bors reads its own comments.
-    assert [] == BorsNG.Command.parse(msg)
+    for msg <- [refused, label, canceled, pulled] do
+      assert [] == BorsNG.Command.parse(msg), msg
+    end
   end
 
   test "every bors.toml error key has an explicit, friendly renderer" do

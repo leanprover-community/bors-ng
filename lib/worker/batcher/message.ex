@@ -65,12 +65,17 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: Rejected by label"
   end
 
-  def generate_message({:preflight, {:blocked_dependencies, label, refs}}) do
-    ":-1: Rejected by label `#{label}`, which waits on #{Enum.join(refs, ", ")}.\n\n" <>
-      "The label stops blocking once each dependency in the description is merged, " <>
-      "closed, or linked with this pull request (`bors link` or `bors stack`). " <>
-      "A dependency in another repository, or a number that is not a pull request here, " <>
-      "blocks until the label is removed."
+  def generate_message({:preflight, {:blocked_dependencies, refs}}) do
+    ":-1: Rejected: this pull request depends on #{Enum.join(refs, ", ")}.\n\n" <>
+      "A dependency listed in the description stops blocking once it is merged, closed, " <>
+      "or linked with this pull request (`bors link` or `bors stack`). One in another " <>
+      "repository, or a number that is not a pull request here, blocks until it is " <>
+      "removed from the description."
+  end
+
+  def generate_message({:preflight, {:blocked_dependency_label, label}}) do
+    ":-1: Rejected by label `#{label}`: the description lists no dependency bors can read, " <>
+      "so the label blocks until it is removed."
   end
 
   def generate_message({:preflight, :pr_status}) do
@@ -155,6 +160,12 @@ defmodule BorsNG.Worker.Batcher.Message do
     nil
   end
 
+  def generate_message({:canceled, :failed, {:dependencies, refs}}) do
+    "Bors build canceled: the description now depends on #{Enum.join(refs, ", ")}.\n\n" <>
+      "Once each is merged, closed, or linked with this pull request, someone with " <>
+      "permission can run `bors r+`."
+  end
+
   def generate_message({:canceled, :failed, _reason}) do
     "Bors build canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
   end
@@ -236,6 +247,7 @@ defmodule BorsNG.Worker.Batcher.Message do
         :closed -> "was closed"
         :push -> "was pushed to"
         :draft -> "was converted to draft"
+        {:dependencies, _} -> "gained a dependency outside the bundle"
         _ -> "was canceled"
       end
 
@@ -870,7 +882,7 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def generate_bors_toml_error(:dependencies_label_blocked) do
     "bors.toml: the [dependencies] label is also in block_labels; " <>
-      "remove it from block_labels so it blocks only while a dependency is open"
+      "remove it from block_labels, since bors reads the dependencies from the description"
   end
 
   # Catch-all so a future validation key can never crash the renderer (and the

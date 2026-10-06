@@ -11,7 +11,7 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
   # mathlib4's dependent-issues keywords, as literal text.
   @mathlib ["- [ ] depends on:", "- [x] depends on:"]
 
-  defp refs(body, keywords \\ ["depends on"]) do
+  defp refs(body, keywords \\ ["depends on:"]) do
     Dependencies.references(body, keywords, @repo)
   end
 
@@ -29,25 +29,32 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       assert refs(body, @mathlib) == [{:local, 123}, {:local, 456}]
     end
 
-    test "reads every reference on the rest of the line, not just the first" do
-      assert refs("depends on: #1, #2 and also #3") ==
-               [{:local, 1}, {:local, 2}, {:local, 3}]
+    test "with mathlib's keywords, a sentence is no dependency" do
+      assert refs("This depends on: #5 landing first.", @mathlib) == []
+    end
+
+    test "reads only the reference right after the keyword" do
+      assert refs("depends on: #1, #2 and also #3") == [{:local, 1}]
+      assert refs("depends on: the lemma in #4") == []
     end
 
     test "matches a keyword in any case, and its spaces as any whitespace" do
-      assert refs("DEPENDS   ON #7") == [{:local, 7}]
-      assert refs("depends\non #8") == [{:local, 8}]
+      assert refs("DEPENDS   ON #7", ["depends on"]) == [{:local, 7}]
+      assert refs("depends\non #8", ["depends on"]) == [{:local, 8}]
+      assert refs("-  [ ]  depends on: #9", @mathlib) == [{:local, 9}]
     end
 
-    test "reads the next non-blank line when the keyword's line has no reference" do
-      # dependent-issues lets whitespace, newlines included, separate a keyword
-      # from its reference, so this is a dependency it finds.
+    test "lets whitespace, newlines included, separate a keyword from its reference" do
       assert refs("- [ ] depends on:\n\n  #9\n#10", @mathlib) == [{:local, 9}]
-      assert refs("depends on: the following\r\n#11\r\n") == [{:local, 11}]
+      assert refs("depends on:\r\n#11\r\n") == [{:local, 11}]
+      # JavaScript's \s, which dependent-issues uses, takes Unicode spaces too.
+      assert refs("depends on: #12") == [{:local, 12}]
     end
 
-    test "does not read the next line when the keyword's line has a reference" do
-      assert refs("depends on: #1\nCloses #2") == [{:local, 1}]
+    test "needs whitespace before the reference, and a whole number" do
+      assert refs("depends on:#5") == []
+      assert refs("depends on: #5a") == []
+      assert refs("depends on: #0") == []
     end
 
     test "ignores references that do not follow a keyword" do
@@ -65,7 +72,7 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       -->
       """
 
-      assert refs(body) == []
+      assert refs(body, ["depends on"]) == []
       assert refs(body, @mathlib) == []
     end
 
@@ -98,13 +105,17 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
     end
 
     test "lists each dependency once" do
-      assert refs("depends on: #5\nblocked by #5", ["depends on", "blocked by"]) ==
+      assert refs("depends on #5\nblocked by #5", ["depends on", "blocked by"]) ==
                [{:local, 5}]
     end
 
     test "reads nothing from an empty description" do
       assert refs(nil) == []
       assert refs("") == []
+    end
+
+    test "reads a description that is not valid UTF-8" do
+      assert refs(<<"depends on: #5 ", 0xFF>>) == [{:local, 5}]
     end
   end
 
@@ -134,7 +145,7 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       Enum.map(patches, &(&1 |> Patch.changeset(%{bundle_id: bundle.id}) |> Repo.update!()))
     end
 
-    defp check(patch, body), do: Dependencies.check(patch, body, ["depends on"], @repo)
+    defp check(patch, body), do: Dependencies.check(patch, body, ["depends on:"], @repo)
 
     test "clears a dependency in the same bundle", %{proj: proj} do
       [_a, b] = bundle(proj, [insert_patch(proj, 1), insert_patch(proj, 2)])

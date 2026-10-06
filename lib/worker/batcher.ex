@@ -84,6 +84,10 @@ defmodule BorsNG.Worker.Batcher do
     GenServer.cast(pid, {:cancel_all})
   end
 
+  def recheck_dependencies(pid, patch_id) when is_integer(patch_id) do
+    GenServer.cast(pid, {:recheck_dependencies, patch_id})
+  end
+
   def link(pid, patch_id, pr_xrefs) when is_integer(patch_id) do
     GenServer.cast(pid, {:link, patch_id, pr_xrefs})
   end
@@ -246,6 +250,29 @@ defmodule BorsNG.Worker.Batcher do
   # Backwards compatibility for any in-flight 2-tuple casts (e.g. across a deploy).
   def do_handle_cast({:cancel, patch_id}, project_id) do
     do_handle_cast({:cancel, patch_id, :requested}, project_id)
+  end
+
+  # The description of a queued patch changed. If it now lists a dependency
+  # that blocks, the patch (and its bundle) leaves a batch that is still
+  # waiting. A building batch is left alone: canceling it would throw out every
+  # other patch in it too. The webhook has already stored the new description.
+  # Held approvals stay, since the next r+ checks dependencies again.
+  def do_handle_cast({:recheck_dependencies, patch_id}, _project_id) do
+    case patch_id |> Batch.all_for_patch(:incomplete) |> Repo.one() do
+      %Batch{state: :waiting} = batch ->
+        patch = Repo.get!(Patch, patch_id)
+
+        with {:ok, toml} <- Batcher.GetBorsToml.get(get_repo_conn(batch.project), patch.commit),
+             true <- is_binary(toml.dependencies_label),
+             {:blocked, refs} <- dependency_check(patch, patch.body, toml) do
+          cancel_patch(batch, patch_id, {:dependencies, refs})
+        else
+          _ -> :ok
+        end
+
+      _ ->
+        :ok
+    end
   end
 
   def do_handle_cast({:cancel_all}, project_id) do
@@ -1958,7 +1985,7 @@ defmodule BorsNG.Worker.Batcher do
     Delegation.reconcile_default_expiry(patch, toml.delegation_default_expiry_sec)
 
     with {:ok, labels} <- GitHub.get_labels(repo_conn, patch.pr_xref),
-         {:ok, label_check} <- label_check(repo_conn, patch, labels, toml),
+         {:ok, block_check} <- block_check(repo_conn, patch, labels, toml),
          {:ok, github_commit_statuses} <- GitHub.get_commit_status(repo_conn, patch.commit),
          {:ok, reviews} <- GitHub.get_reviews(repo_conn, patch.pr_xref),
          {:ok, commit_reviews} <- maybe_get_commit_reviews(repo_conn, patch, toml) do
@@ -1997,10 +2024,10 @@ defmodule BorsNG.Worker.Batcher do
         end
 
       Logger.info(
-        "Code review status: Label Check #{inspect(label_check)} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
+        "Code review status: Block Check #{inspect(block_check)} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
       )
 
-      case {label_check, no_error_status, no_waiting_status, no_unset_status, passed_review,
+      case {block_check, no_error_status, no_waiting_status, no_unset_status, passed_review,
             code_owners_approved, passed_up_to_date_review} do
         {:ok, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
         {blocked, _, _, _, _, _, _} when blocked != :ok -> {:error, blocked}
@@ -2022,31 +2049,42 @@ defmodule BorsNG.Worker.Batcher do
     end
   end
 
-  # `:ok`, or the preflight error a label causes. A block label always blocks.
-  # The `[dependencies]` label blocks only while a dependency the description
-  # lists is still open and outside the patch's bundle (see `Dependencies`).
-  # The description is read from GitHub, so an edit counts at once.
-  defp label_check(repo_conn, patch, labels, toml) do
+  # `:ok`, or the preflight error a label or a dependency causes. A block label
+  # always blocks. With `[dependencies]`, so does a dependency the description
+  # lists that is open and outside the patch's bundle (see `Dependencies`). The
+  # description is read from GitHub, so an edit counts at once. The dependency
+  # label blocks only when the description lists no dependency at all.
+  defp block_check(repo_conn, patch, labels, toml) do
     labels = MapSet.new(labels)
 
     cond do
       not MapSet.disjoint?(labels, MapSet.new(toml.block_labels)) ->
         {:ok, :blocked_labels}
 
-      is_binary(toml.dependencies_label) and MapSet.member?(labels, toml.dependencies_label) ->
-        with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
-          project = Repo.get!(Project, patch.project_id)
-
-          case Dependencies.check(patch, pr.body, toml.dependencies_keywords, project.name) do
-            :clear -> {:ok, :ok}
-            :unlisted -> {:ok, :blocked_labels}
-            {:blocked, refs} -> {:ok, {:blocked_dependencies, toml.dependencies_label, refs}}
-          end
-        end
+      is_nil(toml.dependencies_label) ->
+        {:ok, :ok}
 
       true ->
-        {:ok, :ok}
+        with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
+          case dependency_check(patch, pr.body, toml) do
+            :clear ->
+              {:ok, :ok}
+
+            {:blocked, refs} ->
+              {:ok, {:blocked_dependencies, refs}}
+
+            :unlisted ->
+              if MapSet.member?(labels, toml.dependencies_label),
+                do: {:ok, {:blocked_dependency_label, toml.dependencies_label}},
+                else: {:ok, :ok}
+          end
+        end
     end
+  end
+
+  defp dependency_check(patch, body, toml) do
+    project = Repo.get!(Project, patch.project_id)
+    Dependencies.check(patch, body, toml.dependencies_keywords, project.name)
   end
 
   defp maybe_get_commit_reviews(repo_conn, patch, toml) do

@@ -388,10 +388,12 @@ defmodule BorsNG.Worker.BatcherTest do
            }
   end
 
-  describe "dependency label" do
-    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"/
+  describe "dependencies" do
+    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"\nkeywords = ["depends on:"]/
 
-    defp put_dependency_state(body, extra \\ %{}) do
+    # PR 2, at commit "Z" with the [dependencies] toml, with `labels` and the
+    # description `body`.
+    defp put_dependency_state(body, labels \\ ["blocked"], extra \\ %{}) do
       GitHub.ServerMock.put_state(
         Map.merge(
           %{
@@ -399,7 +401,7 @@ defmodule BorsNG.Worker.BatcherTest do
               branches: %{},
               commits: %{},
               comments: %{2 => []},
-              labels: %{2 => ["blocked"]},
+              labels: %{2 => labels},
               statuses: %{"Z" => %{}},
               files: %{"Z" => %{"bors.toml" => @dependency_toml}},
               pulls: %{
@@ -422,46 +424,126 @@ defmodule BorsNG.Worker.BatcherTest do
       )
     end
 
-    defp insert_labelled_patch(proj) do
+    defp insert_dependent_patch(proj, params \\ %{}) do
       %Patch{project_id: proj.id, pr_xref: 2, commit: "Z", into_branch: "master"}
+      |> Map.merge(params)
       |> Repo.insert!()
     end
 
-    test "stops blocking once every dependency is closed", %{proj: proj} do
-      put_dependency_state("- [x] depends on: #1")
-
-      %Patch{project_id: proj.id, pr_xref: 1, commit: "Y", into_branch: "master", open: false}
+    defp insert_dependency(proj, open) do
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "Y", into_branch: "master", open: open}
       |> Repo.insert!()
+    end
 
-      patch = insert_labelled_patch(proj)
+    defp comments_on_2 do
+      GitHub.ServerMock.get_state()[{{:installation, 91}, 14}].comments[2]
+    end
+
+    test "the label stops blocking once every dependency is closed", %{proj: proj} do
+      put_dependency_state("- [x] depends on: #1")
+      insert_dependency(proj, false)
+      patch = insert_dependent_patch(proj)
+
       Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
 
       assert [_batch] = Repo.all(Batch)
       assert labels_for(2) == ["blocked"]
     end
 
-    test "blocks when the description lists no dependency", %{proj: proj} do
-      put_dependency_state("No dependencies here.")
-      patch = insert_labelled_patch(proj)
+    test "an open dependency blocks without the label", %{proj: proj} do
+      # dependent-issues has not run since the dependency was added.
+      put_dependency_state("- [ ] depends on: #1", [])
+      insert_dependency(proj, true)
+      patch = insert_dependent_patch(proj)
+
       Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
 
-      state = GitHub.ServerMock.get_state()
-      assert state[{{:installation, 91}, 14}].comments[2] == [":-1: Rejected by label"]
+      assert [comment] = comments_on_2()
+      assert comment =~ "Rejected: this pull request depends on #1."
+      assert [] == Repo.all(Batch)
+    end
+
+    test "a description that lists nothing queues without the label", %{proj: proj} do
+      put_dependency_state("Adds a lemma.", [])
+      patch = insert_dependent_patch(proj)
+
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      assert [_batch] = Repo.all(Batch)
+    end
+
+    test "the label blocks when the description lists nothing", %{proj: proj} do
+      put_dependency_state("Adds a lemma.")
+      patch = insert_dependent_patch(proj)
+
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      assert comments_on_2() == [
+               ":-1: Rejected by label `blocked`: the description lists no dependency bors can read, so the label blocks until it is removed."
+             ]
+
       assert [] == Repo.all(Batch)
     end
 
     test "waits when the description cannot be read", %{proj: proj} do
-      put_dependency_state("- [ ] depends on: #1", %{get_pr_error: 1})
-      patch = insert_labelled_patch(proj)
+      put_dependency_state("- [ ] depends on: #1", ["blocked"], %{get_pr_error: 1})
+      patch = insert_dependent_patch(proj)
+
       Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
 
-      state = GitHub.ServerMock.get_state()
-
-      assert state[{{:installation, 91}, 14}].comments[2] == [
+      assert comments_on_2() == [
                ":clock1: Waiting for PR status (GitHub check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."
              ]
 
       assert [] == Repo.all(Batch)
+    end
+
+    defp queue(proj, patch, state) do
+      batch =
+        %Batch{project_id: proj.id, state: state, into_branch: "master", last_polled: 0}
+        |> Repo.insert!()
+
+      %LinkPatchBatch{patch_id: patch.id, batch_id: batch.id, reviewer: "rvr"}
+      |> Repo.insert!()
+
+      batch
+    end
+
+    test "an edit that adds an open dependency pulls a waiting patch", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1", [])
+      insert_dependency(proj, true)
+      patch = insert_dependent_patch(proj, %{body: "- [ ] depends on: #1"})
+      queue(proj, patch, :waiting)
+
+      Batcher.handle_cast({:recheck_dependencies, patch.id}, proj.id)
+
+      assert [] == Repo.all(LinkPatchBatch)
+      assert [comment] = comments_on_2()
+      assert comment =~ "Bors build canceled: the description now depends on #1."
+    end
+
+    test "an edit leaves a waiting patch whose dependencies are closed", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1", [])
+      insert_dependency(proj, false)
+      patch = insert_dependent_patch(proj, %{body: "- [ ] depends on: #1"})
+      queue(proj, patch, :waiting)
+
+      Batcher.handle_cast({:recheck_dependencies, patch.id}, proj.id)
+
+      assert [_link] = Repo.all(LinkPatchBatch)
+      assert [] == comments_on_2()
+    end
+
+    test "an edit leaves a building patch alone", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1", [])
+      insert_dependency(proj, true)
+      patch = insert_dependent_patch(proj, %{body: "- [ ] depends on: #1"})
+      batch = queue(proj, patch, :running)
+
+      Batcher.handle_cast({:recheck_dependencies, patch.id}, proj.id)
+
+      assert Repo.get!(Batch, batch.id).state == :running
+      assert [] == comments_on_2()
     end
   end
 

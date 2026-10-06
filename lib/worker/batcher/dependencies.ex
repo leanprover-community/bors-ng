@@ -1,36 +1,41 @@
 defmodule BorsNG.Worker.Batcher.Dependencies do
   @moduledoc """
-  Decide whether the `[dependencies]` label of `bors.toml` still blocks a pull
-  request.
+  Read the dependencies a pull request's description lists, and decide which
+  of them still block it. Configured by the `[dependencies]` table of
+  `bors.toml`.
 
-  On mathlib4, the dependent-issues action puts `blocked-by-other-PR` on every
-  pull request whose description lists an open dependency, as in
-  `- [ ] depends on: #123`, and takes it off once they are all closed. It knows
-  nothing of bundles. A pull request linked or stacked with its dependency
-  keeps the label, so the bundle could never queue.
+  On mathlib4, the dependent-issues action reads lines such as
+  `- [ ] depends on: #123` and puts `blocked-by-other-PR` on a pull request
+  while any of them is open. The description is the source of truth. The label
+  is a copy of it, up to one cron interval old, and dependent-issues takes it
+  off any pull request that lists no dependency. dependent-issues knows nothing
+  of bundles, so a pull request linked or stacked with its dependency keeps the
+  label.
 
-  bors leaves the label alone and looks past it: the label stops blocking once
-  every dependency the description lists is merged, closed, or in the pull
-  request's bundle. A bundle lands in one push or not at all, so a dependency in
-  it cannot land after the pull request that needs it.
+  So bors reads the description itself, on every check, and blocks while a
+  dependency it lists is open and outside the pull request's bundle. A bundle
+  lands in one push or not at all, so a dependency in it cannot land after the
+  pull request that needs it. The label does not block on its own. It blocks
+  only when the description lists nothing bors can read, as a backstop for a
+  dependency the labeller found and bors did not.
 
-  A mistake one way merges a pull request ahead of its dependency. A mistake
-  the other way blocks it, as the label did before. So every doubt blocks:
+  The parser reads what dependent-issues reads, no more and no less: a keyword,
+  whitespace, then one reference right after it. Reading less would merge a
+  pull request ahead of a dependency. Reading more would block pull requests
+  that merge today, on text no dependency tool treats as a dependency.
 
-  - The label still triggers the check. Without it nothing is read, and
-    nothing changes.
-  - bors has to find at least every dependency the labeller finds, not the same
-    ones. It reads every reference on the rest of a keyword's line, not just
-    the first. If there is none, it reads the next non-blank line, since the
-    labeller lets whitespace, newlines included, separate a keyword from its
-    reference.
-  - A label with no dependency bors can read keeps blocking. Someone may have
-    added it by hand.
-  - A dependency in another repository blocks. So does a number bors has no
-    pull request for, such as an issue.
-  - Whether a dependency is closed comes from bors's own records, which
-    webhooks keep current. Asking GitHub about a number that is not a pull
-    request would retry its 404 for minutes inside the batcher.
+  - Keywords are literal text, matched in any case. Their spaces match any
+    whitespace. dependent-issues takes keywords as regular expressions, so
+    mathlib4's `- \\[ \\] depends on:` is `- [ ] depends on:` here.
+  - Whitespace is JavaScript's `\\s`, newlines and Unicode spaces included.
+  - A reference is `#N`, `owner/repo#N`, or a link to a GitHub issue or pull
+    request.
+
+  A dependency in another repository blocks: bors only knows the pull requests
+  of this one. So does a number bors has no pull request for, such as an
+  issue. Whether a dependency is closed comes from bors's own records, which
+  webhooks keep current. Asking GitHub about a number that is not a pull
+  request would retry its 404 for minutes inside the batcher.
   """
 
   alias BorsNG.Database.Patch
@@ -39,9 +44,13 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
 
   import Ecto.Query
 
-  # `#N`, `owner/repo#N`, and links to GitHub issues and pull requests. A
-  # superset of what dependent-issues reads.
-  @reference ~r{(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:issues|pull)/([1-9]\d*)|(?:([\w.-]+)/([\w.-]+))?#([1-9]\d*)}i
+  # JavaScript's `\s`. Without `:ucp`, PCRE's `\s` lacks the Unicode spaces,
+  # while `\w`, `\d` and `\b` stay ASCII, as in JavaScript.
+  @space ~S"[\s\x{0b}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]"
+
+  # dependent-issues' references: issue-regex (`#N`, `owner/repo#N`), then a
+  # link to an issue or pull request.
+  @reference ~S"(?:(\w[\w.-]+)/(\w[\w.-]+))?#([1-9]\d*)\b|https?://github\.com/(\w[\w.-]+)/(\w[\w.-]+)/(?:issues|pull)/([1-9]\d*)\b"
 
   # `pr_xref` is a 32-bit integer column. A larger number is no pull request,
   # and querying it would raise.
@@ -50,58 +59,33 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   @type ref :: {:local, pos_integer} | {:external, binary}
 
   @doc """
-  The dependencies `body` lists after one of `keywords`. A keyword matches in
-  any case, and its spaces match any whitespace. References to `repo_name`
-  come back as `{:local, n}`, others as `{:external, "owner/repo#n"}`, in order
-  of appearance and without repeats.
+  The dependencies `body` lists after one of `keywords`. References to
+  `repo_name` come back as `{:local, n}`, others as
+  `{:external, "owner/repo#n"}`, in order of appearance and without repeats.
   """
   @spec references(binary | nil, [binary], binary) :: [ref]
   def references(nil, _keywords, _repo_name), do: []
 
   def references(body, keywords, repo_name) do
     keywords
-    |> keyword_regex()
-    |> Regex.scan(body, return: :index)
-    |> Enum.flat_map(fn [{start, length}] ->
-      body
-      |> binary_part(start + length, byte_size(body) - start - length)
-      |> String.split("\n")
-      |> references_after_keyword(repo_name)
+    |> dependency_regex()
+    |> Regex.scan(String.replace_invalid(body), capture: :all_but_first)
+    |> Enum.map(fn
+      [_, _, _, owner, repo, number] -> reference(owner, repo, number, repo_name)
+      [owner, repo, number] -> reference(owner, repo, number, repo_name)
     end)
     |> Enum.uniq()
   end
 
-  defp keyword_regex(keywords) do
-    keywords
-    |> Enum.map_join("|", fn keyword ->
-      keyword
-      |> String.split()
-      |> Enum.map_join("\\s+", &Regex.escape/1)
-    end)
-    |> Regex.compile!("iu")
-  end
+  defp dependency_regex(keywords) do
+    keywords =
+      Enum.map_join(keywords, "|", fn keyword ->
+        keyword
+        |> String.split()
+        |> Enum.map_join("#{@space}+", &Regex.escape/1)
+      end)
 
-  # The rest of the keyword's line, or else the next line that is not blank.
-  defp references_after_keyword([rest | lines], repo_name) do
-    case references_in(rest, repo_name) do
-      [] ->
-        case Enum.find(lines, &(String.trim(&1) != "")) do
-          nil -> []
-          line -> references_in(line, repo_name)
-        end
-
-      found ->
-        found
-    end
-  end
-
-  defp references_in(text, repo_name) do
-    @reference
-    |> Regex.scan(text, capture: :all_but_first)
-    |> Enum.map(fn
-      [owner, repo, number] -> reference(owner, repo, number, repo_name)
-      ["", "", "", owner, repo, number] -> reference(owner, repo, number, repo_name)
-    end)
+    Regex.compile!("(?:#{keywords})#{@space}+(?:#{@reference})", [:unicode, :caseless])
   end
 
   defp reference("", "", number, _repo_name), do: {:local, String.to_integer(number)}
@@ -115,12 +99,12 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   end
 
   @doc """
-  Whether the `[dependencies]` label still blocks `patch`, whose description
-  is `body`:
+  Which dependencies `body`, the description of `patch`, lists that still
+  block it:
 
-  - `:clear` when every dependency it lists is merged, closed, or in its bundle.
+  - `:clear` when every one is merged, closed, or in the patch's bundle.
   - `{:blocked, refs}` with the ones that are not, as `#N` or `owner/repo#N`.
-  - `:unlisted` when it lists no dependency bors can read.
+  - `:unlisted` when it lists none.
   """
   @spec check(Patch.t(), binary | nil, [binary], binary) ::
           :clear | :unlisted | {:blocked, [binary]}
