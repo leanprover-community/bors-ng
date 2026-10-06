@@ -26,6 +26,7 @@ defmodule BorsNG.Worker.Batcher do
   alias BorsNG.Database.Context.Delegation
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.Batcher.Bundles
+  alias BorsNG.Worker.Batcher.Dependencies
   alias BorsNG.Worker.Batcher.Divider
   alias BorsNG.Worker.Labeler
   alias BorsNG.Worker.Syncer
@@ -1957,14 +1958,10 @@ defmodule BorsNG.Worker.Batcher do
     Delegation.reconcile_default_expiry(patch, toml.delegation_default_expiry_sec)
 
     with {:ok, labels} <- GitHub.get_labels(repo_conn, patch.pr_xref),
+         {:ok, label_check} <- label_check(repo_conn, patch, labels, toml),
          {:ok, github_commit_statuses} <- GitHub.get_commit_status(repo_conn, patch.commit),
          {:ok, reviews} <- GitHub.get_reviews(repo_conn, patch.pr_xref),
          {:ok, commit_reviews} <- maybe_get_commit_reviews(repo_conn, patch, toml) do
-      passed_label =
-        labels
-        |> MapSet.new()
-        |> MapSet.disjoint?(MapSet.new(toml.block_labels))
-
       pr_status_mapset = MapSet.new(toml.pr_status)
 
       no_error_status =
@@ -2000,13 +1997,13 @@ defmodule BorsNG.Worker.Batcher do
         end
 
       Logger.info(
-        "Code review status: Label Check #{passed_label} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
+        "Code review status: Label Check #{inspect(label_check)} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
       )
 
-      case {passed_label, no_error_status, no_waiting_status, no_unset_status, passed_review,
+      case {label_check, no_error_status, no_waiting_status, no_unset_status, passed_review,
             code_owners_approved, passed_up_to_date_review} do
-        {true, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
-        {false, _, _, _, _, _, _} -> {:error, :blocked_labels}
+        {:ok, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
+        {blocked, _, _, _, _, _, _} when blocked != :ok -> {:error, blocked}
         {_, _, _, _, :insufficient, _, _} -> {:error, :insufficient_approvals}
         {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
         {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
@@ -2022,6 +2019,33 @@ defmodule BorsNG.Worker.Batcher do
         )
 
         {:waiting, toml}
+    end
+  end
+
+  # `:ok`, or the preflight error a label causes. A block label always blocks.
+  # The `[dependencies]` label blocks only while a dependency the description
+  # lists is still open and outside the patch's bundle (see `Dependencies`).
+  # The description is read from GitHub, so an edit counts at once.
+  defp label_check(repo_conn, patch, labels, toml) do
+    labels = MapSet.new(labels)
+
+    cond do
+      not MapSet.disjoint?(labels, MapSet.new(toml.block_labels)) ->
+        {:ok, :blocked_labels}
+
+      is_binary(toml.dependencies_label) and MapSet.member?(labels, toml.dependencies_label) ->
+        with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
+          project = Repo.get!(Project, patch.project_id)
+
+          case Dependencies.check(patch, pr.body, toml.dependencies_keywords, project.name) do
+            :clear -> {:ok, :ok}
+            :unlisted -> {:ok, :blocked_labels}
+            {:blocked, refs} -> {:ok, {:blocked_dependencies, toml.dependencies_label, refs}}
+          end
+        end
+
+      true ->
+        {:ok, :ok}
     end
   end
 

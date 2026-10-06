@@ -9,9 +9,22 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
       block_labels = [ "S-do-not-merge-yet" ]
 
       pr_status = [ "continuous-integration/travis-ci/pull" ]
+
+  A `[dependencies]` table makes one label conditional. A pull request with
+  `label` is blocked unless every pull request its description lists after one
+  of `keywords` is merged, closed, or in its bundle (see
+  `BorsNG.Worker.Batcher.Dependencies`). `keywords` defaults to
+  `["depends on", "blocked by"]`. The label must not also be in `block_labels`.
+
+      [dependencies]
+      label = "blocked-by-other-PR"
+      keywords = [ "depends on" ]
   """
 
   alias BorsNG.GitHub
+
+  # dependent-issues' default keywords.
+  @default_dependency_keywords ["depends on", "blocked by"]
 
   defstruct status: [],
             block_labels: [],
@@ -38,7 +51,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             label_on_queue: nil,
             label_building: nil,
             label_failed: nil,
-            label_delegated: nil
+            label_delegated: nil,
+            dependencies_label: nil,
+            dependencies_keywords: @default_dependency_keywords
 
   @type tcommitter :: %{
           name: binary,
@@ -67,7 +82,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           label_on_queue: binary | nil,
           label_building: binary | nil,
           label_failed: binary | nil,
-          label_delegated: binary | nil
+          label_delegated: binary | nil,
+          dependencies_label: binary | nil,
+          dependencies_keywords: [binary]
         }
 
   @type err ::
@@ -86,6 +103,8 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           | :delegation_restrict_to_paths
           | :labels
           | :label_names_not_distinct
+          | :dependencies
+          | :dependencies_label_blocked
           | :empty_config
           | :parse_failed
 
@@ -112,6 +131,16 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
   defp valid_label?(nil), do: true
   defp valid_label?(label) when is_binary(label), do: label != ""
   defp valid_label?(_label), do: false
+
+  # A `[dependencies]` entry is a non-empty string label and a non-empty list of
+  # non-empty string keywords. Anything else (including the `:invalid` sentinel
+  # for a `[dependencies]` that is not a table) is a configuration error.
+  defp valid_dependencies?(nil, _keywords), do: true
+
+  defp valid_dependencies?(label, keywords) do
+    is_binary(label) and label != "" and is_list(keywords) and keywords != [] and
+      Enum.all?(keywords, &(is_binary(&1) and String.trim(&1) != ""))
+  end
 
   @spec new(binary) :: {:ok, t} | {:error, err}
   def new(str) when is_binary(str) do
@@ -152,6 +181,21 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
             m ->
               {Map.get(m, "on_queue", nil), Map.get(m, "building", nil),
                Map.get(m, "failed", nil), Map.get(m, "delegated", nil)}
+          end
+
+        {dependencies_label, dependencies_keywords} =
+          case Map.get(toml, "dependencies", nil) do
+            nil ->
+              {nil, @default_dependency_keywords}
+
+            d when is_map(d) ->
+              d = to_map(d)
+
+              {Map.get(d, "label", :invalid),
+               Map.get(d, "keywords", @default_dependency_keywords)}
+
+            _ ->
+              {:invalid, :invalid}
           end
 
         committer = Map.get(toml, "committer", nil)
@@ -207,7 +251,9 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
           label_on_queue: label_on_queue,
           label_building: label_building,
           label_failed: label_failed,
-          label_delegated: label_delegated
+          label_delegated: label_delegated,
+          dependencies_label: dependencies_label,
+          dependencies_keywords: dependencies_keywords
         }
 
         label_names = [label_on_queue, label_building, label_failed, label_delegated]
@@ -219,6 +265,13 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
         # names need to be distinct.
         managed_names = Enum.reject(label_names, &is_nil/1)
         labels_distinct? = managed_names == Enum.uniq(managed_names)
+
+        dependencies_valid? = valid_dependencies?(dependencies_label, dependencies_keywords)
+
+        # A label that always blocks cannot also be conditional.
+        dependencies_label_blocked? =
+          is_binary(dependencies_label) and is_list(toml.block_labels) and
+            dependencies_label in toml.block_labels
 
         case toml do
           %{status: status} when not is_list(status) ->
@@ -252,6 +305,12 @@ defmodule BorsNG.Worker.Batcher.BorsToml do
 
           _ when not labels_distinct? ->
             {:error, :label_names_not_distinct}
+
+          _ when not dependencies_valid? ->
+            {:error, :dependencies}
+
+          _ when dependencies_label_blocked? ->
+            {:error, :dependencies_label_blocked}
 
           %{status: [], block_labels: [], pr_status: []} ->
             {:error, :empty_config}

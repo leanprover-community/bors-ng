@@ -65,6 +65,14 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: Rejected by label"
   end
 
+  def generate_message({:preflight, {:blocked_dependencies, label, refs}}) do
+    ":-1: Rejected by label `#{label}`, which waits on #{Enum.join(refs, ", ")}.\n\n" <>
+      "The label stops blocking once each dependency in the description is merged, " <>
+      "closed, or linked with this pull request (`bors link` or `bors stack`). " <>
+      "A dependency in another repository, or a number that is not a pull request here, " <>
+      "blocks until the label is removed."
+  end
+
   def generate_message({:preflight, :pr_status}) do
     ":-1: Rejected by PR status"
   end
@@ -853,6 +861,16 @@ defmodule BorsNG.Worker.Batcher.Message do
   def generate_bors_toml_error(:label_names_not_distinct) do
     "bors.toml: each [labels] entry (on_queue, building, failed, delegated) " <>
       "must use a distinct label name"
+  end
+
+  def generate_bors_toml_error(:dependencies) do
+    "bors.toml: expected [dependencies] label to be a non-empty string, " <>
+      "and keywords to be a non-empty list of non-empty strings"
+  end
+
+  def generate_bors_toml_error(:dependencies_label_blocked) do
+    "bors.toml: the [dependencies] label is also in block_labels; " <>
+      "remove it from block_labels so it blocks only while a dependency is open"
   end
 
   # Catch-all so a future validation key can never crash the renderer (and the

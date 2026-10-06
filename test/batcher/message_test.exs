@@ -169,6 +169,17 @@ defmodule BorsNG.Worker.BatcherMessageTest do
              Message.generate_message({:linked, [1, 2]})
   end
 
+  test "the dependency label refusal names what it waits on, and runs nothing" do
+    msg =
+      Message.generate_message(
+        {:preflight, {:blocked_dependencies, "blocked-by-other-PR", ["#3", "a/b#4"]}}
+      )
+
+    assert msg =~ "Rejected by label `blocked-by-other-PR`, which waits on #3, a/b#4."
+    # bors reads its own comments.
+    assert [] == BorsNG.Command.parse(msg)
+  end
+
   test "every bors.toml error key has an explicit, friendly renderer" do
     # Single source of truth: BorsToml's @type err (introspected below), plus
     # the fetch-layer-only :fetch_failed. Adding a new validation key extends

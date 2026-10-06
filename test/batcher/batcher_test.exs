@@ -388,6 +388,83 @@ defmodule BorsNG.Worker.BatcherTest do
            }
   end
 
+  describe "dependency label" do
+    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"/
+
+    defp put_dependency_state(body, extra \\ %{}) do
+      GitHub.ServerMock.put_state(
+        Map.merge(
+          %{
+            {{:installation, 91}, 14} => %{
+              branches: %{},
+              commits: %{},
+              comments: %{2 => []},
+              labels: %{2 => ["blocked"]},
+              statuses: %{"Z" => %{}},
+              files: %{"Z" => %{"bors.toml" => @dependency_toml}},
+              pulls: %{
+                2 => %Pr{
+                  number: 2,
+                  title: "T",
+                  body: body,
+                  state: :open,
+                  base_ref: "master",
+                  head_sha: "Z",
+                  head_ref: "b",
+                  base_repo_id: 14,
+                  head_repo_id: 14
+                }
+              }
+            }
+          },
+          extra
+        )
+      )
+    end
+
+    defp insert_labelled_patch(proj) do
+      %Patch{project_id: proj.id, pr_xref: 2, commit: "Z", into_branch: "master"}
+      |> Repo.insert!()
+    end
+
+    test "stops blocking once every dependency is closed", %{proj: proj} do
+      put_dependency_state("- [x] depends on: #1")
+
+      %Patch{project_id: proj.id, pr_xref: 1, commit: "Y", into_branch: "master", open: false}
+      |> Repo.insert!()
+
+      patch = insert_labelled_patch(proj)
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      assert [_batch] = Repo.all(Batch)
+      assert labels_for(2) == ["blocked"]
+    end
+
+    test "blocks when the description lists no dependency", %{proj: proj} do
+      put_dependency_state("No dependencies here.")
+      patch = insert_labelled_patch(proj)
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      state = GitHub.ServerMock.get_state()
+      assert state[{{:installation, 91}, 14}].comments[2] == [":-1: Rejected by label"]
+      assert [] == Repo.all(Batch)
+    end
+
+    test "waits when the description cannot be read", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1", %{get_pr_error: 1})
+      patch = insert_labelled_patch(proj)
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      state = GitHub.ServerMock.get_state()
+
+      assert state[{{:installation, 91}, 14}].comments[2] == [
+               ":clock1: Waiting for PR status (GitHub check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."
+             ]
+
+      assert [] == Repo.all(Batch)
+    end
+  end
+
   test "rejects a patch with a bad PR status", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{
