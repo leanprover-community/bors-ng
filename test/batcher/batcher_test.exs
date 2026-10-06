@@ -389,7 +389,7 @@ defmodule BorsNG.Worker.BatcherTest do
   end
 
   describe "dependencies" do
-    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"\nkeywords = ["depends on:"]/
+    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nkeywords = ["depends on:"]/
 
     # PR 2, at commit "Z" with the [dependencies] toml, with `labels` and the
     # description `body`.
@@ -439,7 +439,8 @@ defmodule BorsNG.Worker.BatcherTest do
       GitHub.ServerMock.get_state()[{{:installation, 91}, 14}].comments[2]
     end
 
-    test "the label stops blocking once every dependency is closed", %{proj: proj} do
+    test "a closed dependency does not block, even with the label", %{proj: proj} do
+      # dependent-issues has not taken the label off since #1 merged.
       put_dependency_state("- [x] depends on: #1")
       insert_dependency(proj, false)
       patch = insert_dependent_patch(proj)
@@ -463,26 +464,14 @@ defmodule BorsNG.Worker.BatcherTest do
       assert [] == Repo.all(Batch)
     end
 
-    test "a description that lists nothing queues without the label", %{proj: proj} do
-      put_dependency_state("Adds a lemma.", [])
-      patch = insert_dependent_patch(proj)
-
-      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
-
-      assert [_batch] = Repo.all(Batch)
-    end
-
-    test "the label blocks when the description lists nothing", %{proj: proj} do
+    test "the label alone does not block", %{proj: proj} do
+      # Every dependency line was deleted since dependent-issues last ran.
       put_dependency_state("Adds a lemma.")
       patch = insert_dependent_patch(proj)
 
       Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
 
-      assert comments_on_2() == [
-               ":-1: Rejected by label `blocked`: the description lists no dependency bors can read, so the label blocks until it is removed."
-             ]
-
-      assert [] == Repo.all(Batch)
+      assert [_batch] = Repo.all(Batch)
     end
 
     test "waits when the description cannot be read", %{proj: proj} do

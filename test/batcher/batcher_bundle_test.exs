@@ -1796,7 +1796,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
   end
 
   describe "dependencies" do
-    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"\nkeywords = ["depends on:"]/
+    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nkeywords = ["depends on:"]/
 
     defp pr(xref, body) do
       %Pr{

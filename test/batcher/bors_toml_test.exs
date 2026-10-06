@@ -321,7 +321,7 @@ defmodule BatcherBorsTomlTest do
 
   test "leaves [dependencies] off by default" do
     {:ok, toml} = BorsToml.new(~s/status = ["exl"]/)
-    assert is_nil(toml.dependencies_label)
+    assert is_nil(toml.dependencies_keywords)
   end
 
   test "parses the [dependencies] table" do
@@ -330,22 +330,15 @@ defmodule BatcherBorsTomlTest do
       status = ["exl"]
       block_labels = ["WIP"]
       [dependencies]
-      label = "blocked-by-other-PR"
-      keywords = ["depends on:"]
+      keywords = ["- [ ] depends on:", "- [x] depends on:"]
       """)
 
-    assert toml.dependencies_label == "blocked-by-other-PR"
-    assert toml.dependencies_keywords == ["depends on:"]
+    assert toml.dependencies_keywords == ["- [ ] depends on:", "- [x] depends on:"]
     assert toml.block_labels == ["WIP"]
   end
 
-  test "defaults [dependencies] keywords to dependent-issues' defaults" do
-    {:ok, toml} = BorsToml.new(~s/status = ["exl"]\n[dependencies]\nlabel = "blocked"/)
-    assert toml.dependencies_keywords == ["depends on", "blocked by"]
-  end
-
-  test "rejects a [dependencies] table without a label" do
-    r = BorsToml.new(~s/status = ["exl"]\n[dependencies]\nkeywords = ["depends on"]/)
+  test "rejects a [dependencies] table without keywords" do
+    r = BorsToml.new(~s/status = ["exl"]\n[dependencies]/)
     assert r == {:error, :dependencies}
   end
 
@@ -354,31 +347,10 @@ defmodule BatcherBorsTomlTest do
     assert r == {:error, :dependencies}
   end
 
-  test "rejects a non-string or empty [dependencies] label" do
-    assert BorsToml.new(~s/status = ["exl"]\n[dependencies]\nlabel = 1/) ==
-             {:error, :dependencies}
-
-    assert BorsToml.new(~s/status = ["exl"]\n[dependencies]\nlabel = ""/) ==
-             {:error, :dependencies}
-  end
-
   test "rejects [dependencies] keywords that are not a non-empty list of strings" do
     for keywords <- [~s/"depends on"/, ~s/[]/, ~s/[1]/, ~s/[" "]/] do
-      r =
-        BorsToml.new(
-          ~s/status = ["exl"]\n[dependencies]\nlabel = "blocked"\nkeywords = #{keywords}/
-        )
-
+      r = BorsToml.new(~s/status = ["exl"]\n[dependencies]\nkeywords = #{keywords}/)
       assert r == {:error, :dependencies}, keywords
     end
-  end
-
-  test "rejects a [dependencies] label that is also a block label" do
-    r =
-      BorsToml.new(
-        ~s/status = ["exl"]\nblock_labels = ["blocked"]\n[dependencies]\nlabel = "blocked"/
-      )
-
-    assert r == {:error, :dependencies_label_blocked}
   end
 end

@@ -263,7 +263,7 @@ defmodule BorsNG.Worker.Batcher do
         patch = Repo.get!(Patch, patch_id)
 
         with {:ok, toml} <- Batcher.GetBorsToml.get(get_repo_conn(batch.project), patch.commit),
-             true <- is_binary(toml.dependencies_label),
+             true <- is_list(toml.dependencies_keywords),
              {:blocked, refs} <- dependency_check(patch, patch.body, toml) do
           cancel_patch(batch, patch_id, {:dependencies, refs})
         else
@@ -2052,31 +2052,20 @@ defmodule BorsNG.Worker.Batcher do
   # `:ok`, or the preflight error a label or a dependency causes. A block label
   # always blocks. With `[dependencies]`, so does a dependency the description
   # lists that is open and outside the patch's bundle (see `Dependencies`). The
-  # description is read from GitHub, so an edit counts at once. The dependency
-  # label blocks only when the description lists no dependency at all.
+  # description is read from GitHub, so an edit counts at once.
   defp block_check(repo_conn, patch, labels, toml) do
-    labels = MapSet.new(labels)
-
     cond do
-      not MapSet.disjoint?(labels, MapSet.new(toml.block_labels)) ->
+      not MapSet.disjoint?(MapSet.new(labels), MapSet.new(toml.block_labels)) ->
         {:ok, :blocked_labels}
 
-      is_nil(toml.dependencies_label) ->
+      is_nil(toml.dependencies_keywords) ->
         {:ok, :ok}
 
       true ->
         with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
           case dependency_check(patch, pr.body, toml) do
-            :clear ->
-              {:ok, :ok}
-
-            {:blocked, refs} ->
-              {:ok, {:blocked_dependencies, refs}}
-
-            :unlisted ->
-              if MapSet.member?(labels, toml.dependencies_label),
-                do: {:ok, {:blocked_dependency_label, toml.dependencies_label}},
-                else: {:ok, :ok}
+            :clear -> {:ok, :ok}
+            {:blocked, refs} -> {:ok, {:blocked_dependencies, refs}}
           end
         end
     end

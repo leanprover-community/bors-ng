@@ -35,7 +35,7 @@ defmodule BorsNG.WebhookControllerTest do
   end
 
   test "a description edit rechecks a queued PR's dependencies", %{conn: conn, project: proj} do
-    toml = ~s/status = [ "ci" ]\n[dependencies]\nlabel = "blocked"\nkeywords = ["depends on:"]/
+    toml = ~s/status = [ "ci" ]\n[dependencies]\nkeywords = ["depends on:"]/
 
     GitHub.ServerMock.put_state(%{
       {{:installation, 31}, 13} => %{

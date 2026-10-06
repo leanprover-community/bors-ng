@@ -174,9 +174,6 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     refused = Message.generate_message({:preflight, {:blocked_dependencies, refs}})
     assert refused =~ "Rejected: this pull request depends on #3, a/b#4."
 
-    label = Message.generate_message({:preflight, {:blocked_dependency_label, "blocked"}})
-    assert label =~ "Rejected by label `blocked`"
-
     canceled = Message.generate_message({:canceled, :failed, {:dependencies, refs}})
     assert canceled =~ "the description now depends on #3, a/b#4."
 
@@ -184,7 +181,7 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert pulled =~ "which gained a dependency outside the bundle"
 
     # bors reads its own comments.
-    for msg <- [refused, label, canceled, pulled] do
+    for msg <- [refused, canceled, pulled] do
       assert [] == BorsNG.Command.parse(msg), msg
     end
   end

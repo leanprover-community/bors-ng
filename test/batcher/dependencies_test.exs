@@ -209,9 +209,9 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
                {:blocked, ["leanprover-community/batteries#1"]}
     end
 
-    test "reports a description that lists nothing", %{proj: proj} do
+    test "clears a description that lists nothing", %{proj: proj} do
       b = insert_patch(proj, 2)
-      assert check(b, "Adds a lemma.") == :unlisted
+      assert check(b, "Adds a lemma.") == :clear
     end
   end
 end

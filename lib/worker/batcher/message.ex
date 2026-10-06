@@ -73,11 +73,6 @@ defmodule BorsNG.Worker.Batcher.Message do
       "removed from the description."
   end
 
-  def generate_message({:preflight, {:blocked_dependency_label, label}}) do
-    ":-1: Rejected by label `#{label}`: the description lists no dependency bors can read, " <>
-      "so the label blocks until it is removed."
-  end
-
   def generate_message({:preflight, :pr_status}) do
     ":-1: Rejected by PR status"
   end
@@ -876,13 +871,7 @@ defmodule BorsNG.Worker.Batcher.Message do
   end
 
   def generate_bors_toml_error(:dependencies) do
-    "bors.toml: expected [dependencies] label to be a non-empty string, " <>
-      "and keywords to be a non-empty list of non-empty strings"
-  end
-
-  def generate_bors_toml_error(:dependencies_label_blocked) do
-    "bors.toml: the [dependencies] label is also in block_labels; " <>
-      "remove it from block_labels, since bors reads the dependencies from the description"
+    "bors.toml: expected [dependencies] keywords to be a non-empty list of non-empty strings"
   end
 
   # Catch-all so a future validation key can never crash the renderer (and the

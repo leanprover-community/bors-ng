@@ -15,14 +15,14 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   So bors reads the description itself, on every check, and blocks while a
   dependency it lists is open and outside the pull request's bundle. A bundle
   lands in one push or not at all, so a dependency in it cannot land after the
-  pull request that needs it. The label does not block on its own. It blocks
-  only when the description lists nothing bors can read, as a backstop for a
-  dependency the labeller found and bors did not.
+  pull request that needs it. bors does not read the label.
 
   The parser reads what dependent-issues reads, no more and no less: a keyword,
   whitespace, then one reference right after it. Reading less would merge a
   pull request ahead of a dependency. Reading more would block pull requests
-  that merge today, on text no dependency tool treats as a dependency.
+  that merge today, on text no dependency tool treats as a dependency. The
+  keywords in `bors.toml` must match the labeller's exactly, for the same
+  reason.
 
   - Keywords are literal text, matched in any case. Their spaces match any
     whitespace. dependent-issues takes keywords as regular expressions, so
@@ -100,18 +100,15 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
 
   @doc """
   Which dependencies `body`, the description of `patch`, lists that still
-  block it:
-
-  - `:clear` when every one is merged, closed, or in the patch's bundle.
-  - `{:blocked, refs}` with the ones that are not, as `#N` or `owner/repo#N`.
-  - `:unlisted` when it lists none.
+  block it: `:clear` when every one is merged, closed, or in the patch's
+  bundle (or it lists none), and otherwise `{:blocked, refs}` with the ones
+  that are not, as `#N` or `owner/repo#N`.
   """
-  @spec check(Patch.t(), binary | nil, [binary], binary) ::
-          :clear | :unlisted | {:blocked, [binary]}
+  @spec check(Patch.t(), binary | nil, [binary], binary) :: :clear | {:blocked, [binary]}
   def check(patch, body, keywords, repo_name) do
     case references(body, keywords, repo_name) do
       [] ->
-        :unlisted
+        :clear
 
       references ->
         resolved = resolved(patch, for({:local, n} <- references, do: n))
