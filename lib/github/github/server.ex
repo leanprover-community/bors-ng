@@ -504,9 +504,16 @@ defmodule BorsNG.GitHub.Server do
           _ -> {:error, :get_issue_state, 200, raw}
         end
 
-      # Gone (410) is a deleted issue.
-      %{status: status} when status in [404, 410] ->
+      # Gone (410) is a deleted issue, and 451 a repository blocked for legal
+      # reasons. A 403 that is no rate limit is a repository the token may
+      # not read. None changes on a retry.
+      %{status: status} when status in [404, 410, 451] ->
         {:ok, nil}
+
+      %{body: body, status: 403} = env ->
+        if rate_limited?(env),
+          do: {:error, :get_issue_state, 403, body},
+          else: {:ok, nil}
 
       %{body: body, status: status} ->
         {:error, :get_issue_state, status, body}
@@ -1185,6 +1192,14 @@ defmodule BorsNG.GitHub.Server do
 
   def raw_token!({:raw, _} = raw, state) do
     {raw, state}
+  end
+
+  # GitHub answers a rate limit with 403 (or 429): no requests left, a time to
+  # retry after, or for a secondary limit at least a message that says so.
+  defp rate_limited?(env) do
+    Tesla.get_header(env, "x-ratelimit-remaining") == "0" or
+      Tesla.get_header(env, "retry-after") != nil or
+      (is_binary(env.body) and env.body =~ ~r/rate limit/i)
   end
 
   defp tesla_client(authorization, content_type \\ @content_type, opts \\ []) do

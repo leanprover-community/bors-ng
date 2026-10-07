@@ -73,8 +73,32 @@ defmodule BorsNG.GitHub.ServerHttpTest do
         {:get_file_error, "GET", @contents_path} ->
           reply(conn, 502, "bad gateway", [{"x-github-request-id", "REQ123"}])
 
+        {:issue_states, "GET", "/repositories/1/issues/" <> number} ->
+          issue_state(conn, number, base_url)
+
+        {:issue_states, "GET", "/repos/other/repo/issues/1"} ->
+          reply(conn, 200, ~s({"state":"open"}))
+
         _ ->
           reply(conn, 404, "not found")
+      end
+    end
+
+    # What GitHub answers for each issue number of repository 1.
+    defp issue_state(conn, number, base_url) do
+      case number do
+        "1" -> reply(conn, 200, ~s({"state":"open"}))
+        "2" -> reply(conn, 200, ~s({"state":"closed"}))
+        "3" -> reply(conn, 404, ~s({"message":"Not Found"}))
+        "4" -> reply(conn, 410, ~s({"message":"This issue was deleted"}))
+        "5" -> reply(conn, 451, ~s({"message":"Repository access blocked"}))
+        "6" -> reply(conn, 403, ~s({"message":"Resource not accessible by integration"}))
+        "7" -> reply(conn, 403, ~s({"message":"Forbidden"}), [{"x-ratelimit-remaining", "0"}])
+        "8" -> reply(conn, 403, ~s({"message":"Forbidden"}), [{"retry-after", "60"}])
+        "9" -> reply(conn, 403, ~s({"message":"You have exceeded a secondary rate limit."}))
+        "10" -> reply(conn, 502, "bad gateway")
+        # A transferred issue.
+        "11" -> reply(conn, 301, "", [{"location", "#{base_url}/repositories/1/issues/2"}])
       end
     end
 
@@ -183,6 +207,42 @@ defmodule BorsNG.GitHub.ServerHttpTest do
                {{:raw, "token"}, 1},
                {"main", "bors.toml"}
              )
+  end
+
+  test "get_issue_state reads whether an issue is open" do
+    ScenarioPlug.set_scenario(:issue_states)
+
+    assert {:ok, :open} = get_issue_state(nil, 1)
+    assert {:ok, :closed} = get_issue_state(nil, 2)
+    assert {:ok, :open} = get_issue_state("other/repo", 1)
+    assert {:ok, :closed} = get_issue_state(nil, 11)
+  end
+
+  test "get_issue_state answers nil for an issue GitHub does not show the token" do
+    ScenarioPlug.set_scenario(:issue_states)
+
+    # Missing, deleted, blocked, or in a repository the token may not read.
+    for number <- [3, 4, 5, 6] do
+      assert {:ok, nil} = get_issue_state(nil, number)
+    end
+  end
+
+  test "get_issue_state fails on a rate limit or a server error, to be retried" do
+    ScenarioPlug.set_scenario(:issue_states)
+
+    for number <- [7, 8, 9] do
+      assert {:error, :get_issue_state, 403, _} = get_issue_state(nil, number)
+    end
+
+    assert {:error, :get_issue_state, 502, _} = get_issue_state(nil, 10)
+  end
+
+  defp get_issue_state(repo, number) do
+    BorsNG.GitHub.Server.do_handle_call(
+      :get_issue_state,
+      {{:raw, "token"}, 1},
+      {repo, number}
+    )
   end
 
   defp get_commit_status do
