@@ -261,6 +261,19 @@ defmodule BorsNG.GitHub do
   end
 
   @doc """
+  Whether issue or pull request `number` of `repo` (`"owner/name"`, or `nil`
+  for the repository of `repo_conn`) is open: `{:ok, :open}`, `{:ok, :closed}`,
+  or `{:ok, nil}` when GitHub shows the token none, because it does not exist
+  or the token cannot see it. That is an answer, so it is not retried. A
+  repository the token is not installed on is readable only if it is public.
+  """
+  @spec get_issue_state(tconn, bitstring | nil, integer) ::
+          {:ok, :open | :closed | nil} | {:error, term}
+  def get_issue_state(repo_conn, repo, number) do
+    call_with_retry(:get_issue_state, repo_conn, {repo, number}, 500, 4_000)
+  end
+
+  @doc """
   Add labels to a PR or issue. Idempotent: GitHub does not duplicate a label
   that is already present. An empty list is a no-op (no API call).
   """

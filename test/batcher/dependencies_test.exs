@@ -5,6 +5,7 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
   alias BorsNG.Database.Patch
   alias BorsNG.Database.PatchBundle
   alias BorsNG.Database.Project
+  alias BorsNG.GitHub
   alias BorsNG.Worker.Batcher.Dependencies
 
   @repo "leanprover-community/mathlib4"
@@ -86,7 +87,7 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       assert refs(body) == [
                {:local, 20},
                {:local, 21},
-               {:external, "leanprover-community/batteries#22"}
+               {:external, "leanprover-community/batteries", 22}
              ]
     end
 
@@ -100,7 +101,7 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       assert refs(body) == [
                {:local, 30},
                {:local, 31},
-               {:external, "leanprover/lean4#32"}
+               {:external, "leanprover/lean4", 32}
              ]
     end
 
@@ -119,8 +120,9 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
     end
   end
 
-  describe "check/4" do
+  describe "check/5" do
     setup do
+      GitHub.ServerMock.put_state(%{})
       inst = Repo.insert!(%Installation{installation_xref: 91})
 
       proj =
@@ -145,7 +147,14 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       Enum.map(patches, &(&1 |> Patch.changeset(%{bundle_id: bundle.id}) |> Repo.update!()))
     end
 
-    defp check(patch, body), do: Dependencies.check(patch, body, ["depends on:"], @repo)
+    @conn {{:installation, 91}, 14}
+
+    defp check(patch, body), do: Dependencies.check(@conn, patch, body, ["depends on:"], @repo)
+
+    # What GitHub says of this repository's issues, and of other repositories'.
+    defp put_issue_states(local, external \\ %{}) do
+      GitHub.ServerMock.put_state(%{@conn => %{issue_states: local}, issue_states: external})
+    end
 
     test "clears a dependency in the same bundle", %{proj: proj} do
       [_a, b] = bundle(proj, [insert_patch(proj, 1), insert_patch(proj, 2)])
@@ -182,10 +191,25 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       assert check(b, "depends on: #1") == {:blocked, ["#1"]}
     end
 
-    test "blocks on a number bors has no pull request for", %{proj: proj} do
+    test "asks GitHub about a number bors has no pull request for", %{proj: proj} do
+      # Issues, or pull requests that closed before bors was installed.
+      put_issue_states(%{7 => :closed, 8 => :open})
+      b = insert_patch(proj, 2)
+      assert check(b, "depends on: #7") == :clear
+      assert check(b, "depends on: #8") == {:blocked, ["#8"]}
+    end
+
+    test "blocks on a number GitHub does not have", %{proj: proj} do
       b = insert_patch(proj, 2)
       assert check(b, "depends on: #99") == {:blocked, ["#99"]}
       assert check(b, "depends on: #99999999999") == {:blocked, ["#99999999999"]}
+    end
+
+    test "does not ask GitHub about a pull request bors has", %{proj: proj} do
+      put_issue_states(%{1 => :closed})
+      insert_patch(proj, 1)
+      b = insert_patch(proj, 2)
+      assert check(b, "depends on: #1") == {:blocked, ["#1"]}
     end
 
     test "blocks on a closed pull request of another project", %{proj: proj} do
@@ -202,11 +226,43 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       assert check(b, "depends on: #1") == {:blocked, ["#1"]}
     end
 
-    test "blocks on a dependency in another repository", %{proj: proj} do
+    test "asks GitHub about a dependency in another repository", %{proj: proj} do
+      put_issue_states(%{}, %{
+        {"leanprover-community/batteries", 1} => :closed,
+        {"leanprover-community/batteries", 2} => :open
+      })
+
+      b = insert_patch(proj, 2)
+      assert check(b, "depends on: leanprover-community/batteries#1") == :clear
+
+      assert check(b, "depends on: leanprover-community/batteries#2") ==
+               {:blocked, ["leanprover-community/batteries#2"]}
+
+      # Missing, or in a private repository bors is not installed on.
+      assert check(b, "depends on: leanprover-community/batteries#3") ==
+               {:blocked, ["leanprover-community/batteries#3"]}
+    end
+
+    test "names blocking dependencies in the order the description lists them",
+         %{proj: proj} do
+      put_issue_states(%{8 => :open}, %{{"leanprover/lean4", 1} => :open})
+      insert_patch(proj, 3)
       b = insert_patch(proj, 2)
 
-      assert check(b, "depends on: leanprover-community/batteries#1") ==
-               {:blocked, ["leanprover-community/batteries#1"]}
+      body = """
+      - [ ] depends on: leanprover/lean4#1
+      - [ ] depends on: #3
+      - [ ] depends on: #8
+      """
+
+      assert check(b, body) == {:blocked, ["leanprover/lean4#1", "#3", "#8"]}
+    end
+
+    test "fails when GitHub cannot say whether a dependency is closed", %{proj: proj} do
+      put_issue_states(%{}, %{{"leanprover/lean4", 1} => :error})
+      b = insert_patch(proj, 2)
+
+      assert {:error, :get_issue_state, 502, _} = check(b, "depends on: leanprover/lean4#1")
     end
 
     test "clears a description that lists nothing", %{proj: proj} do

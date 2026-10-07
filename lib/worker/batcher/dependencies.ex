@@ -31,15 +31,17 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   - A reference is `#N`, `owner/repo#N`, or a link to a GitHub issue or pull
     request.
 
-  A dependency in another repository blocks: bors only knows the pull requests
-  of this one. So does a number bors has no pull request for, such as an
-  issue. Whether a dependency is closed comes from bors's own records, which
-  webhooks keep current. Asking GitHub about a number that is not a pull
-  request would retry its 404 for minutes inside the batcher.
+  Whether a pull request of this repository is open comes from bors's own
+  records, which webhooks keep current. bors asks GitHub about the rest:
+  dependencies in other repositories, and numbers it has no pull request for,
+  such as issues. As with dependent-issues, a closed one does not block and an
+  open one does. So does one GitHub does not show bors, because it does not
+  exist or is in a private repository bors is not installed on.
   """
 
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Repo
+  alias BorsNG.GitHub
   alias BorsNG.Worker.Batcher.Bundles
 
   import Ecto.Query
@@ -56,12 +58,12 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   # and querying it would raise.
   @max_pr_xref 2_147_483_647
 
-  @type ref :: {:local, pos_integer} | {:external, binary}
+  @type ref :: {:local, pos_integer} | {:external, binary, pos_integer}
 
   @doc """
   The dependencies `body` lists after one of `keywords`. References to
   `repo_name` come back as `{:local, n}`, others as
-  `{:external, "owner/repo#n"}`, in order of appearance and without repeats.
+  `{:external, "owner/repo", n}`, in order of appearance and without repeats.
   """
   @spec references(binary | nil, [binary], binary) :: [ref]
   def references(nil, _keywords, _repo_name), do: []
@@ -94,7 +96,7 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
     if String.downcase("#{owner}/#{repo}") == String.downcase(repo_name) do
       {:local, String.to_integer(number)}
     else
-      {:external, "#{owner}/#{repo}##{number}"}
+      {:external, "#{owner}/#{repo}", String.to_integer(number)}
     end
   end
 
@@ -102,51 +104,57 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   Which dependencies `body`, the description of `patch`, lists that still
   block it: `:clear` when every one is merged, closed, or in the patch's
   bundle (or it lists none), and otherwise `{:blocked, refs}` with the ones
-  that are not, as `#N` or `owner/repo#N`.
+  that are not, as `#N` or `owner/repo#N`. An error when GitHub cannot say
+  whether a dependency is closed.
   """
-  @spec check(Patch.t(), binary | nil, [binary], binary) :: :clear | {:blocked, [binary]}
-  def check(patch, body, keywords, repo_name) do
-    case references(body, keywords, repo_name) do
-      [] ->
-        :clear
+  @spec check(GitHub.tconn(), Patch.t(), binary | nil, [binary], binary) ::
+          :clear | {:blocked, [binary]} | {:error, term}
+  def check(repo_conn, patch, body, keywords, repo_name) do
+    references = references(body, keywords, repo_name)
+    known = known(patch, for({:local, n} <- references, do: n))
 
-      references ->
-        resolved = resolved(patch, for({:local, n} <- references, do: n))
-
-        references
-        |> Enum.reject(fn
-          {:local, n} -> MapSet.member?(resolved, n)
-          {:external, _} -> false
-        end)
-        |> case do
-          [] -> :clear
-          blocking -> {:blocked, Enum.map(blocking, &format/1)}
-        end
+    references
+    |> Enum.reduce_while([], fn ref, blocking ->
+      case state(repo_conn, known, ref) do
+        {:ok, state} when state in [:bundled, :closed] -> {:cont, blocking}
+        {:ok, _open_or_missing} -> {:cont, [format(ref) | blocking]}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      [] -> :clear
+      blocking when is_list(blocking) -> {:blocked, Enum.reverse(blocking)}
+      error -> error
     end
   end
 
-  # The numbers among `numbers` that are in the patch's bundle (the patch
-  # itself included) or that bors has as closed pull requests.
-  defp resolved(patch, numbers) do
+  # What bors's records say of `numbers`: `:bundled` for those in the patch's
+  # bundle (the patch itself included), and otherwise `:open` or `:closed` for
+  # those it has as pull requests of the patch's project.
+  defp known(patch, numbers) do
     bundled =
       patch
       |> Bundles.members_or_self()
-      |> MapSet.new(& &1.pr_xref)
+      |> Map.new(&{&1.pr_xref, :bundled})
 
-    lookup = Enum.reject(numbers, &(&1 > @max_pr_xref or MapSet.member?(bundled, &1)))
+    lookup = Enum.reject(numbers, &(&1 > @max_pr_xref or Map.has_key?(bundled, &1)))
 
-    closed =
-      from(p in Patch,
-        where: p.project_id == ^patch.project_id,
-        where: p.pr_xref in ^lookup,
-        where: not p.open,
-        select: p.pr_xref
-      )
-      |> Repo.all()
-
-    MapSet.union(bundled, MapSet.new(closed))
+    from(p in Patch,
+      where: p.project_id == ^patch.project_id,
+      where: p.pr_xref in ^lookup,
+      select: {p.pr_xref, p.open}
+    )
+    |> Repo.all()
+    |> Map.new(fn {n, open} -> {n, if(open, do: :open, else: :closed)} end)
+    |> Map.merge(bundled)
   end
 
+  defp state(_repo_conn, known, {:local, n}) when is_map_key(known, n), do: {:ok, known[n]}
+  defp state(repo_conn, _known, {:local, n}), do: GitHub.get_issue_state(repo_conn, nil, n)
+
+  defp state(repo_conn, _known, {:external, repo, n}),
+    do: GitHub.get_issue_state(repo_conn, repo, n)
+
   defp format({:local, n}), do: "##{n}"
-  defp format({:external, ref}), do: ref
+  defp format({:external, repo, n}), do: "#{repo}##{n}"
 end

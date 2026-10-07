@@ -256,15 +256,18 @@ defmodule BorsNG.Worker.Batcher do
   # that blocks, the patch (and its bundle) leaves a batch that is still
   # waiting. A building batch is left alone: canceling it would throw out every
   # other patch in it too. The webhook has already stored the new description.
-  # Held approvals stay, since the next r+ checks dependencies again.
+  # Held approvals stay, since the next r+ checks dependencies again. So does a
+  # patch whose dependencies GitHub cannot say are closed: pulling it would
+  # blame a dependency that may not block.
   def do_handle_cast({:recheck_dependencies, patch_id}, _project_id) do
     case patch_id |> Batch.all_for_patch(:incomplete) |> Repo.one() do
       %Batch{state: :waiting} = batch ->
         patch = Repo.get!(Patch, patch_id)
+        repo_conn = get_repo_conn(batch.project)
 
-        with {:ok, toml} <- Batcher.GetBorsToml.get(get_repo_conn(batch.project), patch.commit),
+        with {:ok, toml} <- Batcher.GetBorsToml.get(repo_conn, patch.commit),
              true <- is_list(toml.dependencies_keywords),
-             {:blocked, refs} <- dependency_check(patch, patch.body, toml) do
+             {:blocked, refs} <- dependency_check(repo_conn, patch, patch.body, toml) do
           cancel_patch(batch, patch_id, {:dependencies, refs})
         else
           _ -> :ok
@@ -2052,7 +2055,9 @@ defmodule BorsNG.Worker.Batcher do
   # `:ok`, or the preflight error a label or a dependency causes. A block label
   # always blocks. With `[dependencies]`, so does a dependency the description
   # lists that is open and outside the patch's bundle (see `Dependencies`). The
-  # description is read from GitHub, so an edit counts at once.
+  # description is read from GitHub, so an edit counts at once. When GitHub
+  # cannot say whether a dependency is closed, the patch waits, as it does for
+  # any read that fails.
   defp block_check(repo_conn, patch, labels, toml) do
     cond do
       not MapSet.disjoint?(MapSet.new(labels), MapSet.new(toml.block_labels)) ->
@@ -2063,17 +2068,18 @@ defmodule BorsNG.Worker.Batcher do
 
       true ->
         with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
-          case dependency_check(patch, pr.body, toml) do
+          case dependency_check(repo_conn, patch, pr.body, toml) do
             :clear -> {:ok, :ok}
             {:blocked, refs} -> {:ok, {:blocked_dependencies, refs}}
+            error -> error
           end
         end
     end
   end
 
-  defp dependency_check(patch, body, toml) do
+  defp dependency_check(repo_conn, patch, body, toml) do
     project = Repo.get!(Project, patch.project_id)
-    Dependencies.check(patch, body, toml.dependencies_keywords, project.name)
+    Dependencies.check(repo_conn, patch, body, toml.dependencies_keywords, project.name)
   end
 
   defp maybe_get_commit_reviews(repo_conn, patch, toml) do

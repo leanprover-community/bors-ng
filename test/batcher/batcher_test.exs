@@ -487,6 +487,34 @@ defmodule BorsNG.Worker.BatcherTest do
       assert [] == Repo.all(Batch)
     end
 
+    test "a closed dependency in another repository does not block", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: leanprover/lean4#5", [], %{
+        issue_states: %{{"leanprover/lean4", 5} => :closed}
+      })
+
+      patch = insert_dependent_patch(proj)
+
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      assert [_batch] = Repo.all(Batch)
+    end
+
+    test "waits when GitHub cannot say whether a dependency is closed", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: leanprover/lean4#5", [], %{
+        issue_states: %{{"leanprover/lean4", 5} => :error}
+      })
+
+      patch = insert_dependent_patch(proj)
+
+      Batcher.handle_cast({:reviewed, patch.id, "rvr"}, proj.id)
+
+      assert comments_on_2() == [
+               ":clock1: Waiting for PR status (GitHub check) to be set, probably by CI. Bors will automatically try to run when all required PR statuses are set."
+             ]
+
+      assert [] == Repo.all(Batch)
+    end
+
     defp queue(proj, patch, state) do
       batch =
         %Batch{project_id: proj.id, state: state, into_branch: "master", last_polled: 0}

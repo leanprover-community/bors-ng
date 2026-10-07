@@ -92,12 +92,14 @@ defmodule BorsNG.GitHub.ServerMock do
             commits: %{bitstring => tsynthesized},
             statuses: %{tbranch => %{bitstring => :open | :closed | :running}},
             files: %{tbranch => %{bitstring => bitstring}},
-            collaborators: [tcollaborator]
+            collaborators: [tcollaborator],
+            issue_states: %{integer => :open | :closed | :error}
           },
           {:installation, number} => %{
             repos: [trepo]
           },
           :users => %{bitstring => tuser},
+          :issue_states => %{{bitstring, integer} => :open | :closed | :error},
           :merge_conflict => integer,
           :create_commit_error => integer,
           :get_pr_error => integer,
@@ -642,6 +644,22 @@ defmodule BorsNG.GitHub.ServerMock do
     |> case do
       {:ok, _} = res -> {res, state}
       _ -> {{:ok, []}, state}
+    end
+  end
+
+  # The repository's own issues are under its `:issue_states`, others' under the
+  # top-level `:issue_states`, keyed by `{"owner/name", number}`.
+  def do_handle_call(:get_issue_state, repo_conn, {repo, number}, state) do
+    issue_state =
+      case repo do
+        nil -> get_in(state, [repo_conn, :issue_states, number])
+        repo -> get_in(state, [:issue_states, {repo, number}])
+      end
+
+    case issue_state do
+      # A test maps an issue to `:error` to simulate a failed lookup.
+      :error -> {{:error, :get_issue_state, 502, "Bad Gateway"}, state}
+      issue_state -> {{:ok, issue_state}, state}
     end
   end
 

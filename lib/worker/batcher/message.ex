@@ -68,9 +68,8 @@ defmodule BorsNG.Worker.Batcher.Message do
   def generate_message({:preflight, {:blocked_dependencies, refs}}) do
     ":-1: Rejected: this pull request depends on #{Enum.join(refs, ", ")}.\n\n" <>
       "A dependency listed in the description stops blocking once it is merged, closed, " <>
-      "or linked with this pull request (`bors link` or `bors stack`). One in another " <>
-      "repository, or a number that is not a pull request here, blocks until it is " <>
-      "removed from the description."
+      "or linked with this pull request (`bors link` or `bors stack`). One that bors " <>
+      "cannot find on GitHub blocks until it is removed from the description."
   end
 
   def generate_message({:preflight, :pr_status}) do
