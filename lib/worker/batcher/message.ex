@@ -65,6 +65,13 @@ defmodule BorsNG.Worker.Batcher.Message do
     ":-1: Rejected by label"
   end
 
+  def generate_message({:preflight, {:blocked_dependencies, refs}}) do
+    ":-1: Rejected: this pull request depends on #{Enum.join(refs, ", ")}.\n\n" <>
+      "A dependency listed in the description stops blocking once it is merged, closed, " <>
+      "or linked with this pull request (`bors link` or `bors stack`). One that bors " <>
+      "cannot find on GitHub blocks until it is removed from the description."
+  end
+
   def generate_message({:preflight, :pr_status}) do
     ":-1: Rejected by PR status"
   end
@@ -228,6 +235,8 @@ defmodule BorsNG.Worker.Batcher.Message do
         :closed -> "was closed"
         :push -> "was pushed to"
         :draft -> "was converted to draft"
+        {:dependencies, refs} -> "depends on #{Enum.join(refs, ", ")}"
+        :dependencies_unknown -> "has dependencies bors could not check on GitHub"
         _ -> "was canceled"
       end
 
@@ -244,6 +253,19 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def generate_message(:draft_dropped_before_batch) do
     "This pull request left the queue without building because it is a draft.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
+  end
+
+  def generate_message({:dropped_before_batch, {:dependencies, refs}}) do
+    "This pull request left the queue without building because it depends on " <>
+      "#{Enum.join(refs, ", ")}.\n\n" <>
+      "Once each is merged, closed, or linked with this pull request (`bors link` or " <>
+      "`bors stack`), someone with permission can run `bors r+` again."
+  end
+
+  def generate_message({:dropped_before_batch, :dependencies_unknown}) do
+    "This pull request left the queue without building because bors could not check " <>
+      "the dependencies in its description on GitHub.\n\n" <>
+      "Someone with permission can run `bors r+` to try again."
   end
 
   def generate_message(:draft_dropped_from_batch) do
@@ -853,6 +875,10 @@ defmodule BorsNG.Worker.Batcher.Message do
   def generate_bors_toml_error(:label_names_not_distinct) do
     "bors.toml: each [labels] entry (on_queue, building, failed, delegated) " <>
       "must use a distinct label name"
+  end
+
+  def generate_bors_toml_error(:dependencies) do
+    "bors.toml: expected [dependencies] keywords to be a non-empty list of non-empty strings"
   end
 
   # Catch-all so a future validation key can never crash the renderer (and the

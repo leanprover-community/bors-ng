@@ -26,6 +26,7 @@ defmodule BorsNG.Worker.Batcher do
   alias BorsNG.Database.Context.Delegation
   alias BorsNG.Worker.Batcher
   alias BorsNG.Worker.Batcher.Bundles
+  alias BorsNG.Worker.Batcher.Dependencies
   alias BorsNG.Worker.Batcher.Divider
   alias BorsNG.Worker.Labeler
   alias BorsNG.Worker.Syncer
@@ -1087,7 +1088,11 @@ defmodule BorsNG.Worker.Batcher do
 
     repo_conn
     |> Batcher.GetBorsToml.get("#{batch.project.staging_branch}.tmp")
+    |> pull_blocked_dependents(repo_conn, batch, patch_links)
     |> case do
+      {:pulled, state} ->
+        {state, nil}
+
       {:ok, toml} ->
         parents =
           if toml.use_squash_merge do
@@ -1305,6 +1310,67 @@ defmodule BorsNG.Worker.Batcher do
 
     {:error, nil}
   end
+
+  # The last look at each patch's dependencies before it builds, with the
+  # configuration it builds with. The r+ check sees only the description and
+  # the dependencies of that moment. Since then the description may have been
+  # edited, a dependency reopened, or the patch re-queued by a split or a
+  # cancel. A patch whose description now lists a dependency that blocks
+  # leaves the batch with its bundle, and so does one whose dependencies
+  # GitHub cannot say are closed: building it could merge it ahead of one.
+  # Held approvals stay, since the next r+ checks again.
+  #
+  # The rest wait for the next poll: `staging.tmp` holds the patches that
+  # left, so they are merged again without them.
+  defp pull_blocked_dependents(
+         {:ok, %{dependencies_keywords: keywords}} = toml,
+         repo_conn,
+         batch,
+         patch_links
+       )
+       when is_list(keywords) do
+    blocked =
+      Enum.flat_map(patch_links, fn link ->
+        case live_dependency_check(repo_conn, link.patch, keywords, batch.project.name) do
+          :clear -> []
+          {:blocked, refs} -> [{link, {:dependencies, refs}}]
+          _error -> [{link, :dependencies_unknown}]
+        end
+      end)
+
+    case blocked do
+      [] ->
+        toml
+
+      blocked ->
+        blocked_links = Enum.map(blocked, &elem(&1, 0))
+        rest = Enum.reject(patch_links, &(&1 in blocked_links))
+        {pulled, kept} = Bundles.split_pulled_by(blocked_links, rest)
+        Enum.each(blocked_links ++ pulled, &Repo.delete!/1)
+
+        send_status(repo_conn, batch.id, Enum.map(blocked_links ++ pulled, & &1.patch), :canceled)
+
+        Enum.each(blocked, fn {link, reason} ->
+          send_message(repo_conn, [link.patch], {:dropped_before_batch, reason})
+        end)
+
+        Enum.each(pulled, fn %{patch: patch} ->
+          {cause, reason} = Enum.find(blocked, &(elem(&1, 0).patch.bundle_id == patch.bundle_id))
+          send_message(repo_conn, [patch], {:bundle_pulled, cause.patch.pr_xref, reason})
+        end)
+
+        if kept == [] do
+          {:pulled, :canceled}
+        else
+          # Nothing was pushed, so the next start can build on the base it saw.
+          Process.put(:last_commit, nil)
+          poll_after_delay(batch.project)
+          {:pulled, :waiting}
+        end
+    end
+  end
+
+  defp pull_blocked_dependents(toml, _repo_conn, _batch, _patch_links), do: toml
 
   defp reconcile_raced_patch(repo_conn, project, patch) do
     case GitHub.get_pr(repo_conn, patch.pr_xref) do
@@ -1957,14 +2023,10 @@ defmodule BorsNG.Worker.Batcher do
     Delegation.reconcile_default_expiry(patch, toml.delegation_default_expiry_sec)
 
     with {:ok, labels} <- GitHub.get_labels(repo_conn, patch.pr_xref),
+         {:ok, block_check} <- block_check(repo_conn, patch, labels, toml),
          {:ok, github_commit_statuses} <- GitHub.get_commit_status(repo_conn, patch.commit),
          {:ok, reviews} <- GitHub.get_reviews(repo_conn, patch.pr_xref),
          {:ok, commit_reviews} <- maybe_get_commit_reviews(repo_conn, patch, toml) do
-      passed_label =
-        labels
-        |> MapSet.new()
-        |> MapSet.disjoint?(MapSet.new(toml.block_labels))
-
       pr_status_mapset = MapSet.new(toml.pr_status)
 
       no_error_status =
@@ -2000,13 +2062,13 @@ defmodule BorsNG.Worker.Batcher do
         end
 
       Logger.info(
-        "Code review status: Label Check #{passed_label} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
+        "Code review status: Block Check #{inspect(block_check)} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
       )
 
-      case {passed_label, no_error_status, no_waiting_status, no_unset_status, passed_review,
+      case {block_check, no_error_status, no_waiting_status, no_unset_status, passed_review,
             code_owners_approved, passed_up_to_date_review} do
-        {true, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
-        {false, _, _, _, _, _, _} -> {:error, :blocked_labels}
+        {:ok, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
+        {blocked, _, _, _, _, _, _} when blocked != :ok -> {:error, blocked}
         {_, _, _, _, :insufficient, _, _} -> {:error, :insufficient_approvals}
         {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
         {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
@@ -2022,6 +2084,39 @@ defmodule BorsNG.Worker.Batcher do
         )
 
         {:waiting, toml}
+    end
+  end
+
+  # `:ok`, or the preflight error a label or a dependency causes. A block label
+  # always blocks. With `[dependencies]`, so does a dependency the description
+  # lists that is open and outside the patch's bundle (see `Dependencies`). The
+  # description is read from GitHub, so an edit counts at once. When GitHub
+  # cannot say whether a dependency is closed, the patch waits, as it does for
+  # any read that fails.
+  defp block_check(repo_conn, patch, labels, toml) do
+    cond do
+      not MapSet.disjoint?(MapSet.new(labels), MapSet.new(toml.block_labels)) ->
+        {:ok, :blocked_labels}
+
+      is_nil(toml.dependencies_keywords) ->
+        {:ok, :ok}
+
+      true ->
+        project = Repo.get!(Project, patch.project_id)
+
+        case live_dependency_check(repo_conn, patch, toml.dependencies_keywords, project.name) do
+          :clear -> {:ok, :ok}
+          {:blocked, refs} -> {:ok, {:blocked_dependencies, refs}}
+          error -> error
+        end
+    end
+  end
+
+  # `Dependencies.check/5` on the description as GitHub has it now, which an
+  # edit webhook not yet handled (or handled out of order) cannot make stale.
+  defp live_dependency_check(repo_conn, patch, keywords, repo_name) do
+    with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
+      Dependencies.check(repo_conn, patch, pr.body, keywords, repo_name)
     end
   end
 

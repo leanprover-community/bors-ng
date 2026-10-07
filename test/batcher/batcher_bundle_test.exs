@@ -1794,4 +1794,152 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert fresh.id != batch.id
     end
   end
+
+  describe "dependencies" do
+    @dependency_toml ~s/status = [ "ci" ]\n[dependencies]\nkeywords = ["depends on:"]/
+
+    defp pr(xref, body) do
+      %Pr{
+        number: xref,
+        title: "PR #{xref}",
+        body: body,
+        state: :open,
+        base_ref: "master",
+        head_sha: "commit-#{xref}",
+        head_ref: "branch-#{xref}",
+        base_repo_id: 14,
+        head_repo_id: 14
+      }
+    end
+
+    # PRs 1 and 2, each with the [dependencies] toml at its head. PR 2 has the
+    # label, and lists its dependencies in `body`.
+    defp put_dependency_state(body) do
+      put_plain_state(%{1 => [], 2 => [], 3 => []}, %{
+        labels: %{1 => [], 2 => ["blocked"], 3 => []},
+        files: %{
+          "commit-1" => %{"bors.toml" => @dependency_toml},
+          "commit-2" => %{"bors.toml" => @dependency_toml}
+        },
+        pulls: %{1 => pr(1, "Mess"), 2 => pr(2, body)}
+      })
+    end
+
+    test "a bundle queues when its only dependency is a member", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1")
+      {_bundle, [p1, p2]} = insert_bundle(proj, [insert_patch(proj, 1), insert_patch(proj, 2)])
+
+      # PR 2's own preflight passes, so it holds its approval.
+      Batcher.handle_cast({:reviewed, p2.id, "r2"}, proj.id)
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == "r2"
+      refute Enum.any?(comments_for(2), &(&1 =~ "Rejected"))
+
+      # The bundle preflight passes it again, and the bundle queues.
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+      assert [batch] = proj.id |> Batch.all_for_project() |> Repo.all()
+
+      assert batch.id
+             |> LinkPatchBatch.from_batch()
+             |> Repo.all()
+             |> Enum.map(& &1.patch_id)
+             |> Enum.sort() ==
+               Enum.sort([p1.id, p2.id])
+    end
+
+    test "r+ is refused while a dependency is outside the bundle", %{proj: proj} do
+      put_dependency_state("- [ ] depends on: #1\n- [ ] depends on: #3")
+      insert_patch(proj, 3)
+      {_bundle, [_p1, p2]} = insert_bundle(proj, [insert_patch(proj, 1), insert_patch(proj, 2)])
+
+      Batcher.handle_cast({:reviewed, p2.id, "r2"}, proj.id)
+
+      assert [comment] = comments_for(2)
+      assert comment =~ "Rejected: this pull request depends on #3."
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == nil
+    end
+
+    test "the bundle holds when a member's dependency is outside it", %{proj: proj} do
+      # PR 2 held its approval before its description gained a dependency on #3.
+      put_dependency_state("- [ ] depends on: #1\n- [ ] depends on: #3")
+      insert_patch(proj, 3)
+
+      {_bundle, [p1, _p2]} =
+        insert_bundle(proj, [
+          insert_patch(proj, 1),
+          insert_patch(proj, 2, %{bundle_reviewer: "r2"})
+        ])
+
+      Batcher.handle_cast({:reviewed, p1.id, "r1"}, proj.id)
+
+      assert [] == proj.id |> Batch.all_for_project() |> Repo.all()
+      assert [rejected] = comments_for(2)
+      assert rejected =~ "Rejected: this pull request depends on #3."
+      assert [held] = comments_for(1)
+      assert held =~ "Waiting on #2 before the bundle can queue"
+    end
+
+    test "a member whose dependency is outside the bundle pulls the bundle before it builds",
+         %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}, {3, "P"}], %{
+        files: %{"staging.tmp" => %{"bors.toml" => @dependency_toml}}
+      })
+
+      # PR 2's description gained a dependency on #4 after the bundle queued.
+      GitHub.ServerMock.get_state()
+      |> put_in(
+        [{{:installation, 91}, 14}, :pulls, 2, Access.key(:body)],
+        "- [ ] depends on: #1\n- [ ] depends on: #4"
+      )
+      |> GitHub.ServerMock.put_state()
+
+      insert_patch(proj, 4)
+
+      {_bundle, [p1, p2]} =
+        insert_bundle(proj, [
+          insert_patch(proj, 1, %{commit: "N"}),
+          insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "r2"})
+        ])
+
+      p3 = insert_patch(proj, 3, %{commit: "P"})
+      batch = insert_waiting_batch(proj, [p1, p2, p3])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      # #3 waits to be merged again without the bundle.
+      assert Repo.get!(Batch, batch.id).state == :waiting
+      assert [p3.id] == batch.id |> Patch.all_for_batch() |> Repo.all() |> Enum.map(& &1.id)
+      assert [left] = comments_for(2)
+      assert left =~ "left the queue without building because it depends on #4."
+      assert [pulled] = comments_for(1)
+      assert pulled =~ "linked with #2, which depends on #4."
+      assert [] == comments_for(3)
+
+      # Held approvals stay: the next r+ checks again.
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == "r2"
+    end
+
+    test "a member whose only dependency is in the bundle builds with it", %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}], %{
+        files: %{"staging.tmp" => %{"bors.toml" => @dependency_toml}},
+        statuses: %{"iniNO" => %{}}
+      })
+
+      GitHub.ServerMock.get_state()
+      |> put_in([{{:installation, 91}, 14}, :pulls, 2, Access.key(:body)], "depends on: #1")
+      |> GitHub.ServerMock.put_state()
+
+      {_bundle, [p1, p2]} =
+        insert_bundle(proj, [
+          insert_patch(proj, 1, %{commit: "N"}),
+          insert_patch(proj, 2, %{commit: "O"})
+        ])
+
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      assert Repo.get!(Batch, batch.id).state == :running
+      assert [] == comments_for(1) ++ comments_for(2)
+    end
+  end
 end

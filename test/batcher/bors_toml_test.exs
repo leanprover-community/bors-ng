@@ -318,4 +318,39 @@ defmodule BatcherBorsTomlTest do
     assert toml.label_building == "b"
     assert toml.label_delegated == "c"
   end
+
+  test "leaves [dependencies] off by default" do
+    {:ok, toml} = BorsToml.new(~s/status = ["exl"]/)
+    assert is_nil(toml.dependencies_keywords)
+  end
+
+  test "parses the [dependencies] table" do
+    {:ok, toml} =
+      BorsToml.new(~S"""
+      status = ["exl"]
+      block_labels = ["WIP"]
+      [dependencies]
+      keywords = ["- [ ] depends on:", "- [x] depends on:"]
+      """)
+
+    assert toml.dependencies_keywords == ["- [ ] depends on:", "- [x] depends on:"]
+    assert toml.block_labels == ["WIP"]
+  end
+
+  test "rejects a [dependencies] table without keywords" do
+    r = BorsToml.new(~s/status = ["exl"]\n[dependencies]/)
+    assert r == {:error, :dependencies}
+  end
+
+  test "rejects a non-table [dependencies] value" do
+    r = BorsToml.new(~s/status = ["exl"]\ndependencies = "blocked"/)
+    assert r == {:error, :dependencies}
+  end
+
+  test "rejects [dependencies] keywords that are not a non-empty list of strings" do
+    for keywords <- [~s/"depends on"/, ~s/[]/, ~s/[1]/, ~s/[" "]/] do
+      r = BorsToml.new(~s/status = ["exl"]\n[dependencies]\nkeywords = #{keywords}/)
+      assert r == {:error, :dependencies}, keywords
+    end
+  end
 end

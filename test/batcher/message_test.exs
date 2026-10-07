@@ -169,6 +169,29 @@ defmodule BorsNG.Worker.BatcherMessageTest do
              Message.generate_message({:linked, [1, 2]})
   end
 
+  test "the dependency replies name what blocks, and run nothing" do
+    refs = ["#3", "a/b#4"]
+    refused = Message.generate_message({:preflight, {:blocked_dependencies, refs}})
+    assert refused =~ "Rejected: this pull request depends on #3, a/b#4."
+
+    left = Message.generate_message({:dropped_before_batch, {:dependencies, refs}})
+    assert left =~ "left the queue without building because it depends on #3, a/b#4."
+
+    unknown = Message.generate_message({:dropped_before_batch, :dependencies_unknown})
+    assert unknown =~ "bors could not check the dependencies in its description on GitHub."
+
+    pulled = Message.generate_message({:bundle_pulled, 2, {:dependencies, refs}})
+    assert pulled =~ "linked with #2, which depends on #3, a/b#4."
+
+    pulled_unknown = Message.generate_message({:bundle_pulled, 2, :dependencies_unknown})
+    assert pulled_unknown =~ "linked with #2, which has dependencies bors could not check"
+
+    # bors reads its own comments.
+    for msg <- [refused, left, unknown, pulled, pulled_unknown] do
+      assert [] == BorsNG.Command.parse(msg), msg
+    end
+  end
+
   test "every bors.toml error key has an explicit, friendly renderer" do
     # Single source of truth: BorsToml's @type err (introspected below), plus
     # the fetch-layer-only :fetch_failed. Adding a new validation key extends

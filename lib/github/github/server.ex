@@ -480,6 +480,46 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
+  def do_handle_call(:get_issue_state, {{:raw, token}, repo_xref}, {repo, number}) do
+    # The issues endpoint answers for pull requests too. A transferred issue or
+    # a renamed repository answers with a redirect, so this one follows them.
+    path =
+      case repo do
+        nil ->
+          "/repositories/#{repo_xref}/issues/#{number}"
+
+        repo ->
+          repo = repo |> String.split("/") |> Enum.map_join("/", &URI.encode_www_form/1)
+          "/repos/#{repo}/issues/#{number}"
+      end
+
+    "token #{token}"
+    |> tesla_client(@content_type, follow_redirects: true)
+    |> Tesla.get!(path)
+    |> case do
+      %{body: raw, status: 200} ->
+        case Jason.decode!(raw) do
+          %{"state" => "open"} -> {:ok, :open}
+          %{"state" => "closed"} -> {:ok, :closed}
+          _ -> {:error, :get_issue_state, 200, raw}
+        end
+
+      # Gone (410) is a deleted issue, and 451 a repository blocked for legal
+      # reasons. A 403 that is no rate limit is a repository the token may
+      # not read. None changes on a retry.
+      %{status: status} when status in [404, 410, 451] ->
+        {:ok, nil}
+
+      %{body: body, status: 403} = env ->
+        if rate_limited?(env),
+          do: {:error, :get_issue_state, 403, body},
+          else: {:ok, nil}
+
+      %{body: body, status: status} ->
+        {:error, :get_issue_state, status, body}
+    end
+  end
+
   def do_handle_call(:list_issues_by_label, {{:raw, token}, repo_xref}, {label}) do
     {:ok,
      get_issues_by_label_!(
@@ -1154,17 +1194,32 @@ defmodule BorsNG.GitHub.Server do
     {raw, state}
   end
 
-  defp tesla_client(authorization, content_type \\ @content_type) do
-    middleware = [
-      {Tesla.Middleware.BaseUrl, site()},
-      {Tesla.Middleware.Headers,
-       [
-         {"authorization", authorization},
-         {"accept", content_type},
-         {"user-agent", "bors-ng https://bors.tech"}
-       ]},
-      {Tesla.Middleware.Retry, delay: 100, max_retries: 5}
-    ]
+  # GitHub answers a rate limit with 403 (or 429): no requests left, a time to
+  # retry after, or for a secondary limit at least a message that says so.
+  defp rate_limited?(env) do
+    Tesla.get_header(env, "x-ratelimit-remaining") == "0" or
+      Tesla.get_header(env, "retry-after") != nil or
+      (is_binary(env.body) and env.body =~ ~r/rate limit/i)
+  end
+
+  defp tesla_client(authorization, content_type \\ @content_type, opts \\ []) do
+    # A redirect keeps the headers below, except that FollowRedirects drops the
+    # authorization on the way to another host.
+    redirects =
+      if Keyword.get(opts, :follow_redirects, false),
+        do: [Tesla.Middleware.FollowRedirects],
+        else: []
+
+    middleware =
+      [
+        {Tesla.Middleware.BaseUrl, site()},
+        {Tesla.Middleware.Headers,
+         [
+           {"authorization", authorization},
+           {"accept", content_type},
+           {"user-agent", "bors-ng https://bors.tech"}
+         ]}
+      ] ++ redirects ++ [{Tesla.Middleware.Retry, delay: 100, max_retries: 5}]
 
     middleware =
       if Confex.get_env(:bors, :log_outgoing, false) do
