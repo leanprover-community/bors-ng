@@ -478,15 +478,6 @@ defmodule BorsNG.WebhookController do
     if patch.bundle_id != nil and get_in(conn.body_params, ["changes", "base"]) != nil do
       warn_if_bundle_unqueueable(project, patch)
     end
-
-    # A description edit can give a queued patch a dependency that blocks it.
-    # The batcher checks, and pulls it from a batch that is still waiting.
-    if get_in(conn.body_params, ["changes", "body"]) != nil and
-         patch.id |> Batch.all_for_patch(:incomplete) |> Repo.exists?() do
-      project.id
-      |> Batcher.Registry.get()
-      |> Batcher.recheck_dependencies(patch.id)
-    end
   end
 
   def do_webhook_pr(_conn, %{action: action}) do

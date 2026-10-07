@@ -154,12 +154,6 @@ defmodule BorsNG.Worker.Batcher.Message do
     nil
   end
 
-  def generate_message({:canceled, :failed, {:dependencies, refs}}) do
-    "Bors build canceled: the description now depends on #{Enum.join(refs, ", ")}.\n\n" <>
-      "Once each is merged, closed, or linked with this pull request, someone with " <>
-      "permission can run `bors r+`."
-  end
-
   def generate_message({:canceled, :failed, _reason}) do
     "Bors build canceled.\n\nAddress comments or fix if necessary, and then someone with permission can run `bors r+`."
   end
@@ -241,7 +235,8 @@ defmodule BorsNG.Worker.Batcher.Message do
         :closed -> "was closed"
         :push -> "was pushed to"
         :draft -> "was converted to draft"
-        {:dependencies, _} -> "gained a dependency outside the bundle"
+        {:dependencies, refs} -> "depends on #{Enum.join(refs, ", ")}"
+        :dependencies_unknown -> "has dependencies bors could not check on GitHub"
         _ -> "was canceled"
       end
 
@@ -258,6 +253,19 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   def generate_message(:draft_dropped_before_batch) do
     "This pull request left the queue without building because it is a draft.\n\nDrafts are never merged. Mark it ready for review, then someone with permission can run `bors r+` again."
+  end
+
+  def generate_message({:dropped_before_batch, {:dependencies, refs}}) do
+    "This pull request left the queue without building because it depends on " <>
+      "#{Enum.join(refs, ", ")}.\n\n" <>
+      "Once each is merged, closed, or linked with this pull request (`bors link` or " <>
+      "`bors stack`), someone with permission can run `bors r+` again."
+  end
+
+  def generate_message({:dropped_before_batch, :dependencies_unknown}) do
+    "This pull request left the queue without building because bors could not check " <>
+      "the dependencies in its description on GitHub.\n\n" <>
+      "Someone with permission can run `bors r+` to try again."
   end
 
   def generate_message(:draft_dropped_from_batch) do

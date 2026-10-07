@@ -1878,26 +1878,68 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert held =~ "Waiting on #2 before the bundle can queue"
     end
 
-    test "an edit that adds a dependency outside the bundle pulls the whole bundle",
+    test "a member whose dependency is outside the bundle pulls the bundle before it builds",
          %{proj: proj} do
-      put_dependency_state("- [ ] depends on: #1\n- [ ] depends on: #3")
-      insert_patch(proj, 3)
+      put_merge_state([{1, "N"}, {2, "O"}, {3, "P"}], %{
+        files: %{"staging.tmp" => %{"bors.toml" => @dependency_toml}}
+      })
+
+      # PR 2's description gained a dependency on #4 after the bundle queued.
+      GitHub.ServerMock.get_state()
+      |> put_in(
+        [{{:installation, 91}, 14}, :pulls, 2, Access.key(:body)],
+        "- [ ] depends on: #1\n- [ ] depends on: #4"
+      )
+      |> GitHub.ServerMock.put_state()
+
+      insert_patch(proj, 4)
 
       {_bundle, [p1, p2]} =
         insert_bundle(proj, [
-          insert_patch(proj, 1),
-          insert_patch(proj, 2, %{body: "- [ ] depends on: #1\n- [ ] depends on: #3"})
+          insert_patch(proj, 1, %{commit: "N"}),
+          insert_patch(proj, 2, %{commit: "O", bundle_reviewer: "r2"})
         ])
 
-      insert_waiting_batch(proj, [p1, p2])
+      p3 = insert_patch(proj, 3, %{commit: "P"})
+      batch = insert_waiting_batch(proj, [p1, p2, p3])
 
-      Batcher.handle_cast({:recheck_dependencies, p2.id}, proj.id)
+      Batcher.handle_info({:poll, :once}, proj.id)
 
-      assert [] == Repo.all(LinkPatchBatch)
-      assert [canceled] = comments_for(2)
-      assert canceled =~ "the description now depends on #3."
+      # #3 waits to be merged again without the bundle.
+      assert Repo.get!(Batch, batch.id).state == :waiting
+      assert [p3.id] == batch.id |> Patch.all_for_batch() |> Repo.all() |> Enum.map(& &1.id)
+      assert [left] = comments_for(2)
+      assert left =~ "left the queue without building because it depends on #4."
       assert [pulled] = comments_for(1)
-      assert pulled =~ "linked with #2, which gained a dependency outside the bundle"
+      assert pulled =~ "linked with #2, which depends on #4."
+      assert [] == comments_for(3)
+
+      # Held approvals stay: the next r+ checks again.
+      assert Repo.get!(Patch, p2.id).bundle_reviewer == "r2"
+    end
+
+    test "a member whose only dependency is in the bundle builds with it", %{proj: proj} do
+      put_merge_state([{1, "N"}, {2, "O"}], %{
+        files: %{"staging.tmp" => %{"bors.toml" => @dependency_toml}},
+        statuses: %{"iniNO" => %{}}
+      })
+
+      GitHub.ServerMock.get_state()
+      |> put_in([{{:installation, 91}, 14}, :pulls, 2, Access.key(:body)], "depends on: #1")
+      |> GitHub.ServerMock.put_state()
+
+      {_bundle, [p1, p2]} =
+        insert_bundle(proj, [
+          insert_patch(proj, 1, %{commit: "N"}),
+          insert_patch(proj, 2, %{commit: "O"})
+        ])
+
+      batch = insert_waiting_batch(proj, [p1, p2])
+
+      Batcher.handle_info({:poll, :once}, proj.id)
+
+      assert Repo.get!(Batch, batch.id).state == :running
+      assert [] == comments_for(1) ++ comments_for(2)
     end
   end
 end

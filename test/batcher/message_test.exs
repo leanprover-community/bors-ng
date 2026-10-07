@@ -174,14 +174,20 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     refused = Message.generate_message({:preflight, {:blocked_dependencies, refs}})
     assert refused =~ "Rejected: this pull request depends on #3, a/b#4."
 
-    canceled = Message.generate_message({:canceled, :failed, {:dependencies, refs}})
-    assert canceled =~ "the description now depends on #3, a/b#4."
+    left = Message.generate_message({:dropped_before_batch, {:dependencies, refs}})
+    assert left =~ "left the queue without building because it depends on #3, a/b#4."
+
+    unknown = Message.generate_message({:dropped_before_batch, :dependencies_unknown})
+    assert unknown =~ "bors could not check the dependencies in its description on GitHub."
 
     pulled = Message.generate_message({:bundle_pulled, 2, {:dependencies, refs}})
-    assert pulled =~ "which gained a dependency outside the bundle"
+    assert pulled =~ "linked with #2, which depends on #3, a/b#4."
+
+    pulled_unknown = Message.generate_message({:bundle_pulled, 2, :dependencies_unknown})
+    assert pulled_unknown =~ "linked with #2, which has dependencies bors could not check"
 
     # bors reads its own comments.
-    for msg <- [refused, canceled, pulled] do
+    for msg <- [refused, left, unknown, pulled, pulled_unknown] do
       assert [] == BorsNG.Command.parse(msg), msg
     end
   end

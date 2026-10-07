@@ -84,10 +84,6 @@ defmodule BorsNG.Worker.Batcher do
     GenServer.cast(pid, {:cancel_all})
   end
 
-  def recheck_dependencies(pid, patch_id) when is_integer(patch_id) do
-    GenServer.cast(pid, {:recheck_dependencies, patch_id})
-  end
-
   def link(pid, patch_id, pr_xrefs) when is_integer(patch_id) do
     GenServer.cast(pid, {:link, patch_id, pr_xrefs})
   end
@@ -250,32 +246,6 @@ defmodule BorsNG.Worker.Batcher do
   # Backwards compatibility for any in-flight 2-tuple casts (e.g. across a deploy).
   def do_handle_cast({:cancel, patch_id}, project_id) do
     do_handle_cast({:cancel, patch_id, :requested}, project_id)
-  end
-
-  # The description of a queued patch changed. If it now lists a dependency
-  # that blocks, the patch (and its bundle) leaves a batch that is still
-  # waiting. A building batch is left alone: canceling it would throw out every
-  # other patch in it too. The webhook has already stored the new description.
-  # Held approvals stay, since the next r+ checks dependencies again. So does a
-  # patch whose dependencies GitHub cannot say are closed: pulling it would
-  # blame a dependency that may not block.
-  def do_handle_cast({:recheck_dependencies, patch_id}, _project_id) do
-    case patch_id |> Batch.all_for_patch(:incomplete) |> Repo.one() do
-      %Batch{state: :waiting} = batch ->
-        patch = Repo.get!(Patch, patch_id)
-        repo_conn = get_repo_conn(batch.project)
-
-        with {:ok, toml} <- Batcher.GetBorsToml.get(repo_conn, patch.commit),
-             true <- is_list(toml.dependencies_keywords),
-             {:blocked, refs} <- dependency_check(repo_conn, patch, patch.body, toml) do
-          cancel_patch(batch, patch_id, {:dependencies, refs})
-        else
-          _ -> :ok
-        end
-
-      _ ->
-        :ok
-    end
   end
 
   def do_handle_cast({:cancel_all}, project_id) do
@@ -1118,7 +1088,11 @@ defmodule BorsNG.Worker.Batcher do
 
     repo_conn
     |> Batcher.GetBorsToml.get("#{batch.project.staging_branch}.tmp")
+    |> pull_blocked_dependents(repo_conn, batch, patch_links)
     |> case do
+      {:pulled, state} ->
+        {state, nil}
+
       {:ok, toml} ->
         parents =
           if toml.use_squash_merge do
@@ -1336,6 +1310,67 @@ defmodule BorsNG.Worker.Batcher do
 
     {:error, nil}
   end
+
+  # The last look at each patch's dependencies before it builds, with the
+  # configuration it builds with. The r+ check sees only the description and
+  # the dependencies of that moment. Since then the description may have been
+  # edited, a dependency reopened, or the patch re-queued by a split or a
+  # cancel. A patch whose description now lists a dependency that blocks
+  # leaves the batch with its bundle, and so does one whose dependencies
+  # GitHub cannot say are closed: building it could merge it ahead of one.
+  # Held approvals stay, since the next r+ checks again.
+  #
+  # The rest wait for the next poll: `staging.tmp` holds the patches that
+  # left, so they are merged again without them.
+  defp pull_blocked_dependents(
+         {:ok, %{dependencies_keywords: keywords}} = toml,
+         repo_conn,
+         batch,
+         patch_links
+       )
+       when is_list(keywords) do
+    blocked =
+      Enum.flat_map(patch_links, fn link ->
+        case live_dependency_check(repo_conn, link.patch, keywords, batch.project.name) do
+          :clear -> []
+          {:blocked, refs} -> [{link, {:dependencies, refs}}]
+          _error -> [{link, :dependencies_unknown}]
+        end
+      end)
+
+    case blocked do
+      [] ->
+        toml
+
+      blocked ->
+        blocked_links = Enum.map(blocked, &elem(&1, 0))
+        rest = Enum.reject(patch_links, &(&1 in blocked_links))
+        {pulled, kept} = Bundles.split_pulled_by(blocked_links, rest)
+        Enum.each(blocked_links ++ pulled, &Repo.delete!/1)
+
+        send_status(repo_conn, batch.id, Enum.map(blocked_links ++ pulled, & &1.patch), :canceled)
+
+        Enum.each(blocked, fn {link, reason} ->
+          send_message(repo_conn, [link.patch], {:dropped_before_batch, reason})
+        end)
+
+        Enum.each(pulled, fn %{patch: patch} ->
+          {cause, reason} = Enum.find(blocked, &(elem(&1, 0).patch.bundle_id == patch.bundle_id))
+          send_message(repo_conn, [patch], {:bundle_pulled, cause.patch.pr_xref, reason})
+        end)
+
+        if kept == [] do
+          {:pulled, :canceled}
+        else
+          # Nothing was pushed, so the next start can build on the base it saw.
+          Process.put(:last_commit, nil)
+          poll_after_delay(batch.project)
+          {:pulled, :waiting}
+        end
+    end
+  end
+
+  defp pull_blocked_dependents(toml, _repo_conn, _batch, _patch_links), do: toml
 
   defp reconcile_raced_patch(repo_conn, project, patch) do
     case GitHub.get_pr(repo_conn, patch.pr_xref) do
@@ -2067,19 +2102,22 @@ defmodule BorsNG.Worker.Batcher do
         {:ok, :ok}
 
       true ->
-        with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
-          case dependency_check(repo_conn, patch, pr.body, toml) do
-            :clear -> {:ok, :ok}
-            {:blocked, refs} -> {:ok, {:blocked_dependencies, refs}}
-            error -> error
-          end
+        project = Repo.get!(Project, patch.project_id)
+
+        case live_dependency_check(repo_conn, patch, toml.dependencies_keywords, project.name) do
+          :clear -> {:ok, :ok}
+          {:blocked, refs} -> {:ok, {:blocked_dependencies, refs}}
+          error -> error
         end
     end
   end
 
-  defp dependency_check(repo_conn, patch, body, toml) do
-    project = Repo.get!(Project, patch.project_id)
-    Dependencies.check(repo_conn, patch, body, toml.dependencies_keywords, project.name)
+  # `Dependencies.check/5` on the description as GitHub has it now, which an
+  # edit webhook not yet handled (or handled out of order) cannot make stale.
+  defp live_dependency_check(repo_conn, patch, keywords, repo_name) do
+    with {:ok, pr} <- GitHub.get_pr(repo_conn, patch.pr_xref) do
+      Dependencies.check(repo_conn, patch, pr.body, keywords, repo_name)
+    end
   end
 
   defp maybe_get_commit_reviews(repo_conn, patch, toml) do
