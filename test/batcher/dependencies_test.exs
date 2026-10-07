@@ -306,6 +306,34 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
       assert {:error, :get_issue_state, 502, _} = check(b, "depends on: leanprover/lean4#1")
     end
 
+    test "names a dependency that surely blocks, even when GitHub cannot answer for another",
+         %{proj: proj} do
+      put_issue_states(%{}, %{{"leanprover/lean4", 1} => :error})
+      insert_patch(proj, 3)
+      b = insert_patch(proj, 2)
+
+      body = """
+      - [ ] depends on: leanprover/lean4#1
+      - [ ] depends on: #3
+      """
+
+      assert check(b, body) == {:blocked, ["#3"]}
+    end
+
+    test "asks GitHub nothing more once it fails to answer", %{proj: proj} do
+      # Had bors asked about lean4#2, it would block on it.
+      put_issue_states(%{}, %{{"leanprover/lean4", 1} => :error, {"leanprover/lean4", 2} => :open})
+
+      b = insert_patch(proj, 2)
+
+      body = """
+      - [ ] depends on: leanprover/lean4#1
+      - [ ] depends on: leanprover/lean4#2
+      """
+
+      assert {:error, :get_issue_state, 502, _} = check(b, body)
+    end
+
     test "clears a description that lists nothing", %{proj: proj} do
       b = insert_patch(proj, 2)
       assert check(b, "Adds a lemma.") == :clear

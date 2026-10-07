@@ -145,32 +145,42 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
   block it: `:clear` when every one is merged, closed, or in the patch's
   bundle (or it lists none), and otherwise `{:blocked, refs}` with the ones
   that are not, as `#N` or `owner/repo#N`. An error when GitHub cannot say
-  whether a dependency is closed.
+  whether a dependency is closed and none surely blocks. After one such error,
+  bors asks GitHub nothing more, so a check costs at most one failed read.
   """
   @spec check(GitHub.tconn(), Patch.t(), binary | nil, [binary], binary) ::
           :clear | {:blocked, [binary]} | {:error, term}
   def check(repo_conn, patch, body, keywords, repo_name) do
-    references = references(body, keywords, repo_name)
+    case references(body, keywords, repo_name) do
+      [] -> :clear
+      references -> check_references(repo_conn, patch, references)
+    end
+  end
+
+  defp check_references(repo_conn, patch, references) do
     known = known(patch, for({:local, n} <- references, do: n))
 
     references
-    |> Enum.reduce_while([], fn ref, blocking ->
-      case state(repo_conn, known, ref) do
-        {:ok, state} when state in [:bundled, :closed] -> {:cont, blocking}
-        {:ok, _open_or_missing} -> {:cont, [format(ref) | blocking]}
-        error -> {:halt, error}
+    |> Enum.reduce({[], nil}, fn ref, {blocking, error} ->
+      case state(repo_conn, known, ref, error) do
+        {:ok, state} when state in [:bundled, :closed] -> {blocking, error}
+        {:ok, _open_or_missing} -> {[format(ref) | blocking], error}
+        :unasked -> {blocking, error}
+        new_error -> {blocking, new_error}
       end
     end)
     |> case do
-      [] -> :clear
-      blocking when is_list(blocking) -> {:blocked, Enum.reverse(blocking)}
-      error -> error
+      {[], nil} -> :clear
+      {[], error} -> error
+      {blocking, _} -> {:blocked, Enum.reverse(blocking)}
     end
   end
 
   # What bors's records say of `numbers`: `:bundled` for those in the patch's
   # bundle (the patch itself included), and otherwise `:open` or `:closed` for
   # those it has as pull requests of the patch's project.
+  defp known(_patch, []), do: %{}
+
   defp known(patch, numbers) do
     bundled =
       patch
@@ -189,10 +199,15 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
     |> Map.merge(bundled)
   end
 
-  defp state(_repo_conn, known, {:local, n}) when is_map_key(known, n), do: {:ok, known[n]}
-  defp state(repo_conn, _known, {:local, n}), do: GitHub.get_issue_state(repo_conn, nil, n)
+  # A state from bors's records, or else from GitHub, unless GitHub has
+  # already failed to answer during this check.
+  defp state(_repo_conn, known, {:local, n}, _error) when is_map_key(known, n),
+    do: {:ok, known[n]}
 
-  defp state(repo_conn, _known, {:external, repo, n}),
+  defp state(_repo_conn, _known, _ref, error) when error != nil, do: :unasked
+  defp state(repo_conn, _known, {:local, n}, nil), do: GitHub.get_issue_state(repo_conn, nil, n)
+
+  defp state(repo_conn, _known, {:external, repo, n}, nil),
     do: GitHub.get_issue_state(repo_conn, repo, n)
 
   defp format({:local, n}), do: "##{n}"
