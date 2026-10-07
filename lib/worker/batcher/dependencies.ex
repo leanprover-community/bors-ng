@@ -29,7 +29,9 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
     mathlib4's `- \\[ \\] depends on:` is `- [ ] depends on:` here.
   - Whitespace is JavaScript's `\\s`, newlines and Unicode spaces included.
   - A reference is `#N`, `owner/repo#N`, or a link to a GitHub issue or pull
-    request.
+    request. As in issue-regex, which dependent-issues uses, an owner or
+    repository name has at least two characters, so `x/y#5` is no reference.
+    A word character is ASCII, so `#5é` reads `#5`.
 
   Whether a pull request of this repository is open comes from bors's own
   records, which webhooks keep current. bors asks GitHub about the rest:
@@ -46,13 +48,21 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
 
   import Ecto.Query
 
-  # JavaScript's `\s`. Without `:ucp`, PCRE's `\s` lacks the Unicode spaces,
-  # while `\w`, `\d` and `\b` stay ASCII, as in JavaScript.
-  @space ~S"[\s\x{0b}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]"
+  # The regex spells out its classes and its case, with no `\w`, `\b` or
+  # `:caseless`, because PCRE's are not JavaScript's. Erlang builds PCRE's
+  # tables for Latin-1, so its `\w` and `\b` take letters such as `é` and `ª`.
+  # Its `:caseless` folds the Kelvin sign into `k` and `ſ` into `s`.
+  # dependent-issues compiles with `gi`: `\w` and `\d` are ASCII, and `i`
+  # never folds a letter outside ASCII into one inside it.
 
-  # dependent-issues' references: issue-regex (`#N`, `owner/repo#N`), then a
-  # link to an issue or pull request.
-  @reference ~S"(?:(\w[\w.-]+)/(\w[\w.-]+))?#([1-9]\d*)\b|https?://github\.com/(\w[\w.-]+)/(\w[\w.-]+)/(?:issues|pull)/([1-9]\d*)\b"
+  # JavaScript's `\s`.
+  @space ~S"[\t\n\x{0b}\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]"
+
+  # issue-regex's `\w[\w-.]+`: an owner or a repository name.
+  @name "[A-Za-z0-9_][A-Za-z0-9_.-]+"
+
+  # issue-regex's `[1-9]\d*\b`: a whole number, with no word character after it.
+  @number "([1-9][0-9]*)(?![A-Za-z0-9_])"
 
   # `pr_xref` is a 32-bit integer column. A larger number is no pull request,
   # and querying it would raise.
@@ -76,19 +86,49 @@ defmodule BorsNG.Worker.Batcher.Dependencies do
       [_, _, _, owner, repo, number] -> reference(owner, repo, number, repo_name)
       [owner, repo, number] -> reference(owner, repo, number, repo_name)
     end)
-    |> Enum.uniq()
+    # GitHub names are case-insensitive, so each dependency is listed once.
+    |> Enum.uniq_by(fn
+      {:local, n} -> {:local, n}
+      {:external, repo, n} -> {:external, String.downcase(repo), n}
+    end)
   end
 
+  # dependent-issues' references: issue-regex (`#N`, `owner/repo#N`), then a
+  # link to an issue or pull request.
   defp dependency_regex(keywords) do
     keywords =
       Enum.map_join(keywords, "|", fn keyword ->
         keyword
         |> String.split()
-        |> Enum.map_join("#{@space}+", &Regex.escape/1)
+        |> Enum.map_join("#{@space}+", &caseless/1)
       end)
 
-    Regex.compile!("(?:#{keywords})#{@space}+(?:#{@reference})", [:unicode, :caseless])
+    issue = "(?:(#{@name})/(#{@name}))?##{@number}"
+
+    link =
+      "#{caseless("http")}#{caseless("s")}?://#{caseless("github.com")}/" <>
+        "(#{@name})/(#{@name})/(?:#{caseless("issues")}|#{caseless("pull")})/#{@number}"
+
+    Regex.compile!("(?:#{keywords})#{@space}+(?:#{issue}|#{link})", [:unicode])
   end
+
+  # `text` in any case, as JavaScript's `i` flag matches it: each letter also
+  # matches its other case, but never across ASCII and the rest.
+  defp caseless(text) do
+    text
+    |> String.codepoints()
+    |> Enum.map_join(fn char ->
+      [char, String.upcase(char), String.downcase(char)]
+      |> Enum.uniq()
+      |> Enum.filter(&(match?([_], String.codepoints(&1)) and ascii?(&1) == ascii?(char)))
+      |> case do
+        [char] -> Regex.escape(char)
+        chars -> "(?:#{Enum.map_join(chars, "|", &Regex.escape/1)})"
+      end
+    end)
+  end
+
+  defp ascii?(<<char::utf8>>), do: char < 128
 
   defp reference("", "", number, _repo_name), do: {:local, String.to_integer(number)}
 

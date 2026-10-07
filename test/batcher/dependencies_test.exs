@@ -105,9 +105,50 @@ defmodule BorsNG.Worker.Batcher.DependenciesTest do
              ]
     end
 
+    test "reads a link only with its owner and repository" do
+      assert refs("depends on: https://github.com//pull/33") == []
+      # A repository may be named `issues`.
+      assert refs("depends on: https://github.com/owner/issues/issues/34") ==
+               [{:external, "owner/issues", 34}]
+    end
+
+    test "needs two characters in an owner or repository name, as issue-regex does" do
+      assert refs("depends on: x/tool#5") == []
+      assert refs("depends on: tools/y#5") == []
+      assert refs("depends on: https://github.com/a/b/pull/5") == []
+      assert refs("depends on: ab/cd#5") == [{:external, "ab/cd", 5}]
+    end
+
+    test "takes only ASCII as word characters, as JavaScript does" do
+      # Erlang's PCRE tables are Latin-1, where `é` is a word character.
+      assert refs("depends on: #5é") == [{:local, 5}]
+      assert refs("depends on: owner/répo#5") == []
+      assert refs("depends on: #5_") == []
+    end
+
+    test "takes only JavaScript's whitespace" do
+      # JavaScript's `\s` takes the ideographic space, but not U+0085.
+      assert refs("depends on:\u0085#5") == []
+      assert refs("depends on:\u3000#5") == [{:local, 5}]
+    end
+
+    test "folds case as JavaScript does, never into ASCII from outside it" do
+      # PCRE's `:caseless` matches the Kelvin sign as `k` and `ſ` as `s`.
+      assert refs("dependſ on: #5") == []
+      assert refs("depends on: #5\u212a") == [{:local, 5}]
+      assert refs("DÉPEND DE #5", ["dépend de"]) == [{:local, 5}]
+      assert refs("depends on: HTTPS://GITHUB.COM/a1/b1/PULL/5") == [{:external, "a1/b1", 5}]
+    end
+
     test "lists each dependency once" do
       assert refs("depends on #5\nblocked by #5", ["depends on", "blocked by"]) ==
                [{:local, 5}]
+
+      # GitHub names are case-insensitive.
+      assert refs("depends on lean/Lean4#5\nblocked by Lean/lean4#5", [
+               "depends on",
+               "blocked by"
+             ]) == [{:external, "lean/Lean4", 5}]
     end
 
     test "reads nothing from an empty description" do
