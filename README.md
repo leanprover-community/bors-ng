@@ -364,54 +364,70 @@ Be sure to fix the link to the GitHub repo in `app.html.eex`.
 
 [Docker]: https://docker.com/
 
-Pre-built Docker images are available at [Docker Hub](https://hub.docker.com/r/borsng/bors-ng/) for the current `master` (as `bors-ng:latest`).
+CI publishes an image for every commit on `master` to `ghcr.io/leanprover-community/bors-ng`,
+tagged `sha-<short commit>`, with `latest` following `master`. The image is built for `linux/amd64` only.
+In production, pin the image by digest (`ghcr.io/leanprover-community/bors-ng@sha256:<digest>`).
+The summary of each run of the "Docker" workflow on `master` gives the digest it pushed.
 
-The Dockerfile in the project root can be used to build the image yourself.
-It relies on [multi-stage builds](https://docs.docker.com/engine/userguide/eng-image/multistage-build/) as introduced in Docker 17.05,
-to generate a slim image without the Erlang, Elixir and NodeJS development tools.
+To build the image yourself, use the Dockerfile in the project root.
+Pass `--build-arg SOURCE_COMMIT=$(git rev-parse HEAD)` so the dashboard shows the commit.
 
-Most of the important configuration options should be set at runtime using environment variables, not unlike the Heroku instructions.
-All the same recommendations apply, with some extra notes:
+Configuration is set at runtime with environment variables, as on Heroku, and the same recommendations apply, with some extra notes:
 
-- `ELIXIR_VERSION` can be set as a build-time argument. Its default value is defined in the [Dockerfile](Dockerfile).
-- `ALLOW_PRIVATE_REPOS` must be set at both build and run times to take effect. It is set to ` true` by default.
-- `DATABASE_URL` _must_ contain the database port, as it will be used at container startup to wait until the database is reachable. [The format is documented here](https://hexdocs.pm/ecto/Ecto.Repo.html#module-urls). For using MySQL in the docker image, use a mysql scheme url: `-e DATABASE_URL="mysql://root:<secret>@db:3306/bors_ng"` in conjunction with `BORS_DATABASE=mysql`
+- Set `RELEASE_COOKIE` to a long random secret. The image's own Erlang cookie is public, and anyone with the cookie who can reach the node can run code in it, so bors refuses to start without `RELEASE_COOKIE`.
+- The container does not migrate the database when it starts. Run the migrations first, in a one-off container with the same environment:
+  `docker run --rm --env-file bors.env ghcr.io/leanprover-community/bors-ng@sha256:<digest> eval "BorsNG.Database.Migrate.run_standalone()"`.
+  It does nothing if the schema is already current, so it is safe to run before every start.
+  If the database doesn't exist, it creates it, provided the database user may create databases.
+  Either way, the user needs to be able to connect to the `postgres` database, which the migration checks first.
+  Other `mix` tasks are not available, as they cannot be run from compiled releases.
+- Run only one bors container at a time, as with Heroku dynos: stop the old container before starting a new one.
+- The `PORT` environment variable is set to `4000` by default.
+- Put a reverse proxy that terminates TLS in front of bors, and have it set `X-Forwarded-Proto`.
+  bors redirects plain-HTTP requests to HTTPS, except requests for `localhost` or `127.0.0.1`.
+- `GET /health` returns 200 without touching the database.
+  A health check from inside the container should use `http://localhost:4000/health`; a request for the container's name gets a redirect to HTTPS.
+- `DATABASE_USE_SSL` defaults to `true`. Set it to `false` if the database doesn't offer TLS, for example a database container on the same private network.
+- `ALLOW_PRIVATE_REPOS` defaults to `false`, and bors then removes private repositories from its database at the next sync.
+  Set it to `true` if bors manages any private repository.
 - `DATABASE_TIMEOUT` may be set higher than the default of `15_000`(ms). This may be necessary with repositories with a very large amount of members.
 - `DATABASE_PREPARE_MODE` can be set to to `unnamed` to disable prepared statements, [which is necessary when using a transaction/statement pooler, like pgbouncer](https://github.com/elixir-ecto/postgrex#pgbouncer). It is set to `named` by default.
-- `BORS_DATABASE` can be set to `mysql` to switch the Docker container to MySQL
-- The database schema will be automatically created and migrated at container startup, unless the ` DATABASE_AUTO_MIGRATE` env. var.
-  is set to `false`. Make that change if the database state is managed externally, or if you are using a database that cannot safely handle
-  concurrent schema changes (such as older MariaDB/MySQL versions).
-- Database migrations can be manually applied from a container using the `migrate` release command. Example:
-  `docker run borsng/bors-ng:latest /app/bors/bin/bors migrate`.
-  Unfortunately other `mix` tasks are not available, as they cannot be run from compiled releases.
-- The `PORT` environment variable is set to `4000` by default.
+- `BORS_DATABASE` can be set to `mysql` to switch to MySQL, with a `mysql://` `DATABASE_URL`, for example `mysql://root:<secret>@db:3306/bors_ng`.
 - `GITHUB_URL_ROOT_API` and `GITHUB_URL_ROOT_HTML` should allow you to connect bors-ng to an instance of GitHub Enterprise.
   Note: I've never actually used GitHub Enterprise, so I'm kinda guessing about what you'd need here.
 - `BORS_LOG_LEVEL` allows you to set the log level at runtime for bors-ng.
   The allowed values are the usual Elixir `Logger` levels, e.g. `info`, `debug`, `warn`, etc.
   Defaults to `info` if not set.
+- The container runs as an unprivileged `bors` user.
+  To run code in the running node, use `docker exec bors bin/bors rpc "..."`.
+  `docker exec -it bors bin/bors remote` opens an interactive console; don't pipe input into it, since bors stops when the input ends.
 
-      docker create --name bors --restart=unless-stopped \
-          -e PUBLIC_HOST=app.bors.tech \
-          -e SECRET_KEY_BASE=<secret> \
-          -e GITHUB_CLIENT_ID=<secret> \
-          -e GITHUB_CLIENT_SECRET=<secret> \
-          -e GITHUB_INTEGRATION_ID=<secret> \
-          -e GITHUB_INTEGRATION_PEM=<secret> \
-          -e GITHUB_WEBHOOK_SECRET=<secret> \
-          -e ZULIP_API_URL=<secret> \
-          -e ZULIP_BOT_EMAIL=<secret> \
-          -e ZULIP_BOT_API_KEY=<secret> \
-          -e ZULIP_CHANNEL_NAME=<secret> \
-          -e ZULIP_TOPIC=<secret> \
-          -e DATABASE_URL="postgresql://postgres:<secret>@db:5432/bors_ng" \
-          -e DATABASE_USE_SSL=false \
-          -e DATABASE_AUTO_MIGRATE=true \
-          -e COMMAND_TRIGGER=bors \
-          [-e BORS_LOG_LEVEL=<debug|info|warn|...>] \
-          borsng/bors-ng
-      docker start bors
+For example, with the environment in `bors.env`:
+
+      PUBLIC_HOST=bors.example.com
+      SECRET_KEY_BASE=<secret>
+      RELEASE_COOKIE=<secret>
+      GITHUB_CLIENT_ID=<secret>
+      GITHUB_CLIENT_SECRET=<secret>
+      GITHUB_INTEGRATION_ID=<secret>
+      GITHUB_INTEGRATION_PEM=<secret>
+      GITHUB_WEBHOOK_SECRET=<secret>
+      ZULIP_API_URL=<secret>
+      ZULIP_BOT_EMAIL=<secret>
+      ZULIP_BOT_API_KEY=<secret>
+      ZULIP_CHANNEL_NAME=<secret>
+      ZULIP_TOPIC=<secret>
+      DATABASE_URL=postgresql://bors:<secret>@db:5432/bors_ng
+      DATABASE_USE_SSL=false
+      COMMAND_TRIGGER=bors
+
+and the database reachable as `db` on the Docker network `bors`, run:
+
+      IMAGE=ghcr.io/leanprover-community/bors-ng@sha256:<digest>
+      docker run --rm --network bors --env-file bors.env $IMAGE eval "BorsNG.Database.Migrate.run_standalone()"
+      docker run -d --name bors --restart=unless-stopped --network bors --env-file bors.env -p 127.0.0.1:4000:4000 $IMAGE
+
+with the reverse proxy forwarding to `127.0.0.1:4000`.
 
 ### Deploying on your own cluster
 

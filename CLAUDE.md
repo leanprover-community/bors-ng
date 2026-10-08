@@ -192,6 +192,7 @@ When bumping versions, update all of these files consistently:
 | `.tool-versions` | Local dev versions (asdf) |
 | `.github/workflows/main.yml` | `matrix.elixir`, `matrix.otp_release`, `exfmt` job |
 | `elixir_buildpack.config` | Heroku buildpack versions |
+| `Dockerfile` | `ELIXIR_VERSION`, `OTP_VERSION`, `NODE_VERSION`, and `DEBIAN_SNAPSHOT`, which must name an existing `hexpm/elixir` build of that Elixir/OTP pair on `DEBIAN_RELEASE` |
 | `phoenix_static_buildpack.config` | Node version (if needed) |
 | `CLAUDE.md` runtime requirements table | Documentation |
 
@@ -204,6 +205,7 @@ The CI workflow is `.github/workflows/main.yml`. Key jobs:
 | test (matrix) | 1.16.3, 1.17.3 | 26.2.5, 27.3.4.13 | PostgreSQL + MySQL |
 | exfmt | 1.16.3 | 26.2.5 | `mix format --check-formatted` |
 | lint-test | — | — | Helm chart linting only |
+| image (`docker-publish.yml`) | 1.17.3 | 27.3.4.13 | Builds the Docker image; on `master`, pushes it to `ghcr.io/leanprover-community/bors-ng` |
 
 The `ci-success` aggregator job is what bors itself waits for.
 
