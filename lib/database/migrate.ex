@@ -52,7 +52,7 @@ defmodule BorsNG.Database.Migrate do
   end
 
   def create_storage_for(repo) do
-    case repo.__adapter__.storage_up(repo.config) do
+    case repo.__adapter__().storage_up(repo.config()) do
       :ok ->
         :seed
 
@@ -72,7 +72,7 @@ defmodule BorsNG.Database.Migrate do
   end
 
   def run_migrations_for(repo) do
-    app = Keyword.get(repo.config, :otp_app)
+    app = Keyword.get(repo.config(), :otp_app)
     IO.puts("Running migrations for #{app}")
 
     Ecto.Migrator.run(repo, migrations_path(repo), :up, all: true)
@@ -82,7 +82,7 @@ defmodule BorsNG.Database.Migrate do
     seed_script = seeds_path(repo)
 
     if File.exists?(seed_script) do
-      app = Keyword.get(repo.config, :otp_app)
+      app = Keyword.get(repo.config(), :otp_app)
       IO.puts("Running seed script for #{app}")
 
       Code.eval_file(seed_script)
@@ -96,7 +96,7 @@ defmodule BorsNG.Database.Migrate do
   def priv_dir(app), do: :code.priv_dir(app)
 
   def priv_path_for(repo, filename) do
-    app = Keyword.get(repo.config, :otp_app)
+    app = Keyword.get(repo.config(), :otp_app)
     Path.join([priv_dir(app), "repo", filename])
   end
 end
