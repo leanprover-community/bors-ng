@@ -14,3 +14,7 @@ erl_crash.dump
 /projectFilesBackup
 /projectFilesBackup1
 Dockerfile
+.git
+.elixir_ls
+.claude
+/priv/static
