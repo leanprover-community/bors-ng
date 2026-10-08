@@ -32,13 +32,7 @@ defmodule BorsNG.Endpoint do
   plug(Plug.RequestId)
   plug(Plug.Logger)
 
-  plug(BorsNG.WebhookParserPlug,
-    secret:
-      Confex.get_env(
-        :bors,
-        BorsNG.WebhookParserPlug
-      )[:webhook_secret]
-  )
+  plug(BorsNG.WebhookParserPlug)
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
