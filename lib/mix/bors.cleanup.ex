@@ -1,9 +1,6 @@
 defmodule Mix.Tasks.Bors.Cleanup do
   use Mix.Task
   import Mix.Ecto
-  import Ecto.Query
-
-  require Logger
 
   @requirements ["app.start"]
 
@@ -11,7 +8,12 @@ defmodule Mix.Tasks.Bors.Cleanup do
 
   @moduledoc """
   Maintenance task: deletes closed batches, patches, and crash reports older
-  than N months.
+  than N months, and patch bundles left without patches.
+
+  This is a wrapper around `BorsNG.Database.Cleanup.run/1`. A release has no
+  Mix, so there, call that in the running node instead:
+
+      bin/bors rpc "BorsNG.Database.Cleanup.run(6)"
 
   Delegation lifecycle (expiry, warnings, and default backfill) is no longer
   handled here. Expiry and warning notifications run continuously in
@@ -22,7 +24,7 @@ defmodule Mix.Tasks.Bors.Cleanup do
       mix bors.cleanup --months 6
 
   ## Command line options
-    * `--months` - integer; delete batches/patches/crashes older than this
+    * `--months` - positive integer; delete batches/patches/crashes older than this
   """
 
   @doc false
@@ -33,9 +35,12 @@ defmodule Mix.Tasks.Bors.Cleanup do
       ensure_repo(repo, args)
 
       case opts do
-        [months: months] when is_integer(months) ->
+        [months: months] when is_integer(months) and months > 0 ->
           Mix.shell().info("Cleaning data older than #{inspect(months)} months")
-          run_age_pass(months)
+          BorsNG.Database.Cleanup.run(months)
+
+        [months: months] when is_integer(months) ->
+          Mix.raise("--months must be a positive integer, got: #{months}")
 
         _ ->
           Mix.shell().info("Nothing to do; pass --months N to prune old data")
@@ -44,44 +49,4 @@ defmodule Mix.Tasks.Bors.Cleanup do
   end
 
   def repos, do: [BorsNG.Application.fetch_repo()]
-
-  defp run_age_pass(months) do
-    negative_months = 0 - months
-
-    BorsNG.Database.Repo.delete_all(
-      from(p in BorsNG.Database.Batch,
-        where:
-          p.state in [^:ok, ^:error, ^:canceled] and
-            p.updated_at < datetime_add(^NaiveDateTime.utc_now(), ^negative_months, "month")
-      )
-    )
-
-    BorsNG.Database.Repo.delete_all(
-      from(p in BorsNG.Database.Patch,
-        where:
-          not p.open and
-            p.updated_at < datetime_add(^NaiveDateTime.utc_now(), ^negative_months, "month")
-      )
-    )
-
-    BorsNG.Database.Repo.delete_all(
-      from(p in BorsNG.Database.Crash,
-        where: p.updated_at < datetime_add(^NaiveDateTime.utc_now(), ^negative_months, "month")
-      )
-    )
-
-    # Deleting patches leaves their bundles behind (the membership FK lives
-    # on the patch and nilifies): sweep bundles no patch points at anymore.
-    BorsNG.Database.Repo.delete_all(
-      from(b in BorsNG.Database.PatchBundle,
-        where:
-          b.id not in subquery(
-            from(p in BorsNG.Database.Patch,
-              where: not is_nil(p.bundle_id),
-              select: p.bundle_id
-            )
-          )
-      )
-    )
-  end
 end

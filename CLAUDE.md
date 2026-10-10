@@ -226,6 +226,7 @@ lib/
     repo.ex               Dynamic repo wrapper (switches pg/mysql at runtime)
     repo_postgres.ex
     repo_mysql.ex
+    cleanup.ex            Prunes old data; `mix bors.cleanup` and `bin/bors rpc` call it
 ```
 
 The database backend is selected at runtime via `BORS_DATABASE` env var
