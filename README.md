@@ -401,6 +401,9 @@ Configuration is set at runtime with environment variables, as on Heroku, and th
 - The container runs as an unprivileged `bors` user.
   To run code in the running node, use `docker exec bors bin/bors rpc "..."`.
   `docker exec -it bors bin/bors remote` opens an interactive console; don't pipe input into it, since bors stops when the input ends.
+- Old data can be pruned on a schedule, for example from a daily cron job or timer, with `docker exec bors bin/bors rpc "BorsNG.Database.Cleanup.run(N)"`.
+  It deletes closed batches, closed patches, and crash reports last updated more than `N` months ago, then patch bundles left without patches, as `mix bors.cleanup --months N` does.
+  It writes the counts to bors's log; to print them as well, use `bin/bors rpc "IO.inspect(BorsNG.Database.Cleanup.run(N))"`.
 
 For example, with the environment in `bors.env`:
 
