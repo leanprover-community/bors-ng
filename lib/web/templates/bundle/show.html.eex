@@ -22,12 +22,13 @@
 <p>Date: <%= htmlify_naive_datetime(@bundle.inserted_at) %></p>
 <p>State: <%= render(BorsNG.ProjectView, "_bundle_state.html", state: @state, project: @project) %></p>
 <p>Pull requests<%= if @stacked do %> (stack order)<% end %>:</p>
-<% xrefs = Map.new(@members, fn {patch, _depth} -> {patch.id, patch.pr_xref} end) %>
+<% by_id = Map.new(@members, fn {patch, _depth} -> {patch.id, patch} end) %>
 <ul class=stack-list>
   <%= for {patch, depth} <- @members do %>
+  <% parent = patch.stacked_on_id && by_id[patch.stacked_on_id] %>
   <li style="padding-left: <%= depth * 20 %>px">
     <span class="stack-dot stack-dot--<%= BorsNG.BundleDisplay.member_status(patch) %>" aria-hidden="true">●</span>
-    <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>"<%= if patch.stacked_on_id && xrefs[patch.stacked_on_id] do %> title="Stacked on #<%= xrefs[patch.stacked_on_id] %>"<% end %>>#<%= patch.pr_xref %></a>
+    <a href="<%= Confex.fetch_env!(:bors, :html_github_root) %>/<%= @project.name %>/pull/<%= patch.pr_xref %>"<%= if parent do %> title="Stacked on #<%= parent.pr_xref %>"<% end %>>#<%= patch.pr_xref %></a>
     —
     <%= cond do %>
     <% not patch.open -> %>
@@ -38,6 +39,11 @@
     <span class=approval--held>✓ held (<%= patch.bundle_reviewer %>)</span>
     <% true -> %>
     <span class=approval--waiting>waiting<%= if logins = Map.get(@delegations, patch.id) do %> — delegated to <%= Enum.join(logins, ", ") %><% end %></span>
+    <% end %>
+    <%= if parent && @project do %>
+    <%= if url = BorsNG.BundleDisplay.own_changes_url(@project, parent, patch) do %>
+    · <a href="<%= url %>">own changes</a>
+    <% end %>
     <% end %>
   </li>
   <% end %>

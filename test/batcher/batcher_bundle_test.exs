@@ -387,7 +387,8 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert p2.stacked_on_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "stacked on #2"))
       assert Enum.any?(comments_for(2), &(&1 =~ "stacked on #2"))
-      assert Enum.any?(comments_for(1), &(&1 =~ "/compare/commit-2...commit-1"))
+      # The own-changes link shows the range inside the child's PR files view.
+      assert Enum.any?(comments_for(1), &(&1 =~ "/pull/1/files/commit-2..commit-1"))
     end
 
     test "stack is refused for this pull request's own number", %{proj: proj} do
