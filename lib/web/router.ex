@@ -139,16 +139,32 @@ defmodule BorsNG.Router do
   # Fetch the current user from the session and add it to `conn.assigns`. This
   # will allow you to have access to the current user in your views with
   # `@current_user`.
+  #
+  # The session names the user's row by its ID, which is only good for the
+  # database that gave it out: the cookie outlives a restore from an older
+  # backup, or a move to another database, as long as the secret key base
+  # stays the same. So the login also stores the user's GitHub user ID, and
+  # a session whose row doesn't have that ID, or that has none stored, as a
+  # session from before this check doesn't, is signed out.
+
+  @login_session_keys [:current_user, :current_user_xref, :avatar_url, :github_access_token]
 
   defp get_current_user(conn, _) do
     user_id = Plug.Conn.get_session(conn, :current_user)
+    user_xref = Plug.Conn.get_session(conn, :current_user_xref)
 
     if is_nil(user_id) do
       conn
     else
-      conn
-      |> assign(:user, Database.Repo.get(Database.User, user_id))
-      |> assign(:avatar_url, Plug.Conn.get_session(conn, :avatar_url))
+      case Database.Repo.get(Database.User, user_id) do
+        %Database.User{user_xref: ^user_xref} = user when not is_nil(user_xref) ->
+          conn
+          |> assign(:user, user)
+          |> assign(:avatar_url, Plug.Conn.get_session(conn, :avatar_url))
+
+        _ ->
+          Enum.reduce(@login_session_keys, conn, &Plug.Conn.delete_session(&2, &1))
+      end
     end
   end
 
