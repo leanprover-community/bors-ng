@@ -8,6 +8,10 @@ defmodule BorsNG.AuthController do
 
    * `:current_user` the ID of the authenticated user in `BorsNG.User`.
      This controller will create a user if none exists.
+   * `:current_user_xref` the user's GitHub user ID, which `BorsNG.Router`
+     checks against that row, so that the session can't name someone else
+     once the database is replaced by one whose IDs differ.
+   * `:avatar_url` the user's GitHub avatar.
    * `:github_access_token` the token to use when accessing the GitHub API.
   """
 
@@ -108,6 +112,7 @@ defmodule BorsNG.AuthController do
 
     conn
     |> put_session(:current_user, user_model.id)
+    |> put_session(:current_user_xref, user_model.user_xref)
     |> put_session(:avatar_url, avatar)
     |> put_session(:github_access_token, client.token.access_token)
     |> redirect(to: redirect_to)
