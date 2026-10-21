@@ -398,6 +398,8 @@ Configuration is set at runtime with environment variables, as on Heroku, and th
 - `BORS_LOG_LEVEL` allows you to set the log level at runtime for bors-ng.
   The allowed values are the usual Elixir `Logger` levels, e.g. `info`, `debug`, `warn`, etc.
   Defaults to `info` if not set.
+- bors's requests to GitHub and Zulip trust the image's certificate store, Debian's `ca-certificates`.
+  Each build installs Debian's current package, so a newer image picks up changes to the store, such as a distrusted root.
 - The container runs as an unprivileged `bors` user.
   To run code in the running node, use `docker exec bors bin/bors rpc "..."`.
   `docker exec -it bors bin/bors remote` opens an interactive console; don't pipe input into it, since bors stops when the input ends.

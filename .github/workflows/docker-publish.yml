@@ -48,6 +48,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # The runtime stage installs Debian's packages, the certificate
+          # store among them; a cached layer would keep them as they were.
+          no-cache-filters: runtime
       # Deployments pin the image by this digest.
       - if: env.PUBLISH == 'true'
         run: |

@@ -41,7 +41,7 @@ defmodule BorsNG.Worker.Zulip do
                 {Tesla.Middleware.BasicAuth, username: bot_email, password: bot_api_key},
                 Tesla.Middleware.FormUrlencoded
               ],
-              Tesla.Adapter.Hackney
+              {Tesla.Adapter.Hackney, ssl_options: BorsNG.TLS.hackney_ssl_options()}
             )
 
           Tesla.post(client, zulip_api_url <> "messages", body)

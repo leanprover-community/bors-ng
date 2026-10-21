@@ -117,6 +117,15 @@ CI matrix includes OTP 26, so we pin:
 {:jose, "== 1.11.10", override: true}
 ```
 
+### Outgoing TLS trusts the system's certificate store
+
+Every outgoing request goes through hackney (Tesla's hackney adapter, and
+`oauth2`'s) and passes `ssl_options: BorsNG.TLS.hackney_ssl_options()`. Without
+it, hackney trusts the roots of `certifi`, compiled into hackney, and a root
+distrusted after a CA compromise stays trusted until `certifi` releases a fix
+and `mix.lock` takes it, which hackney's `~> 2.15.0` requirement prevents
+without an override. A new HTTP client or adapter needs the same options.
+
 ## Known compiler warnings
 
 These warnings are present and intentionally left open pending larger migrations.

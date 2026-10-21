@@ -58,11 +58,18 @@ RUN mix phx.digest && \
 
 ####
 
-FROM ${RUNNER_IMAGE}
+FROM ${RUNNER_IMAGE} AS runtime
 
+# bors's requests trust the system's certificate store (BorsNG.TLS), so this
+# install is where its roots come from. The image workflow doesn't cache this
+# stage, so each build gets Debian's current ca-certificates and libssl3.
+# The build fails if the store still has emSign ECC Root CA - G3, which
+# Debian dropped in 20250419~deb12u2 after the keys of intermediates under it
+# were compromised.
 RUN apt-get update -q && \
     apt-get install -y --no-install-recommends libssl3 libncurses6 libstdc++6 ca-certificates curl && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    test ! -e /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem
 
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
