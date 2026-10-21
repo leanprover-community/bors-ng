@@ -1231,7 +1231,8 @@ defmodule BorsNG.GitHub.Server do
     params =
       [
         connect_timeout: Confex.get_env(:bors, :api_github_timeout, 8_000) - 1,
-        recv_timeout: Confex.get_env(:bors, :api_github_timeout, 8_000) - 1
+        recv_timeout: Confex.get_env(:bors, :api_github_timeout, 8_000) - 1,
+        ssl_options: BorsNG.TLS.hackney_ssl_options()
       ] ++
         case System.get_env("HTTPS_PROXY") do
           nil ->
