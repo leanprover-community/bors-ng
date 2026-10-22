@@ -36,6 +36,7 @@ defmodule BorsNG.BundleControllerTest do
         project_id: project.id,
         pr_xref: 43,
         title: "base patch",
+        commit: "aaaaaaa",
         bundle_id: bundle.id,
         bundle_reviewer: "reviewer"
       })
@@ -45,6 +46,7 @@ defmodule BorsNG.BundleControllerTest do
         project_id: project.id,
         pr_xref: 44,
         title: "stacked patch",
+        commit: "bbbbbbb",
         bundle_id: bundle.id,
         stacked_on_id: base.id
       })
@@ -95,6 +97,34 @@ defmodule BorsNG.BundleControllerTest do
     assert html =~ "None"
     # base before stacked
     assert html =~ ~r/#43.*#44/s
+  end
+
+  test "links a stacked member's own changes inside its pull request", %{
+    conn: conn,
+    bundle: bundle
+  } do
+    conn = login(conn)
+    conn = get(conn, "/bundles/#{bundle.id}")
+
+    html = html_response(conn, 200)
+    assert html =~ "/example/project/pull/44/files/aaaaaaa..bbbbbbb"
+    # only the stacked member gets a link; the root's diff is its own PR
+    assert length(String.split(html, "own changes")) == 2
+  end
+
+  test "omits the own-changes link when a head commit is unknown", %{
+    conn: conn,
+    bundle: bundle,
+    stacked: stacked
+  } do
+    stacked |> Ecto.Changeset.change(commit: nil) |> Repo.update!()
+
+    conn = login(conn)
+    conn = get(conn, "/bundles/#{bundle.id}")
+
+    html = html_response(conn, 200)
+    refute html =~ "own changes"
+    refute html =~ "/files/"
   end
 
   test "lists the batches the bundle entered", %{conn: conn, bundle: bundle, project: project} do

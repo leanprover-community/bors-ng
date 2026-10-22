@@ -88,4 +88,24 @@ defmodule BorsNG.Worker.Batcher.BundlesTest do
       assert {:error, :branch_mismatch} = Bundles.final_target([root, orphan])
     end
   end
+
+  describe "own_changes_url/3" do
+    test "points into the child pull request's files view, parent head to child head" do
+      project = %BorsNG.Database.Project{name: "example/project"}
+      parent = %Patch{commit: "abc", pr_xref: 43}
+      child = %Patch{commit: "def", pr_xref: 44}
+
+      assert Bundles.own_changes_url(project, parent, child) ==
+               "https://github.com/example/project/pull/44/files/abc..def"
+    end
+
+    test "nil when either head commit is unknown" do
+      project = %BorsNG.Database.Project{name: "example/project"}
+      known = %Patch{commit: "abc", pr_xref: 43}
+      unknown = %Patch{commit: nil, pr_xref: 44}
+
+      assert Bundles.own_changes_url(project, unknown, known) == nil
+      assert Bundles.own_changes_url(project, known, unknown) == nil
+    end
+  end
 end

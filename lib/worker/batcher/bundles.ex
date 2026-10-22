@@ -368,6 +368,26 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
+  A view of a stacked child's own changes: the delta on top of its parent
+  that `contains_head?/3` verifies, shown inside the child's pull request
+  (`pull/N/files/parent..child`), where reviewers can leave line comments —
+  GitHub compare pages take none. Constructible for every stacked pair bors
+  accepts, forks included: the range only needs the parent's head to be a
+  commit of the child's pull request, which is exactly what
+  `contains_head?/3` checks. The SHAs pin it: a page building it from live
+  rows stays current, a posted comment keeps the view it was built with. The
+  URL outlives the merge — GitHub renders it for closed pull requests.
+  Returns nil when either head commit is unknown.
+  """
+  def own_changes_url(_project, %Patch{commit: nil}, _child), do: nil
+  def own_changes_url(_project, _parent, %Patch{commit: nil}), do: nil
+
+  def own_changes_url(project, parent, child) do
+    root = Confex.fetch_env!(:bors, :html_github_root)
+    "#{root}/#{project.name}/pull/#{child.pr_xref}/files/#{parent.commit}..#{child.commit}"
+  end
+
+  @doc """
   The first stacked member whose branch does not contain the current head of
   the patch it stacks on, returned as `{child, parent}`. Returns nil if every
   stack edge is fresh. An unverifiable comparison counts as stale: this check
