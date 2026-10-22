@@ -5,7 +5,7 @@ defmodule BorsNG.Gettext do
   By using [Gettext](https://hexdocs.pm/gettext),
   your module gains a set of macros for translations, for example:
 
-      import BorsNG.Gettext
+      use Gettext, backend: BorsNG.Gettext
 
       # Simple translation
       gettext "Here is the string to translate"
