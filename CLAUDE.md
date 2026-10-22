@@ -9,13 +9,13 @@ queuing, batching, and automatic merging via the GitHub API.
 
 | Component | Required version |
 |-----------|-----------------|
-| Elixir    | 1.17.3 |
-| OTP       | 27.x |
+| Elixir    | 1.20.4 |
+| OTP       | 29.x |
 | PostgreSQL | 13+ (primary DB; MySQL is also supported via BORS_DATABASE=mysql) |
 
 **OTP 26 and older are NOT supported**: cowboy 2.19+ and ranch 2.3 call
 `proc_lib:set_label/1`, which arrived in OTP 27, so on OTP 26 no HTTP listener
-starts.
+starts. CI and the image run OTP 29 only.
 
 ## Installing Elixir
 
@@ -43,19 +43,19 @@ If you can't use asdf, install from the GitHub prebuilt ZIPs (pick the ZIP
 that matches your installed OTP version):
 
 ```bash
-# Example: Elixir 1.17.3 for OTP 27
-curl -sL https://github.com/elixir-lang/elixir/releases/download/v1.17.3/elixir-otp-27.zip \
+# Example: Elixir 1.20.4 for OTP 29
+curl -sL https://github.com/elixir-lang/elixir/releases/download/v1.20.4/elixir-otp-29.zip \
      -o /tmp/elixir.zip
-mkdir -p /opt/elixir-1.17.3
-unzip -q /tmp/elixir.zip -d /opt/elixir-1.17.3
-export PATH=/opt/elixir-1.17.3/bin:$PATH
+mkdir -p /opt/elixir-1.20.4
+unzip -q /tmp/elixir.zip -d /opt/elixir-1.20.4
+export PATH=/opt/elixir-1.20.4/bin:$PATH
 export LANG=en_US.UTF-8
 # If your locale is latin1, Elixir needs this flag:
 export ELIXIR_ERL_OPTIONS="+fnu"
 ```
 
 Available ZIP names follow the pattern `elixir-otp-{OTP_MAJOR}.zip`, e.g.
-`elixir-otp-27.zip` for OTP 27.
+`elixir-otp-29.zip` for OTP 29.
 
 ## Hex & rebar: Erlang httpc / TLS-inspection proxy workaround
 
@@ -193,10 +193,10 @@ The CI workflow is `.github/workflows/main.yml`. Key jobs:
 
 | Job | Elixir | OTP | Notes |
 |-----|--------|-----|-------|
-| test (matrix) | 1.17.3 | 27.3.4.13 | PostgreSQL + MySQL |
-| exfmt | 1.17.3 | 27.3.4.13 | `mix format --check-formatted` |
+| test (matrix) | 1.20.4 | 29.1.2 | PostgreSQL + MySQL |
+| exfmt | 1.20.4 | 29.1.2 | `mix format --check-formatted` |
 | lint-test | — | — | Helm chart linting only |
-| image (`docker-publish.yml`) | 1.17.3 | 27.3.4.13 | Builds the Docker image; on `master`, pushes it to `ghcr.io/leanprover-community/bors-ng` |
+| image (`docker-publish.yml`) | 1.20.4 | 29.1.2 | Builds the Docker image; on `master`, pushes it to `ghcr.io/leanprover-community/bors-ng` |
 
 The `ci-success` aggregator job is what bors itself waits for.
 

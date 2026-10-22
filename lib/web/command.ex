@@ -84,7 +84,7 @@ defmodule BorsNG.Command do
   If the GitHub PR is not already in this struct, fetch it.
   """
   @spec fetch_pr(t) :: t
-  def fetch_pr(c) do
+  def fetch_pr(%Command{} = c) do
     case {c.pr, c.pr_xref} do
       {nil, pr_xref} ->
         case c.project.repo_xref
@@ -113,7 +113,7 @@ defmodule BorsNG.Command do
   This will not re-sync from GitHub unless it isn't even in the database.
   """
   @spec fetch_patch(t) :: t
-  def fetch_patch(c) do
+  def fetch_patch(%Command{} = c) do
     case {c.patch, c.pr, c.pr_xref} do
       {nil, nil, pr_xref} ->
         case Repo.get_by(Patch, project_id: c.project.id, pr_xref: pr_xref) do
@@ -1098,7 +1098,7 @@ defmodule BorsNG.Command do
     Logging.log_cmd(c.patch, c.commenter, cmd)
   end
 
-  defp fetch_patch_local(c) do
+  defp fetch_patch_local(%Command{} = c) do
     case c.patch do
       nil ->
         case Repo.get_by(Patch, project_id: c.project.id, pr_xref: c.pr_xref) do
