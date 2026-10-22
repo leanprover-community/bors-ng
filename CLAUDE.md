@@ -113,11 +113,14 @@ HEX_UNSAFE_REGISTRY=1 mix deps.get
 ### Outgoing TLS trusts the system's certificate store
 
 Every outgoing request goes through hackney (Tesla's hackney adapter, and
-`oauth2`'s) and passes `ssl_options: BorsNG.TLS.hackney_ssl_options()`. Without
-it, hackney trusts the roots of `certifi`, compiled into hackney, and a root
-distrusted after a CA compromise stays trusted until `certifi` releases a fix
-and `mix.lock` takes it, which hackney's `~> 2.15.0` requirement prevents
-without an override. A new HTTP client or adapter needs the same options.
+`oauth2`'s) and passes `BorsNG.TLS.hackney_options()`. Without its
+`:ssl_options`, hackney trusts the roots of `certifi`, compiled into hackney,
+and a root distrusted after a CA compromise stays trusted until `certifi`
+releases a fix and `mix.lock` takes it, which hackney's pin of certifi's minor
+version (`~> 2.17.0` in hackney 4.8) prevents without an override. Its
+`:ssl_pooling` keeps connections to GitHub open between requests, which
+hackney 4 doesn't do for a request with its own `:ssl_options`. A new HTTP
+client or adapter needs the same options.
 
 ## Known compiler warnings
 

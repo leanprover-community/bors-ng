@@ -14,8 +14,15 @@ defmodule BorsNG.TLSTest do
     assert opts[:partial_chain] == (&TLS.partial_chain/1)
   end
 
+  test "requests use them over HTTP/1.1, on pooled connections" do
+    opts = TLS.hackney_options()
+    assert opts[:ssl_options] == TLS.hackney_ssl_options()
+    assert opts[:protocols] == [:http1]
+    assert opts[:ssl_pooling] == true
+  end
+
   test "hackney replaces its certifi defaults with them, and keeps its hostname check" do
-    opts = :hackney_connection.merge_ssl_opts(~c"api.github.com", TLS.hackney_ssl_options())
+    opts = :hackney_ssl.ssl_opts(~c"api.github.com", ssl_options: TLS.hackney_ssl_options())
 
     assert opts[:cacerts] == :public_key.cacerts_get()
     assert opts[:partial_chain] == (&TLS.partial_chain/1)
@@ -46,7 +53,9 @@ defmodule BorsNG.TLSTest do
     Application.put_env(:bors, BorsNG.GitHub.OAuth2, client_id: "id", client_secret: "secret")
     on_exit(fn -> Application.delete_env(:bors, BorsNG.GitHub.OAuth2) end)
 
-    assert BorsNG.GitHub.OAuth2.client().request_opts[:ssl_options] ==
-             TLS.hackney_ssl_options()
+    request_opts = BorsNG.GitHub.OAuth2.client().request_opts
+
+    assert Keyword.take(request_opts, Keyword.keys(TLS.hackney_options())) ==
+             TLS.hackney_options()
   end
 end
