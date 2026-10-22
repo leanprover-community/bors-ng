@@ -15,7 +15,7 @@ defmodule BorsNG.GitHub.OAuth2 do
       authorize_url: "#{github}/login/oauth/authorize",
       token_url: "#{github}/login/oauth/access_token",
       request_opts:
-        [ssl_options: BorsNG.TLS.hackney_ssl_options()] ++
+        BorsNG.TLS.hackney_options() ++
           case System.get_env("HTTPS_PROXY") do
             nil ->
               []

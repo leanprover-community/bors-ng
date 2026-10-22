@@ -69,7 +69,7 @@ defmodule BorsNg.Mixfile do
       {:plug_cowboy, "~> 2.9"},
       {:tesla, "~> 1.18"},
       {:toml, "~> 0.7"},
-      {:hackney, "~> 1.20"},
+      {:hackney, "~> 4.8"},
       {:oauth2, "~> 2.1"},
       {:joken, "~> 2.7"},
       {:dialyxir, "~> 1.4", runtime: false, only: [:dev]},

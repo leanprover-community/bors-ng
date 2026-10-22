@@ -30,6 +30,21 @@ defmodule BorsNG.TLS do
   )
 
   @doc """
+  hackney's options for a request: `hackney_ssl_options/0`, over HTTP/1.1 on
+  pooled connections.
+
+  When a request brings its own `:ssl_options`, hackney 4 neither reuses an
+  HTTPS/1.1 connection nor resumes a TLS session unless `:ssl_pooling` is on,
+  so each request would make a new handshake. `:protocols` stops hackney from
+  offering HTTP/2: bors makes its GitHub requests one at a time, from one
+  process, so it has nothing to multiplex.
+  """
+  @spec hackney_options() :: keyword
+  def hackney_options do
+    [ssl_options: hackney_ssl_options(), protocols: [:http1], ssl_pooling: true]
+  end
+
+  @doc """
   hackney's `:ssl_options` for a request.
 
   hackney merges them into its defaults, so its hostname check stays. They
