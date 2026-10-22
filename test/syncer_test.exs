@@ -327,7 +327,10 @@ defmodule BorsNG.Worker.SyncerTest do
     proj =
       proj
       |> Repo.preload([:users, :members])
-      |> Ecto.Changeset.change(%{auto_reviewer_required_perm: nil, auto_member_required_perm: nil})
+      |> Ecto.Changeset.change(%{
+        auto_reviewer_required_perm: nil,
+        auto_member_required_perm: nil
+      })
       |> Ecto.Changeset.put_assoc(:users, saved_admins)
       |> Ecto.Changeset.put_assoc(:members, saved_pushers)
       |> Repo.update!()

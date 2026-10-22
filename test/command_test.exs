@@ -1339,7 +1339,12 @@ defmodule BorsNG.CommandTest do
        %{proj: proj} do
     user = undelegate_note_setup(proj)
 
-    Command.run(%Command{project: proj, commenter: user, comment: "bors d- pr_author", pr_xref: 1})
+    Command.run(%Command{
+      project: proj,
+      commenter: user,
+      comment: "bors d- pr_author",
+      pr_xref: 1
+    })
 
     assert [_] = Repo.all(BorsNG.Database.UserPatchDelegation)
     assert Enum.any?(mock_comments(1), &String.contains?(&1, "`bors d-=pr_author`"))
@@ -2089,7 +2094,10 @@ defmodule BorsNG.CommandTest do
         into_branch: "master"
       })
 
-    Repo.insert(%BorsNG.Database.LinkUserProject{user_id: user.id, project_id: proj_no_default.id})
+    Repo.insert(%BorsNG.Database.LinkUserProject{
+      user_id: user.id,
+      project_id: proj_no_default.id
+    })
 
     c = %Command{
       project: proj_no_default,

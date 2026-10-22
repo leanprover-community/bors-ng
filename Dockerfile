@@ -4,12 +4,12 @@
 # what CI tests. Bump them together (see "Upgrading Elixir / Erlang versions"
 # in CLAUDE.md). Every stage uses the same Debian release, since the release
 # carries ERTS, which links against the system's glibc and OpenSSL.
-ARG ELIXIR_VERSION=1.17.3
-ARG OTP_VERSION=27.3.4.13
+ARG ELIXIR_VERSION=1.20.4
+ARG OTP_VERSION=29.1.2
 ARG NODE_VERSION=20.18.3
 ARG DEBIAN_RELEASE=bookworm
 # The date of a hexpm/elixir build of ELIXIR_VERSION and OTP_VERSION.
-ARG DEBIAN_SNAPSHOT=20260623
+ARG DEBIAN_SNAPSHOT=20261020
 
 ARG BUILDER_IMAGE="hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_RELEASE}-${DEBIAN_SNAPSHOT}-slim"
 ARG RUNNER_IMAGE="debian:${DEBIAN_RELEASE}-slim"
@@ -65,9 +65,10 @@ FROM ${RUNNER_IMAGE} AS runtime
 # stage, so each build gets Debian's current ca-certificates and libssl3.
 # The build fails if the store still has emSign ECC Root CA - G3, which
 # Debian dropped in 20250419~deb12u2 after the keys of intermediates under it
-# were compromised.
+# were compromised. libsctp1 is there because hexpm/elixir's OTP 29 loads it
+# at start, and logs its absence, though bors uses no SCTP.
 RUN apt-get update -q && \
-    apt-get install -y --no-install-recommends libssl3 libncurses6 libstdc++6 ca-certificates curl && \
+    apt-get install -y --no-install-recommends libssl3 libncurses6 libstdc++6 libsctp1 ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
     test ! -e /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem
 

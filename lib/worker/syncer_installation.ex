@@ -14,8 +14,6 @@ defmodule BorsNG.Worker.SyncerInstallation do
 
   import Ecto.Query
 
-  require Logger
-
   def start_synchronize_all_installations do
     {:ok, _} =
       Task.Supervisor.start_child(

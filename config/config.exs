@@ -11,7 +11,7 @@ case config_env() do
       metadata: [:request_id, :pid]
 
   :test ->
-    config :logger, level: :warn
+    config :logger, level: :warning
     config :logger, :console, format: "$message\n"
 
   _ ->

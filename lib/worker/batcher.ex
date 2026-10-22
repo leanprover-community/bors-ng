@@ -203,9 +203,6 @@ defmodule BorsNG.Worker.Batcher do
           {:waiting, toml} ->
             handle_waiting_preflight(repo_conn, reviewer, patch, 0, toml)
 
-          :waiting ->
-            handle_waiting_preflight(repo_conn, reviewer, patch, 0)
-
           {:error, message} ->
             send_message(repo_conn, [patch], {:preflight, message})
         end
@@ -423,9 +420,6 @@ defmodule BorsNG.Worker.Batcher do
           {:waiting, toml} ->
             handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml)
 
-          :waiting ->
-            handle_waiting_preflight(repo_conn, reviewer, patch, try_num)
-
           {:error, message} ->
             send_message(repo_conn, [patch], {:preflight, message})
         end
@@ -445,7 +439,7 @@ defmodule BorsNG.Worker.Batcher do
       |> Repo.all()
 
     incomplete
-    |> Enum.map(&%Batch{&1 | project: project})
+    |> Enum.map(fn %Batch{} = batch -> %{batch | project: project} end)
     |> sort_batches()
     |> poll_batches()
 
@@ -701,7 +695,6 @@ defmodule BorsNG.Worker.Batcher do
   defp bundle_preflight(repo_conn, [patch | rest]) do
     case patch_preflight(repo_conn, patch) do
       {:ok, _} -> bundle_preflight(repo_conn, rest)
-      :waiting -> {:waiting, patch, nil}
       {:waiting, toml} -> {:waiting, patch, toml}
       {:error, message} -> {:error, message, patch}
     end
@@ -1760,8 +1753,8 @@ defmodule BorsNG.Worker.Batcher do
         if toml.use_squash_merge do
           Enum.each(patches, fn patch ->
             send_message(repo_conn, [patch], {:merged, :squashed, batch.into_branch, statuses})
-            pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
-            pr = %BorsNG.GitHub.Pr{pr | state: :closed, title: "[Merged by Bors] - #{pr.title}"}
+            %BorsNG.GitHub.Pr{} = pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
+            pr = %{pr | state: :closed, title: "[Merged by Bors] - #{pr.title}"}
             GitHub.update_pr!(repo_conn, pr)
           end)
         else
@@ -2133,7 +2126,7 @@ defmodule BorsNG.Worker.Batcher do
   defp resolve_prerun_reviewer(:held_approval, patch), do: patch.bundle_reviewer
   defp resolve_prerun_reviewer(reviewer, _patch), do: reviewer
 
-  defp handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml \\ nil) do
+  defp handle_waiting_preflight(repo_conn, reviewer, patch, try_num, toml) do
     prerun_timeout_sec =
       case toml do
         nil -> 30 * 60
