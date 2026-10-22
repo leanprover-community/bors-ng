@@ -7,7 +7,7 @@
 ARG ELIXIR_VERSION=1.20.4
 ARG OTP_VERSION=29.1.2
 ARG NODE_VERSION=24.22.1
-ARG DEBIAN_RELEASE=bookworm
+ARG DEBIAN_RELEASE=trixie
 # The date of a hexpm/elixir build of ELIXIR_VERSION and OTP_VERSION.
 ARG DEBIAN_SNAPSHOT=20261020
 
@@ -62,13 +62,13 @@ FROM ${RUNNER_IMAGE} AS runtime
 
 # bors's requests trust the system's certificate store (BorsNG.TLS), so this
 # install is where its roots come from. The image workflow doesn't cache this
-# stage, so each build gets Debian's current ca-certificates and libssl3.
+# stage, so each build gets Debian's current ca-certificates and libssl3t64.
 # The build fails if the store still has emSign ECC Root CA - G3, which
-# Debian dropped in 20250419~deb12u2 after the keys of intermediates under it
+# Debian dropped in 20250419+deb13u1 after the keys of intermediates under it
 # were compromised. libsctp1 is there because hexpm/elixir's OTP 29 loads it
 # at start, and logs its absence, though bors uses no SCTP.
 RUN apt-get update -q && \
-    apt-get install -y --no-install-recommends libssl3 libncurses6 libstdc++6 libsctp1 ca-certificates curl && \
+    apt-get install -y --no-install-recommends libssl3t64 libncurses6 libstdc++6 libsctp1 ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
     test ! -e /etc/ssl/certs/emSign_ECC_Root_CA_-_G3.pem
 
