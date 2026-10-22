@@ -141,17 +141,6 @@ than the Phoenix 1.7 `Phoenix.Component` / HEEx pattern. Fixing this requires
 migrating all controllers, views, and templates — a non-trivial task tracked
 separately.
 
-### `use Tesla.Builder` soft-deprecation
-
-```
-warning: `use Tesla.Builder` and `use Tesla` are soft-deprecated
-```
-
-Comes from the `oauth2` dependency pulling in Tesla's builder macro. Our own
-code (`lib/github/github/server.ex`) does not use `use Tesla` — it calls
-`Tesla.get!` etc. directly. The proper fix is migrating to Tesla's runtime
-configuration API, which affects `github/server.ex` and is tracked separately.
-
 ### Charlist sigil in `toml` dep
 
 ```
