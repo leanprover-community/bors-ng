@@ -216,7 +216,7 @@ defmodule BorsNG.Worker.Attemptor do
 
     case merged do
       :conflict ->
-        send_message(repo_conn, patch, {:conflict, :failed})
+        send_message(repo_conn, patch, {:conflict, :try, attempt.into_branch})
 
         attempt
         |> Attempt.changeset(%{state: :error})

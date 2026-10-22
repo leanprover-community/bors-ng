@@ -281,6 +281,34 @@ defmodule BorsNG.Worker.AttemptorTest do
     assert repo.commits["iniN"].commit_message == expected_message
   end
 
+  test "says so and marks attempt as error when the try merge conflicts", %{proj: proj} do
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 91}, 14} => %{
+        branches: %{"master" => "ini", "trying" => "", "trying.tmp" => ""},
+        commits: %{},
+        comments: %{1 => []},
+        pr_commits: %{1 => []},
+        statuses: %{"iniN" => []},
+        files: %{}
+      },
+      :merge_conflict => 0
+    })
+
+    patch = new_patch(proj, 1, "N")
+    Attemptor.handle_cast({:tried, patch.id, ""}, proj.id)
+
+    attempt = Repo.get_by!(Attempt, patch_id: patch.id)
+    assert attempt.state == :error
+
+    state = GitHub.ServerMock.get_state()
+    repo = state[{{:installation, 91}, 14}]
+    assert repo.branches["trying"] == ""
+
+    assert repo.comments[1] == [
+             "## try\n\nMerge conflict.\n\nMerge or rebase `master` into this PR and resolve the conflict, then run `bors try` again."
+           ]
+  end
+
   test "marks attempt as error when squash create_commit fails", %{proj: proj} do
     GitHub.ServerMock.put_state(%{
       {{:installation, 91}, 14} => %{

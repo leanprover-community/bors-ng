@@ -139,6 +139,10 @@ defmodule BorsNG.Worker.Batcher.Message do
     "Timed out.\n\nFix if necessary, and then run `bors try` again."
   end
 
+  def generate_message({:conflict, :try, branch}) do
+    "Merge conflict.\n\nMerge or rebase `#{branch}` into this PR and resolve the conflict, then run `bors try` again."
+  end
+
   def generate_message({:canceled, :failed, :push}) do
     "Bors build canceled because the PR branch was pushed to.\n\nThis cancels the in-progress bors run; if the push also touched a delegation-restricted path, any affected delegation is revoked in a separate comment. Address comments or fix if necessary, and then someone with permission can re-run `bors r+` once the PR is ready."
   end

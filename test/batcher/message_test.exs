@@ -331,6 +331,14 @@ defmodule BorsNG.Worker.BatcherMessageTest do
     assert expected_message == actual_message
   end
 
+  test "generate try conflict message suggests `bors try`, not `bors r+`" do
+    expected_message =
+      "Merge conflict.\n\nMerge or rebase `main` into this PR and resolve the conflict, then run `bors try` again."
+
+    actual_message = Message.generate_message({:conflict, :try, "main"})
+    assert expected_message == actual_message
+  end
+
   test "generate try failure message suggests `bors try`, not `bors r+`" do
     expected_message =
       "Build failed:\n  * stat\n\nFix if necessary, and then run `bors try` again."
