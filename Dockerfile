@@ -6,7 +6,7 @@
 # carries ERTS, which links against the system's glibc and OpenSSL.
 ARG ELIXIR_VERSION=1.20.4
 ARG OTP_VERSION=29.1.2
-ARG NODE_VERSION=20.18.3
+ARG NODE_VERSION=24.22.1
 ARG DEBIAN_RELEASE=bookworm
 # The date of a hexpm/elixir build of ELIXIR_VERSION and OTP_VERSION.
 ARG DEBIAN_SNAPSHOT=20261020
