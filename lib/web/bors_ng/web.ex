@@ -24,7 +24,7 @@ defmodule BorsNG.Web do
       import Ecto.Query
 
       import BorsNG.Router.Helpers
-      import BorsNG.Gettext
+      use Gettext, backend: BorsNG.Gettext
     end
   end
 
@@ -36,12 +36,15 @@ defmodule BorsNG.Web do
       import Phoenix.Controller,
         only: [get_csrf_token: 0, view_module: 1, controller_module: 1]
 
-      # Use all HTML functionality (forms, tags, etc)
-      use Phoenix.HTML
+      # Use all HTML functionality, and the form, link and tag helpers that
+      # phoenix_html 4 moved to phoenix_html_helpers
+      import Phoenix.HTML
+      import Phoenix.HTML.Form
+      use PhoenixHTMLHelpers
 
       import BorsNG.Router.Helpers
       import BorsNG.ErrorHelpers
-      import BorsNG.Gettext
+      use Gettext, backend: BorsNG.Gettext
     end
   end
 
@@ -57,7 +60,7 @@ defmodule BorsNG.Web do
 
       import Ecto
       import Ecto.Query
-      import BorsNG.Gettext
+      use Gettext, backend: BorsNG.Gettext
     end
   end
 
