@@ -10,11 +10,23 @@ defmodule BorsNG.Worker.Batcher.Supervisor do
     DynamicSupervisor.start_link(__MODULE__, :ok, name: @name)
   end
 
+  @doc """
+  Start a batcher for the project. The supervisor never restarts it:
+  `BorsNG.Worker.Batcher.Registry` starts batchers on demand and handles their
+  crashes, and a batcher stops when its project has nothing left to poll.
+
+  A restart here would bring back a batcher that stopped, unasked, and one the
+  registry doesn't know: if its registration reaches the registry before the
+  `:DOWN` of the one it replaces, the registry keeps the old pid and the new
+  batcher is an orphan. `Batcher.check_self/1` then crashes it at every poll,
+  and each crash restarts it again.
+  """
   @spec start(BorsNG.Database.Project.id()) :: {:ok, pid}
   def start(project_id) do
     spec = %{
       id: {BorsNG.Worker.Batcher, project_id},
-      start: {BorsNG.Worker.Batcher, :start_link, [project_id]}
+      start: {BorsNG.Worker.Batcher, :start_link, [project_id]},
+      restart: :temporary
     }
 
     DynamicSupervisor.start_child(@name, spec)
