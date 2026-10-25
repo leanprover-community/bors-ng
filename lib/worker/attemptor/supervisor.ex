@@ -10,11 +10,23 @@ defmodule BorsNG.Worker.Attemptor.Supervisor do
     DynamicSupervisor.start_link(__MODULE__, :ok, name: @name)
   end
 
+  @doc """
+  Start an attemptor for the project. The supervisor never restarts it:
+  `BorsNG.Worker.Attemptor.Registry` starts attemptors on demand and restarts
+  one that crashes, and an attemptor stops when its project has no try
+  running.
+
+  A restart here would leave an attemptor the registry doesn't know: beside the
+  registry's own replacement after a crash, and in place of one that stopped,
+  until the registry starts another. It would poll the project's tries beside
+  the registry's, and come back each time it stopped.
+  """
   @spec start(BorsNG.Database.Project.id()) :: {:ok, pid}
   def start(project_id) do
     spec = %{
       id: {BorsNG.Worker.Attemptor, project_id},
-      start: {BorsNG.Worker.Attemptor, :start_link, [project_id]}
+      start: {BorsNG.Worker.Attemptor, :start_link, [project_id]},
+      restart: :temporary
     }
 
     DynamicSupervisor.start_child(@name, spec)
