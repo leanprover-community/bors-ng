@@ -100,3 +100,27 @@ A design for Layer 3 should address all of these before implementation. See
 also [bors-ng/rfcs](https://github.com/bors-ng/rfcs) — no RFC currently
 covers GitHub API failure tolerance, so one would be appropriate before
 undertaking Layer 3.
+
+## Webhooks
+
+`BorsNG.GitHub` is one GenServer that makes one request at a time, so a call
+waits for every call before it: behind a long listing, say, or a slow
+response. GitHub waits 10 seconds for the answer to a webhook and then gives
+up, which ends the request. A handler that ran as part of the request would
+end with it, losing a command in a comment.
+
+So `WebhookController.webhook/2` handles each event in a task under
+`BorsNG.WebhookController.TaskSupervisor`, not linked to the request, and
+gives it `webhook_reply_timeout_ms` (default 5 s) to finish. In time, the
+answer is as before: 200, 404 for an event bors doesn't handle, or an
+exception's status, logged if it is 500 or more. Otherwise the answer is
+202, a warning names the event and its delivery ID, and the handler carries
+on, logging when it finishes, and any exception, whatever its status. A
+handler that fails after a 202 doesn't show as failed among GitHub's
+deliveries, so the log is its only record.
+
+A handler still running when bors stops, or when a child started before
+`BorsNG.WebhookController.TaskSupervisor` crashes and the `rest_for_one`
+supervisor restarts it, is stopped at once, without a line of its own. Its
+`still running` warning, with no `finished after` to match, is the only
+sign that it didn't finish; GitHub shows the delivery as answered.

@@ -77,6 +77,15 @@ defmodule BorsNG.Application do
       # momentarily wipe its config ETS table mid-request). The Endpoint is
       # configured with pubsub_server: BorsNG.PubSub, so PubSub is started first.
       {Phoenix.PubSub, name: BorsNG.PubSub},
+      # Each webhook is handled in a task under this supervisor (see
+      # BorsNG.WebhookController.webhook/2). It comes before the Endpoint, which
+      # starts the tasks, so a worker's crash can't restart it and stop the
+      # webhooks it is handling.
+      %{
+        type: :supervisor,
+        id: BorsNG.WebhookController.TaskSupervisor,
+        start: {Task.Supervisor, :start_link, [[name: BorsNG.WebhookController.TaskSupervisor]]}
+      },
       %{
         type: :supervisor,
         start: {

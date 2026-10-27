@@ -81,13 +81,96 @@ defmodule BorsNG.WebhookController do
 
   @doc """
   This action is reached via `/webhook/:provider`
+
+  The event is handled in a task. The request gives it up to
+  `:webhook_reply_timeout_ms`, 5 seconds by default, well inside the 10 that
+  GitHub waits for an answer. A handler that calls GitHub can take longer:
+  the GitHub client makes one request at a time, so its calls wait for the
+  others. If GitHub gave up first, the request would end, and the handler
+  with it, so a command in a comment would be lost. Instead the request
+  answers 202 and the handler carries on.
+
+  An event handled in time is answered as before: 200, 404 for an event bors
+  doesn't handle, or, for an exception, its status.
+
+  A handler answered 202 logs when it finishes, and any exception. One that
+  is still running when bors stops, or when its supervisor is restarted, is
+  stopped without a line of its own, and GitHub shows its delivery as
+  answered: its `still running` warning, with no `finished after` to match,
+  is the only record.
   """
   def webhook(conn, %{"provider" => "github"}) do
     event = hd(get_req_header(conn, "x-github-event"))
+    timeout = Confex.get_env(:bors, :webhook_reply_timeout_ms, 5_000)
+    started = System.monotonic_time(:millisecond)
+    metadata = Logger.metadata()
 
-    case do_webhook(conn, "github", event) do
-      :unknown -> conn |> send_resp(404, "")
-      _ -> conn |> send_resp(200, "")
+    task =
+      Task.Supervisor.async_nolink(__MODULE__.TaskSupervisor, fn ->
+        Logger.metadata(metadata)
+        handle_event(conn, event, started, timeout)
+      end)
+
+    case Task.yield(task, timeout) || Task.ignore(task) do
+      {:ok, status} ->
+        send_resp(conn, status, "")
+
+      {:exit, _reason} ->
+        send_resp(conn, 500, "")
+
+      nil ->
+        Logger.warning(
+          "WebhookController: #{describe(conn, event)} still running after #{timeout} ms; answered 202"
+        )
+
+        send_resp(conn, 202, "")
+    end
+  end
+
+  # The status to answer with. An exception is logged if its status is 500 or
+  # more, as Plug.Cowboy logs one, and past the deadline whatever its status,
+  # since the request may have answered 202. It is logged here because a
+  # handler that ends after the request has answered has no request to log it.
+  # `started` is taken in the request, before the task starts, so a handler
+  # answered 202 is always past the deadline here.
+  defp handle_event(conn, event, started, timeout) do
+    late? = fn -> System.monotonic_time(:millisecond) - started >= timeout end
+
+    status =
+      try do
+        case do_webhook(conn, "github", event) do
+          :unknown -> 404
+          _ -> 200
+        end
+      rescue
+        e ->
+          status = Plug.Exception.status(e)
+
+          if status >= 500 or late?.() do
+            Logger.error([
+              "WebhookController: #{describe(conn, event)} failed\n",
+              Exception.format(:error, e, __STACKTRACE__)
+            ])
+          end
+
+          status
+      end
+
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    if elapsed >= timeout do
+      Logger.info("WebhookController: #{describe(conn, event)} finished after #{elapsed} ms")
+    end
+
+    status
+  end
+
+  # The event, and its delivery's ID, by which GitHub's list of deliveries
+  # finds it.
+  defp describe(conn, event) do
+    case get_req_header(conn, "x-github-delivery") do
+      [delivery | _] -> "#{event} #{delivery}"
+      [] -> event
     end
   end
 
