@@ -18,7 +18,13 @@ defmodule BorsNG.Worker.SupervisorRestartTest do
   alias BorsNG.Worker.Batcher
 
   setup do
-    # Leave the supervisors as each test found them, even when it fails.
+    # Each test counts the supervisors' children, so it starts with none:
+    # other tests leave their workers running. A supervisor-ordered stop isn't
+    # a crash to either registry.
+    Batcher.Supervisor.terminate_all()
+    Attemptor.Supervisor.terminate_all()
+
+    # And leaves none, even when it fails.
     on_exit(fn ->
       Batcher.Supervisor.terminate_all()
       Attemptor.Supervisor.terminate_all()
