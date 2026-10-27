@@ -79,9 +79,50 @@ defmodule BorsNG.GitHub.ServerHttpTest do
         {:issue_states, "GET", "/repos/other/repo/issues/1"} ->
           reply(conn, 200, ~s({"state":"open"}))
 
+        {:open_prs, "GET", "/repositories/1/pulls"} ->
+          open_prs(conn, base_url, 200)
+
+        {:open_prs_page_2_fails, "GET", "/repositories/1/pulls"} ->
+          open_prs(conn, base_url, 502)
+
         _ ->
           reply(conn, 404, "not found")
       end
+    end
+
+    # Two pages of open PRs, as GitHub lists them: without `mergeable`. Only a
+    # request for 100 a page is answered, and the second with `page_2_status`.
+    defp open_prs(conn, base_url, page_2_status) do
+      case conn.params do
+        %{"per_page" => "100", "page" => "2"} when page_2_status != 200 ->
+          reply(conn, page_2_status, "oops")
+
+        %{"per_page" => "100", "page" => "2"} ->
+          reply(conn, 200, Jason.encode!([pr_json(3, base_url)]))
+
+        %{"per_page" => "100"} ->
+          next = "<#{base_url}/repositories/1/pulls?state=open&per_page=100&page=2>; rel=\"next\""
+          prs = [pr_json(1, base_url), pr_json(2, base_url)]
+          reply(conn, 200, Jason.encode!(prs), [{"link", next}])
+
+        _ ->
+          reply(conn, 422, "per_page")
+      end
+    end
+
+    defp pr_json(number, base_url) do
+      %{
+        "url" => "#{base_url}/repositories/1/pulls/#{number}",
+        "number" => number,
+        "title" => "PR #{number}",
+        "body" => nil,
+        "state" => "open",
+        "draft" => number == 2,
+        "base" => %{"ref" => "main", "repo" => %{"id" => 1}},
+        "head" => %{"sha" => "sha#{number}", "ref" => "pr#{number}", "repo" => %{"id" => 1}},
+        "user" => %{"id" => 7, "login" => "author", "avatar_url" => ""},
+        "merged_at" => nil
+      }
     end
 
     # What GitHub answers for each issue number of repository 1.
@@ -235,6 +276,36 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     end
 
     assert {:error, :get_issue_state, 502, _} = get_issue_state(nil, 10)
+  end
+
+  test "get_open_prs lists the open PRs 100 a page, without fetching each" do
+    ScenarioPlug.set_scenario(:open_prs)
+
+    assert {:ok, prs} =
+             BorsNG.GitHub.Server.do_handle_call(:get_open_prs, {{:raw, "token"}, 1}, {})
+
+    # A request for one PR is answered 404, which would leave it out.
+    assert [1, 2, 3] == prs |> Enum.map(& &1.number) |> Enum.sort()
+    assert [2] == for(%{draft: true, number: number} <- prs, do: number)
+    assert Enum.all?(prs, &(&1.state == :open and &1.body == "" and is_nil(&1.mergeable)))
+  end
+
+  # A sync closes the patch of every open PR the list leaves out.
+  test "get_open_prs fails when a page fails, rather than leave out the rest" do
+    ScenarioPlug.set_scenario(:open_prs_page_2_fails)
+
+    assert {:error, :get_open_prs, 502} =
+             BorsNG.GitHub.Server.do_handle_call(:get_open_prs, {{:raw, "token"}, 1}, {})
+
+    # The branch deleter's list keeps the PRs before the page, as it always has.
+    assert {:ok, prs} =
+             BorsNG.GitHub.Server.do_handle_call(
+               :get_open_prs_with_base,
+               {{:raw, "token"}, 1},
+               {"main"}
+             )
+
+    assert [1, 2] == prs |> Enum.map(& &1.number) |> Enum.sort()
   end
 
   defp get_issue_state(repo, number) do
