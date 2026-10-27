@@ -23,6 +23,10 @@ defmodule BorsNG.GitHub.Server do
   # ceilings".
   @pr_files_per_page 100
 
+  # Page size for the other lists, GitHub's largest. Its default, 30, makes a
+  # long list take more than three times the requests.
+  @per_page 100
+
   @type tconn :: GitHub.tconn()
   @type ttoken :: GitHub.ttoken()
   @type trepo :: GitHub.trepo()
@@ -89,7 +93,7 @@ defmodule BorsNG.GitHub.Server do
     list =
       get_installation_list_!(
         jwt_token,
-        "#{site()}/app/installations",
+        "#{site()}/app/installations?per_page=#{@per_page}",
         []
       )
 
@@ -201,25 +205,39 @@ defmodule BorsNG.GitHub.Server do
   end
 
   def do_handle_call(:get_pr_commits, {{:raw, token}, repo_xref}, {pr_xref}) do
-    get_pr_commits_(token, "#{site()}/repositories/#{repo_xref}/pulls/#{pr_xref}/commits", [])
+    get_pr_commits_(
+      token,
+      "#{site()}/repositories/#{repo_xref}/pulls/#{pr_xref}/commits?per_page=#{@per_page}",
+      []
+    )
   end
 
+  # A sync takes this list for every open PR, and closes the patches of the
+  # others, as a `bors r-` would. So a page that fails fails the list.
   def do_handle_call(:get_open_prs, {{:raw, token}, repo_xref}, {}) do
-    {:ok,
-     get_open_prs_!(
-       token,
-       "#{site()}/repositories/#{repo_xref}/pulls?state=open",
-       []
-     )}
+    token
+    |> get_open_prs_(
+      "#{site()}/repositories/#{repo_xref}/pulls?state=open&per_page=#{@per_page}",
+      []
+    )
+    |> case do
+      {:ok, prs} -> {:ok, prs}
+      {:error, status, _prs} -> {:error, :get_open_prs, status}
+    end
   end
 
+  # The branch deleter retargets these PRs. A page that fails ends the list,
+  # as it always has, and the PRs after it keep their base.
   def do_handle_call(:get_open_prs_with_base, {{:raw, token}, repo_xref}, {base}) do
-    {:ok,
-     get_open_prs_!(
-       token,
-       "#{site()}/repositories/#{repo_xref}/pulls?state=open&base=#{base}",
-       []
-     )}
+    token
+    |> get_open_prs_(
+      "#{site()}/repositories/#{repo_xref}/pulls?state=open&base=#{base}&per_page=#{@per_page}",
+      []
+    )
+    |> case do
+      {:ok, prs} -> {:ok, prs}
+      {:error, _status, prs} -> {:ok, prs}
+    end
   end
 
   def do_handle_call(:push, repo_conn, {sha, to}) do
@@ -418,13 +436,13 @@ defmodule BorsNG.GitHub.Server do
     with {:ok, status} <-
            get_statuses_!(
              token,
-             "#{site()}/repositories/#{repo_xref}/commits/#{sha}/status",
+             "#{site()}/repositories/#{repo_xref}/commits/#{sha}/status?per_page=#{@per_page}",
              %{}
            ),
          {:ok, check} <-
            get_checks_!(
              token,
-             "#{site()}/repositories/#{repo_xref}/commits/#{sha}/check-runs",
+             "#{site()}/repositories/#{repo_xref}/commits/#{sha}/check-runs?per_page=#{@per_page}",
              %{}
            ),
          do: {:ok, Map.merge(status, check)}
@@ -432,7 +450,7 @@ defmodule BorsNG.GitHub.Server do
 
   def do_handle_call(:get_labels, repo_conn, {issue_xref}) do
     repo_conn
-    |> get!("issues/#{issue_xref}/labels")
+    |> get!("issues/#{issue_xref}/labels?per_page=#{@per_page}")
     |> case do
       %{body: raw, status: 200} ->
         res =
@@ -533,7 +551,10 @@ defmodule BorsNG.GitHub.Server do
   def do_handle_call(:get_reviews, {{:raw, token}, repo_xref}, {issue_xref, sha}) do
     reviews =
       token
-      |> get_reviews_json_!("#{site()}/repositories/#{repo_xref}/pulls/#{issue_xref}/reviews", [])
+      |> get_reviews_json_!(
+        "#{site()}/repositories/#{repo_xref}/pulls/#{issue_xref}/reviews?per_page=#{@per_page}",
+        []
+      )
       |> GitHub.Reviews.filter_sha!(sha)
       |> GitHub.Reviews.from_json!()
 
@@ -662,7 +683,7 @@ defmodule BorsNG.GitHub.Server do
   def do_handle_call(:get_collaborators_by_repo, {{:raw, token}, repo_xref}, {}) do
     get_collaborators_by_repo_(
       token,
-      "#{site()}/repositories/#{repo_xref}/collaborators",
+      "#{site()}/repositories/#{repo_xref}/collaborators?per_page=#{@per_page}",
       []
     )
   end
@@ -696,7 +717,7 @@ defmodule BorsNG.GitHub.Server do
     {:ok,
      get_installation_repos_!(
        token,
-       "#{site()}/installation/repositories",
+       "#{site()}/installation/repositories?per_page=#{@per_page}",
        []
      )}
   end
@@ -848,46 +869,37 @@ defmodule BorsNG.GitHub.Server do
     end
   end
 
-  @spec get_open_prs_!(binary, binary | nil, [tpr]) :: [tpr]
-  defp get_open_prs_!(_, nil, prs) do
-    prs
-  end
+  # The list's PRs have no `mergeable`, which GitHub reports only for a single
+  # PR, so a sync leaves each patch's `is_mergeable` as it was. Fetching each
+  # PR for it cost a request per open PR, all inside the one call: for a
+  # repository with thousands of open PRs, most of half an hour, while every
+  # other GitHub call waited behind it.
+  #
+  # A page that fails returns its status with the PRs before it.
+  @spec get_open_prs_(binary, binary, [tpr]) :: {:ok, [tpr]} | {:error, integer, [tpr]}
+  defp get_open_prs_(token, url, append) do
+    "token #{token}"
+    |> tesla_client(@content_type)
+    |> Tesla.get!(url, query: get_url_params(url))
+    |> case do
+      %{body: raw, status: 200, headers: headers} ->
+        prs =
+          Jason.decode!(raw)
+          |> Enum.flat_map(fn json ->
+            case GitHub.Pr.from_json(json) do
+              {:ok, pr} -> [pr]
+              _ -> []
+            end
+          end)
+          |> Enum.concat(append)
 
-  defp get_open_prs_!(token, url, append) do
-    params = get_url_params(url)
-
-    {raw, headers} =
-      "token #{token}"
-      |> tesla_client(@content_type)
-      |> Tesla.get!(url, query: params)
-      |> case do
-        %{body: raw, status: 200, headers: headers} -> {raw, headers}
-        _ -> {"[]", %{}}
-      end
-
-    prs =
-      Jason.decode!(raw)
-      |> Enum.flat_map(fn %{"url" => url} ->
-        "token #{token}"
-        |> tesla_client(@content_type)
-        |> Tesla.get!(url)
-        |> case do
-          %{body: raw, status: 200} -> Jason.decode!(raw)
-          _ -> %{}
+        case get_next_headers(headers) do
+          [] -> {:ok, prs}
+          [next] -> get_open_prs_(token, next.url, prs)
         end
-        |> GitHub.Pr.from_json()
-        |> case do
-          {:ok, pr} -> [pr]
-          _ -> []
-        end
-      end)
-      |> Enum.concat(append)
 
-    next_headers = get_next_headers(headers)
-
-    case next_headers do
-      [] -> prs
-      [next] -> get_open_prs_!(token, next.url, prs)
+      %{status: status} ->
+        {:error, status, append}
     end
   end
 

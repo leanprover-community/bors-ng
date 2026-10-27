@@ -136,6 +136,21 @@ defmodule BorsNG.Worker.SyncerTest do
     assert p2.open
   end
 
+  # A list cut short would close the patches of the PRs it leaves out.
+  test "a sync whose list of open PRs fails changes no patch", %{
+    proj: proj,
+    proj_conn: proj_conn
+  } do
+    # Without `pulls`, the mock answers the list with an error.
+    GitHub.ServerMock.put_state(%{proj_conn => %{collaborators: []}})
+
+    %Patch{project_id: proj.id, pr_xref: 1, title: "Test PR", into_branch: "master"}
+    |> Repo.insert!()
+
+    assert_raise MatchError, fn -> Syncer.synchronize_project(proj.id) end
+    assert Repo.get_by!(Patch, pr_xref: 1, project_id: proj.id).open
+  end
+
   test "close during synchronize cancels running merge and try work", %{
     proj: proj,
     proj_conn: proj_conn
