@@ -12,6 +12,8 @@ defmodule BorsNG.WebhookControllerTest do
   alias BorsNG.GitHub.Pr
   alias BorsNG.GitHub
 
+  import ExUnit.CaptureLog
+
   setup do
     installation =
       Repo.insert!(%Installation{
@@ -1320,6 +1322,106 @@ defmodule BorsNG.WebhookControllerTest do
       |> post(webhook_path(conn, :webhook, "github"), body_params)
 
     assert conn.status == 200
+  end
+
+  # GitHub waits 10 seconds for an answer, and if it gives up, the request ends.
+  # Were the handler part of the request, the command would end with it.
+  test "a webhook still being handled at the deadline is answered 202, and its command runs",
+       %{conn: conn, project: proj} do
+    draft_comment_state()
+
+    Repo.insert!(%Patch{
+      project_id: proj.id,
+      pr_xref: 1,
+      commit: "C",
+      into_branch: "master",
+      open: true
+    })
+
+    timeout = Application.get_env(:bors, :webhook_reply_timeout_ms)
+    Application.put_env(:bors, :webhook_reply_timeout_ms, 50)
+    # For the handler's `finished after`.
+    level = Logger.level()
+    Logger.configure(level: :info)
+
+    # The command's comment waits for the GitHub client, as behind a slow call.
+    :sys.suspend(BorsNG.GitHub)
+
+    on_exit(fn ->
+      :sys.resume(BorsNG.GitHub)
+      Logger.configure(level: level)
+
+      if timeout,
+        do: Application.put_env(:bors, :webhook_reply_timeout_ms, timeout),
+        else: Application.delete_env(:bors, :webhook_reply_timeout_ms)
+    end)
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "created",
+      "issue" => %{"number" => 1, "draft" => false, "pull_request" => %{}},
+      "comment" => %{
+        "body" => "bors ping",
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    {conn, log} =
+      with_log(fn ->
+        conn
+        |> put_req_header("x-github-event", "issue_comment")
+        |> put_req_header("x-github-delivery", "delivery-1")
+        |> post(webhook_path(conn, :webhook, "github"), body_params)
+      end)
+
+    assert conn.status == 202
+    assert log =~ "issue_comment delivery-1 still running after 50 ms; answered 202"
+
+    [handler] = Task.Supervisor.children(BorsNG.WebhookController.TaskSupervisor)
+    ref = Process.monitor(handler)
+
+    log =
+      capture_log(fn ->
+        :sys.resume(BorsNG.GitHub)
+        assert_receive {:DOWN, ^ref, :process, ^handler, :normal}, 5_000
+      end)
+
+    assert log =~ ~r/issue_comment delivery-1 finished after \d+ ms/
+    assert ["pong"] == pr_comments(1)
+  end
+
+  test "a webhook handled in time is answered as before" do
+    status = fn event, body_params ->
+      with_log(fn ->
+        conn = build_conn()
+
+        conn
+        |> put_req_header("x-github-event", event)
+        |> post(webhook_path(conn, :webhook, "github"), body_params)
+        |> Map.fetch!(:status)
+      end)
+    end
+
+    status_params = %{
+      "repository" => %{"id" => 13},
+      "commit" => %{"sha" => "S"},
+      "context" => "ci",
+      "target_url" => "U",
+      "state" => "success"
+    }
+
+    assert {200, _} = status.("ping", %{})
+    assert {404, _} = status.("fork", %{})
+
+    # A repository bors doesn't know: an Ecto.NoResultsError, which is a 404,
+    # and so not logged.
+    assert {404, log} = status.("status", put_in(status_params["repository"]["id"], 999))
+    refute log =~ "NoResultsError"
+
+    # A state GitHub doesn't send: a CaseClauseError, which is a 500.
+    assert {500, log} = status.("status", %{status_params | "state" => "unheard-of"})
+    assert log =~ "WebhookController: status failed"
+    assert log =~ "CaseClauseError"
   end
 
   # A "closed" PR webhook fires an async BranchDeleter.delete cast that runs on

@@ -52,5 +52,11 @@ defmodule BorsNG.ApplicationTest do
       assert endpoint_index < index.(worker),
              "Endpoint must be supervised before #{inspect(worker)} under rest_for_one"
     end
+
+    # The Endpoint starts a task under this supervisor for each webhook. Before
+    # the Endpoint, it is there for the first request, and a worker's crash
+    # can't stop the webhooks being handled.
+    assert index.(BorsNG.WebhookController.TaskSupervisor) < endpoint_index,
+           "The webhooks' task supervisor must be supervised before the Endpoint"
   end
 end
