@@ -21,6 +21,9 @@ defmodule BorsNG.Worker.Batcher.GetBorsToml.Cache do
   serializing through this process.
   """
 
+  # TODO: rename this module to a general cache, such as `BorsNG.Cache`. It
+  # holds more than bors.toml entries.
+
   use GenServer
 
   @table __MODULE__
