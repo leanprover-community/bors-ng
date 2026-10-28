@@ -213,7 +213,22 @@ defmodule BorsNG.Worker.Syncer do
   end
 
   @spec sync_user(GitHub.User.t()) :: %User{}
-  def sync_user(gh_user) do
+  def sync_user(gh_user), do: sync_user(gh_user, 3)
+
+  # Webhooks are handled concurrently, and two can sync users who share a
+  # login at once, as when GitHub's Copilot reviewer reviews a PR that its
+  # Copilot agent opened: one can rename a row away, or take the login,
+  # between the other's lookups and its write, and the unique index refuses
+  # the second. Two can also insert the same new user. The rows have changed
+  # since the loser read them, so it reads them again.
+  defp sync_user(gh_user, tries) do
+    do_sync_user(gh_user)
+  rescue
+    e in Ecto.ConstraintError ->
+      if tries > 1, do: sync_user(gh_user, tries - 1), else: reraise(e, __STACKTRACE__)
+  end
+
+  defp do_sync_user(gh_user) do
     case Repo.get_by(User, user_xref: gh_user.id) do
       nil ->
         case Repo.get_by(User, login: gh_user.login) do
@@ -229,10 +244,7 @@ defmodule BorsNG.Worker.Syncer do
                 "Syncer: sync_user: github user #{inspect(gh_user.login)} changed id from #{inspect(user.user_xref)} to #{inspect(gh_user.id)}"
               )
 
-              # Rename the user we had in the database to a login that's not a valid github login
-              user
-              |> User.changeset(%{login: "#{user.login}/renamed/#{user.id}"})
-              |> Repo.update!()
+              rename_away(user)
 
               # And then insert a new one for the actual new user
               Repo.insert!(%User{
@@ -250,6 +262,17 @@ defmodule BorsNG.Worker.Syncer do
             "Syncer: sync_user: github user id #{inspect(gh_user.id)} changed username from #{inspect(user.login)} to #{inspect(gh_user.login)}"
           )
 
+          # Another user may hold the login: an account that has since left
+          # it, or another account that GitHub shows under the same login, as
+          # it does its Copilot reviewer and its Copilot agent. Rename that one
+          # away first, or the unique index on logins refuses the update.
+          # Logins are citext on Postgres, so a change of case finds the user
+          # itself, which stays.
+          case Repo.get_by(User, login: gh_user.login) do
+            %User{id: id} = holder when id != user.id -> rename_away(holder)
+            _ -> :ok
+          end
+
           user
           |> User.changeset(%{login: gh_user.login})
           |> Repo.update!()
@@ -257,6 +280,14 @@ defmodule BorsNG.Worker.Syncer do
           user
         end
     end
+  end
+
+  # Rename a user we had in the database to a login that's not a valid
+  # GitHub login, so that another user can take theirs.
+  defp rename_away(user) do
+    user
+    |> User.changeset(%{login: "#{user.login}/renamed/#{user.id}"})
+    |> Repo.update!()
   end
 
   @doc """

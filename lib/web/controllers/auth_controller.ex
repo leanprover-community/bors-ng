@@ -17,8 +17,7 @@ defmodule BorsNG.AuthController do
 
   use BorsNG.Web, :controller
 
-  alias BorsNG.Database.Repo
-  alias BorsNG.Database.User
+  alias BorsNG.Worker.Syncer
 
   @github_api Confex.fetch_env!(:bors, :oauth2)
 
@@ -81,28 +80,9 @@ defmodule BorsNG.AuthController do
     user = get_user!(provider, client)
     avatar = user.avatar_url
 
-    # Create (or reuse) the database record for this user
-    current_user_model =
-      case Repo.get_by(User, user_xref: user.id) do
-        nil ->
-          Repo.insert!(%User{
-            user_xref: user.id,
-            login: user.login
-          })
-
-        current_user_model ->
-          current_user_model
-      end
-
-    # Make sure the login is up-to-date (GitHub users are allowed to change it)
-    user_model =
-      if current_user_model.login != user.login do
-        cs = Ecto.Changeset.change(current_user_model, login: user.login)
-        true = cs.valid?
-        Repo.update!(cs)
-      else
-        current_user_model
-      end
+    # Create (or reuse) the database record for this user, with their login
+    # up to date (GitHub users are allowed to change it), as a webhook does
+    user_model = Syncer.sync_user(user)
 
     redirect_to =
       case get_session(conn, :auth_redirect_to) do
