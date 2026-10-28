@@ -205,7 +205,7 @@ defmodule BorsNG.Worker.Batcher.Message do
 
   # The review link gets its own bold line so that reviewers see it.
   def generate_message({:stacked, child_xref, parent_xref, url}) do
-    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. The batch applies ##{parent_xref}'s changes first. Each pull request still needs its own `bors r+`; `bors unlink` removes the link.\n\n**Review:** [##{child_xref}'s own changes](#{url}): this pull request's diff without ##{parent_xref}'s changes."
+    "##{child_xref} is now stacked on ##{parent_xref}: both are in a linked bundle and merge in the same batch, or not at all. The batch applies ##{parent_xref}'s changes first. Each pull request still needs its own `bors r+`; `bors unlink` removes the link.\n\n**Review:** [##{child_xref}'s own changes](#{url}): the diff of ##{child_xref} without ##{parent_xref}'s changes."
   end
 
   def generate_message({:bundle_base_edit_mismatch, xref}) do
