@@ -12,6 +12,7 @@ defmodule BorsNG.Worker.SyncerTest do
   alias BorsNG.Database.LinkPatchBatch
   alias BorsNG.Database.Patch
   alias BorsNG.Database.Project
+  alias BorsNG.Database.User
   alias BorsNG.Worker.Syncer
 
   setup do
@@ -388,5 +389,34 @@ defmodule BorsNG.Worker.SyncerTest do
                old_pusher.id,
                removed_pusher.id
              ])
+  end
+
+  test "sync_user takes back a login that another user holds" do
+    # GitHub shows two accounts as Copilot: its reviewer and its agent.
+    reviewer = Syncer.sync_user(%GitHub.User{id: 1, login: "Copilot"})
+    agent = Syncer.sync_user(%GitHub.User{id: 2, login: "Copilot"})
+    assert Repo.get!(User, reviewer.id).login == "Copilot/renamed/#{reviewer.id}"
+    assert agent.login == "Copilot"
+
+    # The reviewer's row is found by its id, and the agent's makes way.
+    again = Syncer.sync_user(%GitHub.User{id: 1, login: "Copilot"})
+    assert again.id == reviewer.id
+    assert again.login == "Copilot"
+    assert Repo.get!(User, agent.id).login == "Copilot/renamed/#{agent.id}"
+
+    # And back, for the agent's next event.
+    agent_again = Syncer.sync_user(%GitHub.User{id: 2, login: "Copilot"})
+    assert agent_again.id == agent.id
+    assert agent_again.login == "Copilot"
+    assert Repo.get!(User, reviewer.id).login == "Copilot/renamed/#{reviewer.id}"
+    assert Repo.aggregate(User, :count) == 2
+  end
+
+  test "sync_user keeps a user whose login changes only in case" do
+    user = Syncer.sync_user(%GitHub.User{id: 1, login: "alice"})
+    again = Syncer.sync_user(%GitHub.User{id: 1, login: "Alice"})
+    assert again.id == user.id
+    assert again.login == "Alice"
+    assert Repo.aggregate(User, :count) == 1
   end
 end

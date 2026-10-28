@@ -104,4 +104,20 @@ defmodule BorsNG.AuthControllerTest do
     conn = get(conn, "/repositories")
     assert html_response(conn, 200) =~ "space ▾"
   end
+
+  test "a login takes back the user's login from another row", %{
+    conn: conn,
+    space: space,
+    ada: ada
+  } do
+    # space was renamed in bors, and ada's row has since taken the login,
+    # as an account that left it would still hold it.
+    space = Repo.update!(User.changeset(space, %{login: "space/renamed/#{space.id}"}))
+    Repo.update!(User.changeset(ada, %{login: "space"}))
+
+    conn = login(conn)
+    assert get_session(conn, :current_user) == space.id
+    assert Repo.get!(User, space.id).login == "space"
+    assert Repo.get!(User, ada.id).login == "space/renamed/#{ada.id}"
+  end
 end
