@@ -16,9 +16,11 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   alias BorsNG.Database.Batch
   alias BorsNG.Database.Patch
   alias BorsNG.Database.PatchBundle
+  alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.GitHub
   alias BorsNG.Worker.Batcher.Divider
+  alias BorsNG.Worker.Batcher.GetBorsToml.Cache
 
   import Ecto.Query
 
@@ -361,11 +363,35 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   callers fail closed.
   """
   def contains_head?(repo_conn, parent, child) do
-    case GitHub.compare_status(repo_conn, parent.commit, child.commit) do
-      {:ok, status} when status in [:ahead, :identical] -> true
-      _ -> false
+    contains?(GitHub.compare_status(repo_conn, parent.commit, child.commit))
+  end
+
+  @doc """
+  Like `contains_head?/3`, for a link rather than a merge decision. It asks
+  GitHub once, without retries, and caches the answer for a day, because
+  whether one commit contains another never changes. A failed call returns
+  `false` and is not cached.
+  """
+  def contains_head_cached?(project, parent, child) do
+    key = {:contains_head, project.repo_xref, parent.commit, child.commit}
+
+    case Cache.fetch(key) do
+      {:ok, contains} ->
+        contains
+
+      :miss ->
+        project.repo_xref
+        |> Project.installation_connection(Repo)
+        |> GitHub.compare_status_once(parent.commit, child.commit)
+        |> case do
+          {:ok, _} = result -> Cache.put(key, contains?(result), :timer.hours(24))
+          _ -> false
+        end
     end
   end
+
+  defp contains?({:ok, status}), do: status in [:ahead, :identical]
+  defp contains?(_), do: false
 
   @doc """
   The first stacked member whose branch does not contain the current head of
