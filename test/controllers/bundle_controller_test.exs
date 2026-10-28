@@ -10,8 +10,11 @@ defmodule BorsNG.BundleControllerTest do
   alias BorsNG.Database.Repo
   alias BorsNG.Database.User
   alias BorsNG.GitHub
+  alias BorsNG.Worker.Batcher.GetBorsToml
 
   setup do
+    :ets.delete_all_objects(GetBorsToml.Cache.table())
+
     installation =
       Repo.insert!(%Installation{
         installation_xref: 31
@@ -129,6 +132,25 @@ defmodule BorsNG.BundleControllerTest do
 
     assert redirected_to(own_changes(conn, stacked), 302) ==
              "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
+  end
+
+  test "own changes: asks GitHub once per pair of head commits", %{
+    conn: conn,
+    stacked: stacked
+  } do
+    put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
+    own_changes(conn, stacked)
+    GitHub.ServerMock.put_state(%{{{:installation, 31}, 13} => %{compare_error: true}})
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
+  end
+
+  test "own changes: a compare view when GitHub fails", %{conn: conn, stacked: stacked} do
+    GitHub.ServerMock.put_state(%{{{:installation, 31}, 13} => %{compare_error: true}})
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/compare/aaaaaaa...bbbbbbb"
   end
 
   test "own changes: a compare view when the child lacks the parent's head", %{

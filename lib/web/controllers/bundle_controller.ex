@@ -17,6 +17,7 @@ defmodule BorsNG.BundleController do
   alias BorsNG.Database.User
   alias BorsNG.Database.UserPatchDelegation
   alias BorsNG.GitHub
+  alias BorsNG.Worker.Batcher.GetBorsToml.Cache
 
   def show(conn, %{"id" => id}) do
     bundle = Repo.get!(PatchBundle, id)
@@ -104,13 +105,24 @@ defmodule BorsNG.BundleController do
     end
   end
 
+  # Whether one commit contains another never changes, so GitHub's answer is
+  # cached for a day. The bors.toml cache holds it, under its own key. A failed
+  # call is not cached.
   defp contains_head?(project, parent, child) do
-    project.repo_xref
-    |> Project.installation_connection(Repo)
-    |> GitHub.compare_status_once(parent.commit, child.commit)
-    |> case do
-      {:ok, status} -> status in [:ahead, :identical]
-      _ -> false
+    key = {:contains_head, project.repo_xref, parent.commit, child.commit}
+
+    case Cache.fetch(key) do
+      {:ok, contains} ->
+        contains
+
+      :miss ->
+        project.repo_xref
+        |> Project.installation_connection(Repo)
+        |> GitHub.compare_status_once(parent.commit, child.commit)
+        |> case do
+          {:ok, status} -> Cache.put(key, status in [:ahead, :identical], :timer.hours(24))
+          _ -> false
+        end
     end
   end
 end
