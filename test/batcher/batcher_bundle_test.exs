@@ -387,7 +387,7 @@ defmodule BorsNG.Worker.BatcherBundleTest do
       assert p2.stacked_on_id == nil
       assert Enum.any?(comments_for(1), &(&1 =~ "stacked on #2"))
       assert Enum.any?(comments_for(2), &(&1 =~ "stacked on #2"))
-      # The review link goes through bors, which redirects to the current range.
+      # The review link is a bors route that redirects from the current heads.
       assert Enum.any?(comments_for(1), &(&1 =~ "/patches/#{p1.id}/own-changes"))
     end
 

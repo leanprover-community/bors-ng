@@ -114,7 +114,7 @@ defmodule BorsNG.BundleControllerTest do
 
     html = html_response(conn, 200)
     assert html =~ "/patches/#{stacked.id}/own-changes"
-    # the root's diff is its own PR
+    # A stack root gets no link: its Files tab shows only its own changes.
     refute html =~ "/patches/#{base.id}/own-changes"
   end
 
@@ -146,11 +146,33 @@ defmodule BorsNG.BundleControllerTest do
              "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
   end
 
-  test "own changes: a compare view when GitHub fails", %{conn: conn, stacked: stacked} do
+  test "own changes: a compare view when GitHub fails, and no cached answer", %{
+    conn: conn,
+    stacked: stacked
+  } do
     GitHub.ServerMock.put_state(%{{{:installation, 31}, 13} => %{compare_error: true}})
 
     assert redirected_to(own_changes(conn, stacked), 302) ==
              "https://github.com/example/project/compare/aaaaaaa...bbbbbbb"
+
+    put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
+  end
+
+  test "own changes: a compare view when the heads are the same commit", %{
+    conn: conn,
+    stacked: stacked
+  } do
+    stacked |> Ecto.Changeset.change(commit: "aaaaaaa") |> Repo.update!()
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/compare/aaaaaaa...aaaaaaa"
+  end
+
+  test "own changes: 404 for an unknown patch", %{conn: conn} do
+    assert_error_sent(404, fn -> get(conn, "/patches/0/own-changes") end)
   end
 
   test "own changes: a compare view when the child lacks the parent's head", %{
@@ -206,8 +228,15 @@ defmodule BorsNG.BundleControllerTest do
     conn: conn,
     stacked: stacked
   } do
+    prev = System.get_env("ALLOW_PRIVATE_REPOS")
     System.put_env("ALLOW_PRIVATE_REPOS", "true")
-    on_exit(fn -> System.delete_env("ALLOW_PRIVATE_REPOS") end)
+
+    on_exit(fn ->
+      if prev,
+        do: System.put_env("ALLOW_PRIVATE_REPOS", prev),
+        else: System.delete_env("ALLOW_PRIVATE_REPOS")
+    end)
+
     put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
 
     assert redirected_to(own_changes(conn, stacked), 302) == "/auth/github"

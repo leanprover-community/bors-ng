@@ -61,9 +61,9 @@ defmodule BorsNG.BundleController do
   end
 
   @doc """
-  Redirects to a stacked patch's own changes, built from the current head
-  commits. The link that bors posts on `bors stack` points here, so it
-  follows later pushes. The target is the first of these that applies:
+  Redirects to a stacked patch's own changes. The redirect uses the current
+  head commits, so a link to this route follows later pushes. The target is
+  the first of these that applies:
 
     * The Files tab of the pull request, when the patch has no parent, a
       head commit is unknown, or the patch's base branch is the parent's
@@ -71,8 +71,11 @@ defmodule BorsNG.BundleController do
     * The commit range from the parent's head to the patch's head in the
       pull request (`pull/N/files/parent..child`), when the patch contains
       the parent's head. Line comments work there. GitHub shows this range
-      only when the parent's head is a commit of the pull request.
-    * A compare view of the two heads. It takes no line comments.
+      only when the parent's head is a commit of the pull request, and not
+      when the two heads are the same commit.
+    * A compare view of the two heads, in every other case: the heads are
+      the same commit, the patch does not contain the parent's head, or
+      GitHub does not answer. It takes no line comments.
   """
   def own_changes(conn, %{"id" => id}) do
     patch = Repo.get!(Patch, id)
@@ -82,9 +85,9 @@ defmodule BorsNG.BundleController do
     redirect(conn, external: own_changes_url(project, parent, patch))
   end
 
-  # A head_ref is a branch name without its repository, so a parent from a
-  # fork can share its name with the base branch of both pull requests. When
-  # GitHub can't answer, the compare view is a correct link.
+  # A head_ref is a branch name without its repository. A parent from a fork
+  # can have a head_ref equal to the base branch of both pull requests, such
+  # as `master`. For that parent, the `into_branch` check skips the Files tab.
   defp own_changes_url(project, parent, child) do
     repo = "#{Confex.fetch_env!(:bors, :html_github_root)}/#{project.name}"
     pr = "#{repo}/pull/#{child.pr_xref}"
@@ -95,7 +98,7 @@ defmodule BorsNG.BundleController do
              child.into_branch != parent.into_branch) ->
         "#{pr}/files"
 
-      Bundles.contains_head_cached?(project, parent, child) ->
+      parent.commit != child.commit and Bundles.contains_head_cached?(project, parent, child) ->
         "#{pr}/files/#{parent.commit}..#{child.commit}"
 
       true ->

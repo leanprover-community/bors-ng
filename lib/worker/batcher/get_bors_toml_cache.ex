@@ -12,8 +12,8 @@ defmodule BorsNG.Worker.Batcher.GetBorsToml.Cache do
   stale config could drive an actual merge; those keep calling
   `GetBorsToml.get/2` directly.
 
-  `Bundles.contains_head_cached?/3` also stores here, under
-  `{:contains_head, ...}` keys, whether one commit contains another.
+  `Bundles.contains_head_cached?/3` also stores here whether one commit
+  contains another, under `{:contains_head, ...}` keys.
 
   Entries expire by TTL — checked lazily on read, plus a periodic prune so a
   multi-tenant keyspace can't grow without bound. The table is public with read

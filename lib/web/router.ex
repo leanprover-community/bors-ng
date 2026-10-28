@@ -69,9 +69,9 @@ defmodule BorsNG.Router do
     get("/:id", BundleController, :show)
   end
 
-  # Reviewers open this link from a pull request comment. It needs a login
-  # only when private repositories are allowed, because a patch ID names a
-  # repository and its head commits.
+  # Reviewers open this route from a pull request comment. It needs a login
+  # only when private repositories are allowed, because the redirect shows
+  # the repository name and the head commits of a patch.
   scope "/patches", BorsNG do
     pipe_through(:browser_page)
     pipe_through(:browser_session)
