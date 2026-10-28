@@ -9,6 +9,7 @@ defmodule BorsNG.BundleControllerTest do
   alias BorsNG.Database.Project
   alias BorsNG.Database.Repo
   alias BorsNG.Database.User
+  alias BorsNG.GitHub
 
   setup do
     installation =
@@ -99,53 +100,85 @@ defmodule BorsNG.BundleControllerTest do
     assert html =~ ~r/#43.*#44/s
   end
 
-  test "links a stacked member's own changes inside its pull request", %{
-    conn: conn,
-    bundle: bundle
-  } do
-    conn = login(conn)
-    conn = get(conn, "/bundles/#{bundle.id}")
-
-    html = html_response(conn, 200)
-    assert html =~ "/example/project/pull/44/files/aaaaaaa..bbbbbbb"
-    # only the stacked member gets a link; the root's diff is its own PR
-    assert length(String.split(html, "own changes")) == 2
-  end
-
-  test "omits the own-changes link when a head commit is unknown", %{
+  test "links a stacked member's own changes through bors", %{
     conn: conn,
     bundle: bundle,
     stacked: stacked
   } do
-    stacked |> Ecto.Changeset.change(commit: nil) |> Repo.update!()
-
     conn = login(conn)
     conn = get(conn, "/bundles/#{bundle.id}")
 
     html = html_response(conn, 200)
-    refute html =~ "own changes"
-    refute html =~ "/files/"
+    assert html =~ "/patches/#{stacked.id}/own-changes"
+    # only the stacked member gets a link; the root's diff is its own PR
+    assert length(String.split(html, "own changes")) == 2
   end
 
-  test "the own-changes route redirects to the current range without a login", %{
+  defp put_compare_status(statuses) do
+    GitHub.ServerMock.put_state(%{{{:installation, 31}, 13} => %{compare_status: statuses}})
+  end
+
+  defp own_changes(conn, patch), do: get(conn, "/patches/#{patch.id}/own-changes")
+
+  test "own changes: the range in the pull request when the child contains the parent", %{
     conn: conn,
     stacked: stacked
   } do
     stacked |> Ecto.Changeset.change(commit: "ccccccc") |> Repo.update!()
+    put_compare_status(%{{"aaaaaaa", "ccccccc"} => :ahead})
 
-    conn = get(conn, "/patches/#{stacked.id}/own-changes")
-
-    assert redirected_to(conn, 302) ==
+    assert redirected_to(own_changes(conn, stacked), 302) ==
              "https://github.com/example/project/pull/44/files/aaaaaaa..ccccccc"
   end
 
-  test "the own-changes route falls back to the files tab for a stack root", %{
+  test "own changes: a compare view when the child lacks the parent's head", %{
     conn: conn,
-    base: base
+    stacked: stacked
   } do
-    conn = get(conn, "/patches/#{base.id}/own-changes")
+    put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :diverged})
 
-    assert redirected_to(conn, 302) == "https://github.com/example/project/pull/43/files"
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/compare/aaaaaaa...bbbbbbb"
+  end
+
+  test "own changes: the files tab when the child's base is the parent's branch", %{
+    conn: conn,
+    base: base,
+    stacked: stacked
+  } do
+    base |> Ecto.Changeset.change(head_ref: "feature") |> Repo.update!()
+    stacked |> Ecto.Changeset.change(into_branch: "feature") |> Repo.update!()
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/pull/44/files"
+  end
+
+  test "own changes: the files tab for a stack root or an unknown head commit", %{
+    conn: conn,
+    base: base,
+    stacked: stacked
+  } do
+    assert redirected_to(own_changes(conn, base), 302) ==
+             "https://github.com/example/project/pull/43/files"
+
+    stacked |> Ecto.Changeset.change(commit: nil) |> Repo.update!()
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/pull/44/files"
+  end
+
+  test "own changes: needs a login when private repositories are allowed", %{
+    conn: conn,
+    stacked: stacked
+  } do
+    System.put_env("ALLOW_PRIVATE_REPOS", "true")
+    on_exit(fn -> System.delete_env("ALLOW_PRIVATE_REPOS") end)
+    put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
+
+    assert html_response(own_changes(conn, stacked), 302) =~ "auth"
+
+    assert redirected_to(conn |> login() |> own_changes(stacked), 302) ==
+             "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
   end
 
   test "lists the batches the bundle entered", %{conn: conn, bundle: bundle, project: project} do

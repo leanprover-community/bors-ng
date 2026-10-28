@@ -40,8 +40,8 @@
     <% true -> %>
     <span class=approval--waiting>waiting<%= if logins = Map.get(@delegations, patch.id) do %> — delegated to <%= Enum.join(logins, ", ") %><% end %></span>
     <% end %>
-    <%= if url = parent && BorsNG.BundleDisplay.own_changes_url(@project, parent, patch) do %>
-    · <a href="<%= url %>">own changes</a>
+    <%= if parent do %>
+    · <a href="<%= bundle_path(@conn, :own_changes, patch.id) %>">own changes</a>
     <% end %>
   </li>
   <% end %>

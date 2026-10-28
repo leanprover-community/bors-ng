@@ -368,20 +368,34 @@ defmodule BorsNG.Worker.Batcher.Bundles do
   end
 
   @doc """
-  A link to a stacked child's own changes: the commit range from the parent's
-  head to the child's head, shown in the child's pull request
-  (`pull/N/files/parent..child`). Reviewers can leave line comments there.
-  The range works for every pair that `contains_head?/3` accepts, forks
-  included, because the parent's head is then a commit of the child's pull
-  request. GitHub also shows it after the pull request closes. The URL pins
-  both head commits. Returns nil when either head commit is unknown.
-  """
-  def own_changes_url(_project, %Patch{commit: nil}, _child), do: nil
-  def own_changes_url(_project, _parent, %Patch{commit: nil}), do: nil
+  A link to a stacked child's own changes, for review. `parent` is nil for a
+  stack root. Returns the first of these that applies:
 
-  def own_changes_url(project, parent, child) do
-    root = Confex.fetch_env!(:bors, :html_github_root)
-    "#{root}/#{project.name}/pull/#{child.pr_xref}/files/#{parent.commit}..#{child.commit}"
+    * The Files tab of the child's pull request, when the child has no
+      parent, a head commit is unknown, or the child's base branch is the
+      parent's branch. In the last case, the tab shows only the child's
+      changes.
+    * The commit range from the parent's head to the child's head in the
+      child's pull request (`pull/N/files/parent..child`), when the child
+      contains the parent's head. Line comments work there. GitHub shows
+      this range only when the parent's head is a commit of the pull request.
+    * A compare view of the two heads. It takes no line comments.
+  """
+  def own_changes_url(repo_conn, project, parent, child) do
+    repo = "#{Confex.fetch_env!(:bors, :html_github_root)}/#{project.name}"
+    pr = "#{repo}/pull/#{child.pr_xref}"
+
+    cond do
+      is_nil(parent) or is_nil(parent.commit) or is_nil(child.commit) or
+          (parent.head_ref != nil and child.into_branch == parent.head_ref) ->
+        "#{pr}/files"
+
+      contains_head?(repo_conn, parent, child) ->
+        "#{pr}/files/#{parent.commit}..#{child.commit}"
+
+      true ->
+        "#{repo}/compare/#{parent.commit}...#{child.commit}"
+    end
   end
 
   @doc """

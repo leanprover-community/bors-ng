@@ -29,6 +29,10 @@ defmodule BorsNG.Router do
     plug(:force_current_user)
   end
 
+  pipeline :browser_login_if_private do
+    plug(:force_current_user_if_private)
+  end
+
   pipeline :browser_admin do
     plug(:force_current_user_admin)
   end
@@ -65,10 +69,13 @@ defmodule BorsNG.Router do
     get("/:id", BundleController, :show)
   end
 
-  # Unauthenticated: reviewers open this link from a pull request comment. It
-  # only redirects to GitHub, which checks access to the diff.
+  # Reviewers open this link from a pull request comment. It needs a login
+  # only when private repositories are allowed, because a patch ID names a
+  # repository and its head commits.
   scope "/patches", BorsNG do
     pipe_through(:browser_page)
+    pipe_through(:browser_session)
+    pipe_through(:browser_login_if_private)
 
     get("/:id/own-changes", BundleController, :own_changes)
   end
@@ -185,6 +192,12 @@ defmodule BorsNG.Router do
     else
       conn
     end
+  end
+
+  defp force_current_user_if_private(conn, opts) do
+    if Confex.fetch_env!(:bors, BorsNG)[:allow_private_repos],
+      do: force_current_user(conn, opts),
+      else: conn
   end
 
   defp force_current_user_admin(conn, _) do
