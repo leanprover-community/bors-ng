@@ -1,8 +1,8 @@
 defmodule BorsNG.BundleController do
   @moduledoc """
   The bundle detail page: the members of one `bors link` / `bors stack`
-  bundle, their approval state, and the batches they have entered. Also the
-  own-changes link of a stacked pull request.
+  bundle, their approval state, and the batches they have entered. It also
+  serves the own-changes link of a stacked pull request.
   """
 
   use BorsNG.Web, :controller
@@ -61,21 +61,17 @@ defmodule BorsNG.BundleController do
   end
 
   @doc """
-  Redirects to a stacked patch's own changes, built from the current head
-  commits of the patch and its parent. The link that bors posts on
-  `bors stack` points here, so it follows later pushes. For a patch without
-  a parent, or with an unknown head commit, it redirects to the Files tab of
-  the pull request.
+  Redirects to a stacked patch's own changes (see
+  `Bundles.own_changes_url/4`), built from the current head commits. The
+  link that bors posts on `bors stack` points here, so it follows later
+  pushes.
   """
   def own_changes(conn, %{"id" => id}) do
     patch = Repo.get!(Patch, id)
     project = Repo.get!(Project, patch.project_id)
     parent = patch.stacked_on_id && Repo.get(Patch, patch.stacked_on_id)
+    repo_conn = Project.installation_connection(project.repo_xref, Repo)
 
-    url =
-      (parent && Bundles.own_changes_url(project, parent, patch)) ||
-        "#{Confex.fetch_env!(:bors, :html_github_root)}/#{project.name}/pull/#{patch.pr_xref}/files"
-
-    redirect(conn, external: url)
+    redirect(conn, external: Bundles.own_changes_url(repo_conn, project, parent, patch))
   end
 end
