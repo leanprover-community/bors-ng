@@ -77,7 +77,7 @@ defmodule BorsNG.Router do
     pipe_through(:browser_session)
     pipe_through(:browser_login_if_private)
 
-    get("/:id/own-changes", BundleController, :own_changes)
+    get("/:id/own-changes", BundleController, :own_changes, as: :patch)
   end
 
   scope "/repositories", BorsNG do
@@ -195,9 +195,11 @@ defmodule BorsNG.Router do
   end
 
   defp force_current_user_if_private(conn, opts) do
-    if Confex.fetch_env!(:bors, BorsNG)[:allow_private_repos],
-      do: force_current_user(conn, opts),
-      else: conn
+    if Confex.fetch_env!(:bors, BorsNG)[:allow_private_repos] do
+      force_current_user(conn, opts)
+    else
+      conn
+    end
   end
 
   defp force_current_user_admin(conn, _) do
