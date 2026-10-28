@@ -12,7 +12,7 @@ defmodule BorsNG.Worker.Batcher.GetBorsToml.Cache do
   stale config could drive an actual merge; those keep calling
   `GetBorsToml.get/2` directly.
 
-  The own-changes link (`BorsNG.BundleController`) also stores here, under
+  `Bundles.contains_head_cached?/3` also stores here, under
   `{:contains_head, ...}` keys, whether one commit contains another.
 
   Entries expire by TTL — checked lazily on read, plus a periodic prune so a
