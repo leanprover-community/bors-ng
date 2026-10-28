@@ -41,7 +41,7 @@
     <span class=approval--waiting>waiting<%= if logins = Map.get(@delegations, patch.id) do %> — delegated to <%= Enum.join(logins, ", ") %><% end %></span>
     <% end %>
     <%= if parent do %>
-    · <a href="<%= bundle_path(@conn, :own_changes, patch.id) %>">own changes</a>
+    · <a href="<%= patch_path(@conn, :own_changes, patch.id) %>">own changes</a>
     <% end %>
   </li>
   <% end %>

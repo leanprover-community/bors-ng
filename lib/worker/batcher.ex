@@ -787,7 +787,7 @@ defmodule BorsNG.Worker.Batcher do
 
           true ->
             members = Bundles.form_stacked(members, patch, target, project.id)
-            url = bundle_url(Endpoint, :own_changes, patch.id)
+            url = patch_url(Endpoint, :own_changes, patch.id)
             send_message(repo_conn, members, {:stacked, patch.pr_xref, target_xref, url})
         end
     end

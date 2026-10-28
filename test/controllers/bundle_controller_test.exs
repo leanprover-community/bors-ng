@@ -103,6 +103,7 @@ defmodule BorsNG.BundleControllerTest do
   test "links a stacked member's own changes through bors", %{
     conn: conn,
     bundle: bundle,
+    base: base,
     stacked: stacked
   } do
     conn = login(conn)
@@ -110,8 +111,8 @@ defmodule BorsNG.BundleControllerTest do
 
     html = html_response(conn, 200)
     assert html =~ "/patches/#{stacked.id}/own-changes"
-    # only the stacked member gets a link; the root's diff is its own PR
-    assert length(String.split(html, "own changes")) == 2
+    # the root's diff is its own PR
+    refute html =~ "/patches/#{base.id}/own-changes"
   end
 
   defp put_compare_status(statuses) do
@@ -124,11 +125,10 @@ defmodule BorsNG.BundleControllerTest do
     conn: conn,
     stacked: stacked
   } do
-    stacked |> Ecto.Changeset.change(commit: "ccccccc") |> Repo.update!()
-    put_compare_status(%{{"aaaaaaa", "ccccccc"} => :ahead})
+    put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
 
     assert redirected_to(own_changes(conn, stacked), 302) ==
-             "https://github.com/example/project/pull/44/files/aaaaaaa..ccccccc"
+             "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
   end
 
   test "own changes: a compare view when the child lacks the parent's head", %{
@@ -146,11 +146,24 @@ defmodule BorsNG.BundleControllerTest do
     base: base,
     stacked: stacked
   } do
-    base |> Ecto.Changeset.change(head_ref: "feature") |> Repo.update!()
+    base |> Ecto.Changeset.change(head_ref: "feature", into_branch: "master") |> Repo.update!()
     stacked |> Ecto.Changeset.change(into_branch: "feature") |> Repo.update!()
 
     assert redirected_to(own_changes(conn, stacked), 302) ==
              "https://github.com/example/project/pull/44/files"
+  end
+
+  test "own changes: the range for a parent from a fork branch named like the base", %{
+    conn: conn,
+    base: base,
+    stacked: stacked
+  } do
+    base |> Ecto.Changeset.change(head_ref: "master", into_branch: "master") |> Repo.update!()
+    stacked |> Ecto.Changeset.change(into_branch: "master") |> Repo.update!()
+    put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
+
+    assert redirected_to(own_changes(conn, stacked), 302) ==
+             "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
   end
 
   test "own changes: the files tab for a stack root or an unknown head commit", %{
@@ -175,7 +188,7 @@ defmodule BorsNG.BundleControllerTest do
     on_exit(fn -> System.delete_env("ALLOW_PRIVATE_REPOS") end)
     put_compare_status(%{{"aaaaaaa", "bbbbbbb"} => :ahead})
 
-    assert html_response(own_changes(conn, stacked), 302) =~ "auth"
+    assert redirected_to(own_changes(conn, stacked), 302) == "/auth/github"
 
     assert redirected_to(conn |> login() |> own_changes(stacked), 302) ==
              "https://github.com/example/project/pull/44/files/aaaaaaa..bbbbbbb"
