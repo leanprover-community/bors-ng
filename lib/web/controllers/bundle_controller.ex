@@ -16,7 +16,7 @@ defmodule BorsNG.BundleController do
   alias BorsNG.Database.Repo
   alias BorsNG.Database.User
   alias BorsNG.Database.UserPatchDelegation
-  alias BorsNG.Worker.Batcher.Bundles
+  alias BorsNG.GitHub
 
   def show(conn, %{"id" => id}) do
     bundle = Repo.get!(PatchBundle, id)
@@ -78,14 +78,15 @@ defmodule BorsNG.BundleController do
     patch = Repo.get!(Patch, id)
     project = Repo.get!(Project, patch.project_id)
     parent = patch.stacked_on_id && Repo.get(Patch, patch.stacked_on_id)
-    repo_conn = Project.installation_connection(project.repo_xref, Repo)
 
-    redirect(conn, external: own_changes_url(repo_conn, project, parent, patch))
+    redirect(conn, external: own_changes_url(project, parent, patch))
   end
 
   # A head_ref is a branch name without its repository, so a parent from a
-  # fork can share its name with the base branch of both pull requests.
-  defp own_changes_url(repo_conn, project, parent, child) do
+  # fork can share its name with the base branch of both pull requests. The
+  # compare call makes one attempt: on a failure, the compare view is a
+  # correct link.
+  defp own_changes_url(project, parent, child) do
     repo = "#{Confex.fetch_env!(:bors, :html_github_root)}/#{project.name}"
     pr = "#{repo}/pull/#{child.pr_xref}"
 
@@ -95,11 +96,21 @@ defmodule BorsNG.BundleController do
              child.into_branch != parent.into_branch) ->
         "#{pr}/files"
 
-      Bundles.contains_head?(repo_conn, parent, child) ->
+      contains_head?(project, parent, child) ->
         "#{pr}/files/#{parent.commit}..#{child.commit}"
 
       true ->
         "#{repo}/compare/#{parent.commit}...#{child.commit}"
+    end
+  end
+
+  defp contains_head?(project, parent, child) do
+    project.repo_xref
+    |> Project.installation_connection(Repo)
+    |> GitHub.compare_status_once(parent.commit, child.commit)
+    |> case do
+      {:ok, status} -> status in [:ahead, :identical]
+      _ -> false
     end
   end
 end

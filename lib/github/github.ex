@@ -60,6 +60,17 @@ defmodule BorsNG.GitHub do
     call_with_retry(:compare_status, repo_conn, {base, head}, 500, 4_000)
   end
 
+  @doc """
+  Like `compare_status/3`, but makes one attempt. For callers that have a
+  fallback when the call fails.
+  """
+  @spec compare_status_once(tconn, binary, binary) ::
+          {:ok, :ahead | :behind | :identical | :diverged} | {:error, term}
+  def compare_status_once(repo_conn, base, head) do
+    timeout = Confex.fetch_env!(:bors, :api_github_timeout)
+    safe_genserver_call(:compare_status, repo_conn, {base, head}, timeout)
+  end
+
   @spec get_pr!(tconn, integer | bitstring) :: BorsNG.GitHub.Pr.t()
   def get_pr!(repo_conn, pr_xref) do
     {:ok, pr} = get_pr(repo_conn, pr_xref)
