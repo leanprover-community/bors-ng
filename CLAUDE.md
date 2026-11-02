@@ -185,9 +185,7 @@ When bumping versions, update all of these files consistently:
 |------|---------------|
 | `.tool-versions` | Local dev versions (asdf) |
 | `.github/workflows/main.yml` | `matrix.elixir`, `matrix.otp_release`, `exfmt` job |
-| `elixir_buildpack.config` | Heroku buildpack versions |
 | `Dockerfile` | `ELIXIR_VERSION`, `OTP_VERSION`, `NODE_VERSION`, and `DEBIAN_SNAPSHOT`, which must name an existing `hexpm/elixir` build of that Elixir/OTP pair on `DEBIAN_RELEASE` |
-| `phoenix_static_buildpack.config` | Node version (if needed) |
 | `CLAUDE.md` runtime requirements table | Documentation |
 
 ## CI

@@ -311,55 +311,6 @@ bors-ng is built on the Phoenix web framework, and they have [docs on how to dep
 
 You'll need to edit the configuration with a few bors-specific variables.
 
-### Deploying on [Heroku] (and other 12-factor-style systems)
-
-[Heroku]: https://heroku.com/
-
-The config file in the repository is already set up to pull the needed information from the environment, so you can configure bors by setting the right env variables and deploy the app from this repository into Heroku:
-
-You can do using Heroku's one-button-deploy system:
-
-[![Deploy on Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
-
-Or you can do it manually:
-
-**Note**: The `GITHUB_INTEGRATION_ID` is now called the App ID on GitHub.
-
-    $ heroku create --buildpack "https://github.com/HashNuke/heroku-buildpack-elixir.git" bors-app
-    $ heroku buildpacks:add https://github.com/gigalixir/gigalixir-buildpack-phoenix-static.git
-    $ heroku addons:create heroku-postgresql:mini
-    $ heroku config:set \
-        MIX_ENV=prod \
-        POOL_SIZE=18 \
-        PUBLIC_HOST=bors-app.herokuapp.com \
-        ALLOW_PRIVATE_REPOS=true \
-        COMMAND_TRIGGER=bors \
-        SECRET_KEY_BASE=<SECRET1> \
-        GITHUB_CLIENT_ID=<OAUTH_CLIENT_ID> \
-        GITHUB_CLIENT_SECRET=<OAUTH_CLIENT_SECRET> \
-        GITHUB_INTEGRATION_ID=<ISS> \
-        GITHUB_INTEGRATION_PEM=`base64 -w0 priv.pem` \
-        GITHUB_WEBHOOK_SECRET=<SECRET2> \
-        ZULIP_API_URL=<SECRET> \
-        ZULIP_BOT_EMAIL=<SECRET> \
-        ZULIP_BOT_API_KEY=<SECRET> \
-        ZULIP_CHANNEL_NAME=<SECRET> \
-        ZULIP_TOPIC=<SECRET> \
-        [BORS_LOG_LEVEL=<debug|info|warn|...>]
-    $ git push heroku master
-    $ heroku run POOL_SIZE=1 mix ecto.migrate
-
-*WARNING*: bors-ng stores some short-term state inside the `web` dyno (it uses a sleeping process to implement delays, specifically).
-It can recover the information after restarting, but it will not work correctly with Heroku's replication system.
-If you need more throughput than one dyno can provide, you should deploy using a system that allows Erlang clustering to work.
-
-To make the commit version show up properly on the dashboard, enable [Heroku Labs: Dyno Metadata](https://devcenter.heroku.com/articles/dyno-metadata) by installing the Heroku CLI and then running:
-
-    heroku labs:enable runtime-dyno-metadata -a <app name>
-    heroku labs:enable runtime-dyno-build-metadata -a <app name>
-
-Be sure to fix the link to the GitHub repo in `app.html.eex`.
-
 ### Deploying using [Docker] (and compatible container orchestration systems)
 
 [Docker]: https://docker.com/
@@ -372,8 +323,9 @@ The summary of each run of the "Docker" workflow on `master` gives the digest it
 To build the image yourself, use the Dockerfile in the project root.
 Pass `--build-arg SOURCE_COMMIT=$(git rev-parse HEAD)` so the dashboard shows the commit.
 
-Configuration is set at runtime with environment variables, as on Heroku, and the same recommendations apply, with some extra notes:
+Configuration is set at runtime with environment variables:
 
+- `GITHUB_INTEGRATION_ID` is the GitHub App's ID, and `GITHUB_INTEGRATION_PEM` its private key, base64-encoded on one line (`base64 -w0 priv.pem`).
 - Set `RELEASE_COOKIE` to a long random secret. The image's own Erlang cookie is public, and anyone with the cookie who can reach the node can run code in it, so bors refuses to start without `RELEASE_COOKIE`.
 - The container does not migrate the database when it starts. Run the migrations first, in a one-off container with the same environment:
   `docker run --rm --env-file bors.env ghcr.io/leanprover-community/bors-ng@sha256:<digest> eval "BorsNG.Database.Migrate.run_standalone()"`.
@@ -381,7 +333,8 @@ Configuration is set at runtime with environment variables, as on Heroku, and th
   If the database doesn't exist, it creates it, provided the database user may create databases.
   Either way, the user needs to be able to connect to the `postgres` database, which the migration checks first.
   Other `mix` tasks are not available, as they cannot be run from compiled releases.
-- Run only one bors container at a time, as with Heroku dynos: stop the old container before starting a new one.
+- Run only one bors container at a time: stop the old container before starting a new one.
+  bors keeps some short-term state in its node (it uses sleeping processes to implement delays); it recovers that state after a restart, but two nodes that aren't clustered don't share it.
 - The `PORT` environment variable is set to `4000` by default.
 - Put a reverse proxy that terminates TLS in front of bors, and have it set `X-Forwarded-Proto`.
   bors redirects plain-HTTP requests to HTTPS, except requests for `localhost` or `127.0.0.1`.
@@ -390,6 +343,7 @@ Configuration is set at runtime with environment variables, as on Heroku, and th
 - `DATABASE_USE_SSL` defaults to `true`. Set it to `false` if the database doesn't offer TLS, for example a database container on the same private network.
 - `ALLOW_PRIVATE_REPOS` defaults to `false`, and bors then removes private repositories from its database at the next sync.
   Set it to `true` if bors manages any private repository.
+- `POOL_SIZE` sets the number of database connections, 10 by default.
 - `DATABASE_TIMEOUT` may be set higher than the default of `15_000`(ms). This may be necessary with repositories with a very large amount of members.
 - `DATABASE_PREPARE_MODE` can be set to to `unnamed` to disable prepared statements, [which is necessary when using a transaction/statement pooler, like pgbouncer](https://github.com/elixir-ecto/postgrex#pgbouncer). It is set to `named` by default.
 - `BORS_DATABASE` can be set to `mysql` to switch to MySQL, with a `mysql://` `DATABASE_URL`, for example `mysql://root:<secret>@db:3306/bors_ng`.
@@ -434,6 +388,8 @@ and the database reachable as `db` on the Docker network `bors`, run:
 
 with the reverse proxy forwarding to `127.0.0.1:4000`.
 
+Be sure to fix the link to the GitHub repo in `app.html.eex`.
+
 ### Deploying on your own cluster
 
 Your configuration can be done by modifying `config/prod.secret.exs`.
@@ -446,7 +402,7 @@ However, there's no UI for adding admins; you'll have to go into Postgres yourse
 
 You can do it from the iex prompt, like this:
 
-    shell$ iex -S mix # or `heroku run bash -c "POOL_SIZE=1 iex -S mix"`
+    shell$ iex -S mix # or, in the Docker container, `docker exec -it bors bin/bors remote`
     iex> me = BorsNG.Database.Repo.get_by! BorsNG.Database.User, login: "<your login>"
     iex> BorsNG.Database.Repo.update! BorsNG.Database.User.changeset(me, %{is_admin: true})
 
