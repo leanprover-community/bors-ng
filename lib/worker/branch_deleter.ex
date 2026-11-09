@@ -67,6 +67,8 @@ defmodule BorsNG.Worker.BranchDeleter do
   end
 
   defp delete_branch(conn, pr) do
+    # A head_repo_id of 0 is a head repository that is gone, such as a deleted
+    # fork (see `GitHub.Pr.from_json/1`), never the base repository.
     pr_in_same_repo =
       pr.head_repo_id > 0 &&
         pr.head_repo_id == pr.base_repo_id

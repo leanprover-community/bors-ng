@@ -85,6 +85,17 @@ defmodule BorsNG.GitHub.ServerHttpTest do
         {:open_prs_page_2_fails, "GET", "/repositories/1/pulls"} ->
           open_prs(conn, base_url, 502)
 
+        # A PR whose head repository was deleted, as GitHub gives it.
+        {:pr_without_head_repo, method, "/repositories/1/pulls/4"}
+        when method in ["GET", "PATCH"] ->
+          pr =
+            4
+            |> pr_json(base_url)
+            |> put_in(["head", "repo"], nil)
+            |> Map.put("mergeable", nil)
+
+          reply(conn, 200, Jason.encode!(pr))
+
         _ ->
           reply(conn, 404, "not found")
       end
@@ -92,13 +103,15 @@ defmodule BorsNG.GitHub.ServerHttpTest do
 
     # Two pages of open PRs, as GitHub lists them: without `mergeable`. Only a
     # request for 100 a page is answered, and the second with `page_2_status`.
+    # PR 3's head repository is gone.
     defp open_prs(conn, base_url, page_2_status) do
       case conn.params do
         %{"per_page" => "100", "page" => "2"} when page_2_status != 200 ->
           reply(conn, page_2_status, "oops")
 
         %{"per_page" => "100", "page" => "2"} ->
-          reply(conn, 200, Jason.encode!([pr_json(3, base_url)]))
+          pr = 3 |> pr_json(base_url) |> put_in(["head", "repo"], nil)
+          reply(conn, 200, Jason.encode!([pr]))
 
         %{"per_page" => "100"} ->
           next = "<#{base_url}/repositories/1/pulls?state=open&per_page=100&page=2>; rel=\"next\""
@@ -284,7 +297,8 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     assert {:ok, prs} =
              BorsNG.GitHub.Server.do_handle_call(:get_open_prs, {{:raw, "token"}, 1}, {})
 
-    # A request for one PR is answered 404, which would leave it out.
+    # A request for one PR is answered 404, which would leave it out. So would
+    # a PR that doesn't parse, and a sync would close its patch.
     assert [1, 2, 3] == prs |> Enum.map(& &1.number) |> Enum.sort()
     assert [2] == for(%{draft: true, number: number} <- prs, do: number)
     assert Enum.all?(prs, &(&1.state == :open and &1.body == "" and is_nil(&1.mergeable)))
@@ -306,6 +320,17 @@ defmodule BorsNG.GitHub.ServerHttpTest do
              )
 
     assert [1, 2] == prs |> Enum.map(& &1.number) |> Enum.sort()
+  end
+
+  test "get_pr and update_pr_base read a PR whose head repository is gone" do
+    ScenarioPlug.set_scenario(:pr_without_head_repo)
+    conn = {{:raw, "token"}, 1}
+
+    assert {:ok, %BorsNG.GitHub.Pr{number: 4, head_repo_id: 0} = pr} =
+             BorsNG.GitHub.Server.do_handle_call(:get_pr, conn, {4})
+
+    assert {:ok, %BorsNG.GitHub.Pr{number: 4, head_repo_id: 0}} =
+             BorsNG.GitHub.Server.do_handle_call(:update_pr_base, conn, pr)
   end
 
   defp get_issue_state(repo, number) do
