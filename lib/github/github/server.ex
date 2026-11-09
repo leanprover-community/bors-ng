@@ -715,7 +715,6 @@ defmodule BorsNG.GitHub.Server do
   end
 
   def do_handle_call(:belongs_to_team, repo_conn, {org, team_slug, username}) do
-    IO.inspect(repo_conn)
     {{:raw, token}, _installation_id} = repo_conn
 
     "token #{token}"
@@ -1055,8 +1054,7 @@ defmodule BorsNG.GitHub.Server do
       {:error, %{status: status}} ->
         {:error, :get_pr_commits, status, url}
 
-      error ->
-        IO.inspect(error)
+      _ ->
         {:error, :get_pr_commits}
     end
   end
@@ -1096,8 +1094,7 @@ defmodule BorsNG.GitHub.Server do
             get_collaborators_by_repo_(token, next.url, users)
         end
 
-      error ->
-        IO.inspect(error)
+      _ ->
         {:error, :get_collaborators_by_repo}
     end
   end
