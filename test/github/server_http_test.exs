@@ -401,6 +401,24 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     refute log =~ "cached-token"
   end
 
+  test "the client prints no token" do
+    ScenarioPlug.set_scenario(:client_failures)
+    client = start_client()
+    {:ok, io} = StringIO.open("")
+    Process.group_leader(client, io)
+    conn = {{:raw, "printed-token"}, 1}
+
+    # Each answered 404.
+    assert false == GenServer.call(client, {:belongs_to_team, conn, {"org", "team", "user"}})
+    assert {:error, :get_pr_commits} = GenServer.call(client, {:get_pr_commits, conn, {8}})
+
+    assert {:error, :get_collaborators_by_repo} =
+             GenServer.call(client, {:get_collaborators_by_repo, conn, {}})
+
+    {_, output} = StringIO.contents(io)
+    refute output =~ "printed-token"
+  end
+
   test "get_open_prs lists the open PRs 100 a page, without fetching each" do
     ScenarioPlug.set_scenario(:open_prs)
 
