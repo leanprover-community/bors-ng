@@ -1,6 +1,10 @@
 defmodule BorsNG.GitHub.ServerHttpTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
+  alias BorsNG.GitHub
+
   defmodule ScenarioPlug do
     import Plug.Conn
 
@@ -9,16 +13,25 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     @contents_path "/repositories/1/contents/bors.toml"
     @scenario_key {__MODULE__, :scenario}
     @base_url_key {__MODULE__, :base_url}
+    @listener_key {__MODULE__, :listener}
 
     def init(opts), do: opts
 
     def set_scenario(scenario), do: :persistent_term.put(@scenario_key, scenario)
     def set_base_url(base_url), do: :persistent_term.put(@base_url_key, base_url)
 
+    # The process told of each request, as `{:request, method, path}`.
+    def set_listener(pid), do: :persistent_term.put(@listener_key, pid)
+
     def call(conn, _opts) do
       conn = fetch_query_params(conn)
       scenario = :persistent_term.get(@scenario_key, :both_non_200)
       base_url = :persistent_term.get(@base_url_key, "http://localhost")
+
+      case :persistent_term.get(@listener_key, nil) do
+        nil -> :ok
+        pid -> send(pid, {:request, conn.method, conn.request_path})
+      end
 
       case {scenario, conn.method, conn.request_path} do
         {:both_non_200, "GET", @status_path} ->
@@ -26,6 +39,17 @@ defmodule BorsNG.GitHub.ServerHttpTest do
 
         {:both_non_200, "GET", @checks_path} ->
           reply(conn, 500, "oops")
+
+        # A PR the client can't parse.
+        {:client_failures, "GET", "/repositories/1/pulls/5"} ->
+          reply(conn, 200, ~s({"number":5}))
+
+        {:client_failures, "GET", "/repositories/1/pulls/6"} ->
+          reply(conn, 502, "bad gateway")
+
+        # The reviews' request matches its answer on status 200.
+        {:client_failures, "GET", "/repositories/1/pulls/7/reviews"} ->
+          reply(conn, 502, "bad gateway")
 
         {:malformed_status_json, "GET", @status_path} ->
           reply(conn, 200, "not json")
@@ -291,6 +315,69 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     assert {:error, :get_issue_state, 502, _} = get_issue_state(nil, 10)
   end
 
+  test "a request that raises is answered with an error, and the client keeps its tokens" do
+    ScenarioPlug.set_scenario(:client_failures)
+    client = start_client()
+    conn = {{:installation, 91}, 1}
+
+    log =
+      capture_log(fn ->
+        # Asking again would fail again.
+        assert {:error, :github_call_raised, :get_pr, MatchError} =
+                 GenServer.call(client, {:get_pr, conn, {5}})
+
+        # GitHub may answer otherwise next time.
+        assert {:error, :github_request_failed, :get_reviews, MatchError} =
+                 GenServer.call(client, {:get_reviews, conn, {7}})
+      end)
+
+    assert Process.alive?(client)
+    assert %{91 => {"cached-token", _}} = :sys.get_state(client)
+
+    # The exception's module, not its value: the second `MatchError` is on a
+    # `Tesla.Env`, whose client holds the authorization header.
+    assert log =~ ":get_pr failed with MatchError"
+    assert log =~ ":get_reviews failed with MatchError"
+    refute log =~ "cached-token"
+  end
+
+  test "a team check that GitHub doesn't answer is a no" do
+    client = start_client()
+    put_as_github(client)
+    # Nothing listens on port 1.
+    put_env(:api_github_root, "http://localhost:1")
+
+    log =
+      capture_log(fn ->
+        assert false ==
+                 GitHub.belongs_to_team?({{:raw, "token"}, 1}, "org", "team", "user")
+      end)
+
+    assert log =~ ":belongs_to_team failed with Tesla.Error"
+    assert Process.alive?(client)
+  end
+
+  test "a caller asks again when GitHub fails, but not when the client raises" do
+    ScenarioPlug.set_scenario(:client_failures)
+    ScenarioPlug.set_listener(self())
+    on_exit(fn -> ScenarioPlug.set_listener(nil) end)
+    put_as_github(start_client())
+
+    # Retries as outside tests, with time for a second request.
+    put_env(:is_test, false)
+    put_env(:api_github_retry_max_elapsed_ms, 400)
+
+    conn = {{:raw, "token"}, 1}
+
+    capture_log(fn ->
+      assert {:error, :github_call_raised, :get_pr, MatchError} = GitHub.get_pr(conn, 5)
+      assert [{"GET", "/repositories/1/pulls/5"}] == requests()
+
+      assert {:error, :get_pr, 502, 6} = GitHub.get_pr(conn, 6)
+      assert [_, _ | _] = requests()
+    end)
+  end
+
   test "get_open_prs lists the open PRs 100 a page, without fetching each" do
     ScenarioPlug.set_scenario(:open_prs)
 
@@ -347,5 +434,46 @@ defmodule BorsNG.GitHub.ServerHttpTest do
       {{:raw, "token"}, 1},
       {"sha"}
     )
+  end
+
+  # A client of the test's own, with a token cached for installation 91.
+  defp start_client do
+    {:ok, client} = GenServer.start(GitHub.Server, :ok)
+    :sys.replace_state(client, fn _ -> %{91 => {"cached-token", Joken.current_time()}} end)
+    on_exit(fn -> Process.exit(client, :kill) end)
+    client
+  end
+
+  # Puts `client` in the place of the application's mock until the test ends.
+  defp put_as_github(client) do
+    mock = Process.whereis(GitHub)
+    true = Process.unregister(GitHub)
+    true = Process.register(client, GitHub)
+
+    on_exit(fn ->
+      if Process.whereis(GitHub) == client, do: Process.unregister(GitHub)
+      Process.register(mock, GitHub)
+    end)
+  end
+
+  # Sets bors's `key` until the test ends.
+  defp put_env(key, value) do
+    old = Application.fetch_env(:bors, key)
+    Application.put_env(:bors, key, value)
+
+    on_exit(fn ->
+      case old do
+        {:ok, old} -> Application.put_env(:bors, key, old)
+        :error -> Application.delete_env(:bors, key)
+      end
+    end)
+  end
+
+  defp requests(acc \\ []) do
+    receive do
+      {:request, method, path} -> requests([{method, path} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 end

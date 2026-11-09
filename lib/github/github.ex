@@ -419,6 +419,10 @@ defmodule BorsNG.GitHub do
     )
   end
 
+  @doc """
+  Whether `username` is on the team. Only GitHub's yes is a yes: a check that
+  fails, which the client answers with an error, is a no.
+  """
   @spec belongs_to_team?(tconn, String.t(), String.t(), String.t()) ::
           boolean
   def belongs_to_team?(repo_conn, org, team_slug, username) do
@@ -426,7 +430,7 @@ defmodule BorsNG.GitHub do
       BorsNG.GitHub,
       {:belongs_to_team, repo_conn, {org, team_slug, username}},
       Confex.fetch_env!(:bors, :api_github_timeout)
-    )
+    ) == true
   end
 
   @spec get_collaborators_by_repo(tconn) ::
@@ -554,6 +558,10 @@ defmodule BorsNG.GitHub do
           )
 
           success
+
+        # The client raised handling what GitHub answered, and would again.
+        {:error, :github_call_raised, _action, _module} ->
+          result
 
         _ ->
           if retry_timeout_elapsed?(action, started_at) do
