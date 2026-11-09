@@ -54,19 +54,60 @@ defmodule BorsNG.GitHub.Server do
     {:ok, %{}}
   end
 
-  def handle_call({type, {{_, _} = token, repo_xref}, args}, _from, state) do
+  # A request that raises is answered with an error, and the client keeps its
+  # state, the installation tokens it has cached. A crash would restart it and,
+  # under the top-level supervisor's `rest_for_one`, everything started after
+  # it: the webhooks' tasks, the Endpoint and the workers.
+  #
+  # The reply and the log give the request's action and the exception's
+  # module, never the exception: a `MatchError`'s value can be a `Tesla.Env`,
+  # whose client holds the authorization header.
+  def handle_call(request, _from, state) do
+    handle_request(request, state)
+  catch
+    kind, reason ->
+      action = request_action(request)
+      {error, cause} = failure(kind, reason, __STACKTRACE__)
+      level = if error == :github_call_raised, do: :error, else: :warning
+      Logger.log(level, "GitHub.Server: #{inspect(action)} failed with #{inspect(cause)}")
+      {:reply, {:error, error, action, cause}, state}
+  end
+
+  # Whether asking again could help. `GitHub.call_with_retry/5` retries
+  # `:github_request_failed`, as it does a request GitHub answers with an
+  # error: no answer (a `Tesla.Error`, once Tesla's retries are spent), an
+  # answer whose status the request didn't expect (a `MatchError` on the
+  # `Tesla.Env`), or an exit, such as a timeout. Anything else,
+  # `:github_call_raised`, is the client failing to handle what GitHub
+  # answered, such as a PR it can't parse, and would fail again.
+  defp failure(:error, reason, stacktrace) do
+    case Exception.normalize(:error, reason, stacktrace) do
+      %Tesla.Error{} -> {:github_request_failed, Tesla.Error}
+      %MatchError{term: %Tesla.Env{}} -> {:github_request_failed, MatchError}
+      %module{} -> {:github_call_raised, module}
+    end
+  end
+
+  defp failure(:exit, _reason, _stacktrace), do: {:github_request_failed, :exit}
+  defp failure(:throw, _reason, _stacktrace), do: {:github_call_raised, :throw}
+
+  defp request_action({action, _conn, _args}), do: action
+  defp request_action(action) when is_atom(action), do: action
+  defp request_action(_request), do: :unknown
+
+  defp handle_request({type, {{_, _} = token, repo_xref}, args}, state) do
     use_token!(token, state, fn token ->
       do_handle_call(type, {token, repo_xref}, args)
     end)
   end
 
-  def handle_call({type, {_, _} = token, args}, _from, state) do
+  defp handle_request({type, {_, _} = token, args}, state) do
     use_token!(token, state, fn token ->
       do_handle_call(type, token, args)
     end)
   end
 
-  def handle_call(:get_app, _from, state) do
+  defp handle_request(:get_app, state) do
     result =
       "Bearer #{get_jwt_token()}"
       |> tesla_client(@installation_content_type)
@@ -87,7 +128,7 @@ defmodule BorsNG.GitHub.Server do
     {:reply, result, state}
   end
 
-  def handle_call(:get_installation_list, _from, state) do
+  defp handle_request(:get_installation_list, state) do
     jwt_token = get_jwt_token()
 
     list =
