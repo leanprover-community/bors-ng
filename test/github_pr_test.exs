@@ -81,4 +81,26 @@ defmodule BorsNG.GitHub.GitHubPrTest do
                 draft: false
               }}
   end
+
+  # GitHub gives `"repo": null` once the head's repository is deleted, as a
+  # fork is when its owner deletes it.
+  test "parses a PR whose head repository is gone, as no repository's", %{
+    pr_standard: pr_standard
+  } do
+    pr_without_repo = put_in(pr_standard, ["head", "repo"], nil)
+
+    for json <- [pr_without_repo, Map.put(pr_without_repo, "mergeable", false)] do
+      assert {:ok, pr} = BorsNG.GitHub.Pr.from_json(json)
+
+      assert %BorsNG.GitHub.Pr{
+               number: 1,
+               head_sha: "B",
+               head_ref: "BAR_BRANCH",
+               head_repo_id: 0,
+               base_repo_id: 456
+             } = pr
+
+      assert pr == BorsNG.GitHub.Pr.from_json!(json)
+    end
+  end
 end

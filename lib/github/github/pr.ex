@@ -11,6 +11,10 @@ defmodule BorsNG.GitHub.Pr do
           state: :open | :closed,
           base_ref: bitstring,
           head_sha: bitstring,
+          head_ref: bitstring,
+          # 0 when the head's repository is gone; see `from_json/1`.
+          head_repo_id: integer,
+          base_repo_id: integer,
           user: BorsNG.GitHub.User.t(),
           # not all PRs have this field populated
           mergeable: boolean | nil,
@@ -43,8 +47,17 @@ defmodule BorsNG.GitHub.Pr do
 
   @doc """
   Convert from Jason-decoded JSON to a Pr struct.
+
+  Once the head's repository is deleted, as a fork is when its owner deletes
+  it, GitHub gives the head's `repo` as null, in the PR and in its events.
+  Such a PR has `head_repo_id` 0, which no repository has, so bors treats its
+  branch as a fork's and doesn't delete it.
   """
   @spec from_json(tjson) :: {:ok, t} | {:error, term}
+  def from_json(%{"head" => %{"repo" => nil} = head} = pr) do
+    from_json(%{pr | "head" => %{head | "repo" => %{"id" => 0}}})
+  end
+
   def from_json(
         pr = %{
           "number" => number,

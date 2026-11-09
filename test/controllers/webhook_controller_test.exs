@@ -391,6 +391,127 @@ defmodule BorsNG.WebhookControllerTest do
     assert branches == ["master"]
   end
 
+  # Once a PR's head repository is deleted, as a fork is when its owner deletes
+  # it, GitHub gives the head's `repo` as null, in the PR and in its events.
+  test "closing a PR whose head fork was deleted closes its patch, and keeps the branch", %{
+    conn: conn,
+    project: proj
+  } do
+    toml = ~s"""
+      status = [ "ci" ]
+      delete_merged_branches = true
+    """
+
+    GitHub.ServerMock.put_state(%{
+      {{:installation, 31}, 13} => %{
+        branches: %{"master" => "ini", "update" => "foo"},
+        comments: %{1 => []},
+        statuses: %{},
+        pulls: %{
+          1 => %Pr{
+            number: 1,
+            title: "Test",
+            body: "Mess",
+            state: :closed,
+            base_ref: "master",
+            head_sha: "00000001",
+            head_ref: "update",
+            base_repo_id: 13,
+            head_repo_id: 0,
+            merged: true
+          }
+        },
+        files: %{
+          "master" => %{".github/bors.toml" => toml},
+          "update" => %{".github/bors.toml" => toml}
+        }
+      }
+    })
+
+    patch =
+      Repo.insert!(%Patch{
+        project_id: proj.id,
+        pr_xref: 1,
+        commit: "00000001",
+        into_branch: "master",
+        open: true
+      })
+
+    body_params = %{
+      "repository" => %{"id" => 13},
+      "action" => "closed",
+      "pull_request" => %{
+        "number" => 1,
+        "title" => "Test",
+        "body" => "Mess",
+        "state" => "closed",
+        "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+        "head" => %{"sha" => "00000001", "ref" => "update", "repo" => nil},
+        "merged_at" => "time",
+        "mergeable" => nil,
+        "user" => %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+      }
+    }
+
+    conn =
+      conn
+      |> put_req_header("x-github-event", "pull_request")
+      |> post(webhook_path(conn, :webhook, "github"), body_params)
+
+    assert conn.status == 200
+
+    batcher = BorsNG.Worker.Batcher.Registry.get(proj.id)
+    attemptor = BorsNG.Worker.Attemptor.Registry.get(proj.id)
+    _ = :sys.get_state(batcher)
+    _ = :sys.get_state(attemptor)
+    flush_branch_deleter()
+
+    refute Repo.get!(Patch, patch.id).open
+
+    # The branch is the deleted fork's, not the repository's.
+    assert %{"update" => "foo"} =
+             GitHub.ServerMock.get_state()
+             |> get_in([{{:installation, 31}, 13}, :branches])
+  end
+
+  test "a review or review comment on a PR whose head fork was deleted runs its command", %{
+    conn: conn
+  } do
+    user = %{"id" => 23, "login" => "ghost", "avatar_url" => "U"}
+
+    # As in a review's event: without `mergeable`.
+    pr_json = %{
+      "number" => 1,
+      "title" => "T",
+      "body" => "B",
+      "state" => "open",
+      "base" => %{"ref" => "master", "repo" => %{"id" => 13}},
+      "head" => %{"sha" => "C", "ref" => "feature", "repo" => nil},
+      "merged_at" => nil,
+      "user" => user
+    }
+
+    for {event, action, key} <- [
+          {"pull_request_review", "submitted", "review"},
+          {"pull_request_review_comment", "created", "comment"}
+        ] do
+      draft_comment_state()
+
+      conn =
+        conn
+        |> put_req_header("x-github-event", event)
+        |> post(webhook_path(conn, :webhook, "github"), %{
+          "repository" => %{"id" => 13},
+          "action" => action,
+          key => %{"body" => "bors ping", "user" => user},
+          "pull_request" => pr_json
+        })
+
+      assert conn.status == 200, event
+      assert ["pong"] == pr_comments(1), event
+    end
+  end
+
   test "closing a PR removes it from waiting batches", %{conn: conn, project: proj} do
     # Minimal GitHub state to allow comment posting if needed
     GitHub.ServerMock.put_state(%{
