@@ -378,6 +378,29 @@ defmodule BorsNG.GitHub.ServerHttpTest do
     end)
   end
 
+  test "the client's status and crash report don't show its tokens" do
+    client = start_client()
+    refute inspect(:sys.get_status(client)) =~ "cached-token"
+
+    # Elixir's Logger shows a crash report's state only at its :debug level.
+    level = Logger.level()
+    Logger.configure(level: :debug)
+    on_exit(fn -> Logger.configure(level: level) end)
+    ref = Process.monitor(client)
+
+    log =
+      capture_log([level: :debug], fn ->
+        # The client takes no casts.
+        GenServer.cast(client, :crash)
+        assert_receive {:DOWN, ^ref, :process, ^client, _}
+        Logger.flush()
+      end)
+
+    assert log =~ "terminating"
+    assert log =~ "State: "
+    refute log =~ "cached-token"
+  end
+
   test "get_open_prs lists the open PRs 100 a page, without fetching each" do
     ScenarioPlug.set_scenario(:open_prs)
 

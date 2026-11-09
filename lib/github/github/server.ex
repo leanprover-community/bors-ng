@@ -54,6 +54,18 @@ defmodule BorsNG.GitHub.Server do
     {:ok, %{}}
   end
 
+  # `:sys.get_status/1` and a crash report show the state, the cached
+  # installation tokens: show when each was issued, not the token.
+  def format_status(%{state: tokens} = status) when is_map(tokens) do
+    %{status | state: Map.new(tokens, &redact_token/1)}
+  end
+
+  def format_status(%{state: _} = status), do: %{status | state: :redacted}
+  def format_status(status), do: status
+
+  defp redact_token({installation, {_token, issued}}), do: {installation, {:redacted, issued}}
+  defp redact_token({installation, _token}), do: {installation, :redacted}
+
   # A request that raises is answered with an error, and the client keeps its
   # state, the installation tokens it has cached. A crash would restart it and,
   # under the top-level supervisor's `rest_for_one`, everything started after
