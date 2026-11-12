@@ -104,9 +104,9 @@ defmodule BorsNG.Worker.Batcher.Registry do
           refs = Map.put(refs, ref, project_id)
           {names, refs}
 
-        pid ->
+        registered ->
           Logger.warning(
-            "Project #{inspect(project_id)} already monitored #{inspect(pid)} by #{inspect(names[project_id])}"
+            "Project #{inspect(project_id)} already has batcher #{inspect(registered)}; not monitoring #{inspect(pid)}"
           )
 
           state
