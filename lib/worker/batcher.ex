@@ -99,6 +99,9 @@ defmodule BorsNG.Worker.Batcher do
   # Server callbacks
 
   def init(project_id) do
+    # A cast: the registry is blocked starting this batcher. It has recorded
+    # this batcher by the time the cast arrives, so this only registers a
+    # batcher started some other way. See `Batcher.Registry.monitor/2`.
     BorsNG.Worker.Batcher.Registry.monitor(self(), project_id)
 
     Process.send_after(

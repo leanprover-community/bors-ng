@@ -30,29 +30,26 @@ defmodule BorsNG.Worker.Batcher.Registry do
     GenServer.start_link(__MODULE__, :ok, name: @name)
   end
 
-  def get(project_id, count \\ 0)
+  @doc """
+  The project's batcher, which the registry starts if the project has none.
 
-  def get(project_id, 5) when is_integer(project_id) do
-    case GenServer.call(@name, {:get, project_id}) do
-      # The batcher never registered, so it hasn't been started at all.
-      nil -> do_start(project_id)
-      pid -> pid
-    end
+  The registry starts the batcher and records it in the same call, so
+  concurrent calls for a project get the same one. A caller must not start one
+  itself: the registry would keep the first batcher it hears of, and
+  `Batcher.check_self/1` would crash the other at its first message, which is
+  lost.
+  """
+  def get(project_id) when is_integer(project_id) do
+    GenServer.call(@name, {:get, project_id})
   end
 
-  def get(project_id, count) when is_integer(project_id) do
-    pid = GenServer.call(@name, {:get, project_id})
+  @doc """
+  Called by each batcher's `init/1` to register itself.
 
-    if pid == nil do
-      # broadcasted message from Batcher to registry hasn't been processed
-      # we give chance them to register before trying to create a new one
-      Process.sleep(100)
-      get(project_id, count + 1)
-    else
-      pid
-    end
-  end
-
+  The registry records a batcher it starts before the batcher's registration
+  arrives, so for one of those this confirms what the registry has. It records
+  a batcher started some other way, if the project has none.
+  """
   def monitor(pid, project_id) do
     GenServer.cast(@name, {:monitor, project_id, pid})
   end
@@ -66,43 +63,51 @@ defmodule BorsNG.Worker.Batcher.Registry do
     # ones started below. See `Batcher.Supervisor.terminate_all/0`.
     Batcher.Supervisor.terminate_all()
 
-    Project.active()
-    |> Repo.all()
-    |> Enum.map(fn %{id: id} -> id end)
-    |> Enum.uniq()
-    |> Enum.map(&{&1, do_start(&1)})
+    # Record each batcher as it starts, rather than wait for its registration:
+    # the Endpoint starts before this registry, so a webhook's `get/1` can be
+    # queued ahead of the registrations, and would start a second batcher.
+    state =
+      Project.active()
+      |> Repo.all()
+      |> Enum.map(fn %{id: id} -> id end)
+      |> Enum.uniq()
+      |> Enum.reduce({Map.new(), Map.new()}, fn project_id, state ->
+        {_pid, state} = start_and_insert(project_id, state)
+        state
+      end)
 
-    # When the worker actually started, they'll register them self to the
-    # registry using monitor.
-    {:ok, {Map.new(), Map.new()}}
+    {:ok, state}
   end
 
-  def do_start(project_id) do
+  defp start_and_insert(project_id, state) do
     {:ok, pid} = Batcher.Supervisor.start(project_id)
-    pid
+    {pid, insert(project_id, pid, state)}
+  end
+
+  defp insert(project_id, pid, {names, refs}) do
+    ref = Process.monitor(pid)
+    {Map.put(names, project_id, pid), Map.put(refs, ref, project_id)}
   end
 
   def handle_call({:get, project_id}, _from, {names, _refs} = state) do
     {pid, state} =
       case names[project_id] do
-        nil ->
-          {nil, state}
-
-        pid ->
-          {pid, state}
+        nil -> start_and_insert(project_id, state)
+        pid -> {pid, state}
       end
 
     {:reply, pid, state}
   end
 
-  def handle_cast({:monitor, project_id, pid}, {names, refs} = state) do
+  def handle_cast({:monitor, project_id, pid}, {names, _refs} = state) do
     new_state =
       case names[project_id] do
         nil ->
-          ref = Process.monitor(pid)
-          names = Map.put(names, project_id, pid)
-          refs = Map.put(refs, ref, project_id)
-          {names, refs}
+          insert(project_id, pid, state)
+
+        # Started by this registry, which recorded it then.
+        ^pid ->
+          state
 
         registered ->
           Logger.warning(
